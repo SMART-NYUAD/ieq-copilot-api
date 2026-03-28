@@ -1,0 +1,2 @@
+"""Knowledge-card normalization utilities."""
+

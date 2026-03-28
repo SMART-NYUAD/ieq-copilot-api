@@ -1,0 +1,818 @@
+"""Intent-specific DB query handlers extracted from db_query_executor."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+try:
+    from query_routing.intent_classifier import IntentType
+except ImportError:
+    from ...query_routing.intent_classifier import IntentType
+
+try:
+    from executors.db_support import charts as db_charts
+    from executors.db_support import query_parsing as db_parsing
+    from executors.db_support import response_helpers as db_helpers
+except ImportError:
+    from . import charts as db_charts
+    from . import query_parsing as db_parsing
+    from . import response_helpers as db_helpers
+
+
+def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
+    return {
+        "operation_type": "aggregation",
+        "rows": [],
+        "fallback_answer": f"I couldn't find {metric_alias} data for {window_label}.",
+        "chart_payload": db_charts.empty_chart(),
+        "forecast_data": None,
+        "correlation_data": None,
+        "metric_alias": metric_alias,
+        "metrics_used": [metric_alias],
+        "window_start": None,
+        "window_end": None,
+        "window_label": window_label,
+        "compared_spaces": [],
+    }
+
+
+def _requested_metrics(question: str, explicit_metrics: List[str], hinted_metrics: List[str]) -> List[str]:
+    metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
+    if explicit_metrics:
+        return metrics
+    is_air_quality_query = db_helpers.is_air_quality_query_text(question)
+    is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
+    if not (is_air_quality_query or is_comfort_assessment_query):
+        return metrics
+    required_pack = (
+        ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc"]
+        if is_comfort_assessment_query
+        else ["ieq", "co2", "pm25", "humidity", "tvoc"]
+    )
+    missing_core_metrics = [m for m in required_pack if m not in metrics]
+    return metrics + missing_core_metrics
+
+
+def _handle_correlation(
+    *,
+    cur: Any,
+    question: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    requested_metrics: List[str],
+    max_chart_lookback_points: int,
+) -> Optional[Dict[str, Any]]:
+    if not (db_parsing.wants_correlation(question) and len(requested_metrics) >= 2):
+        return None
+    metric_x, metric_y = requested_metrics[0], requested_metrics[1]
+    column_x = db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric_x)
+    column_y = db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric_y)
+    if not column_x or not column_y:
+        return {
+            "operation_type": "correlation",
+            "rows": [],
+            "fallback_answer": f"I couldn't map requested metrics for correlation: {metric_x} vs {metric_y}.",
+            "chart_payload": db_charts.empty_chart(),
+            "correlation_data": None,
+            "metric_alias": f"{metric_x}_vs_{metric_y}",
+            "metrics_used": [metric_x, metric_y],
+        }
+
+    sql = f"""
+        SELECT bucket, {column_x} AS x_value, {column_y} AS y_value
+        FROM lab_ieq_final
+        WHERE bucket >= %s
+          AND bucket < %s
+          AND (%s IS NULL OR lab_space = %s)
+          AND {column_x} IS NOT NULL
+          AND {column_y} IS NOT NULL
+        ORDER BY bucket ASC
+        LIMIT 5000
+    """
+    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+    rows = [dict(row) for row in cur.fetchall()]
+    corr_value: Optional[float] = None
+    if len(rows) >= 3:
+        df = pd.DataFrame(rows)
+        corr = df["x_value"].corr(df["y_value"])
+        if corr is not None and not pd.isna(corr):
+            corr_value = float(corr)
+    correlation_data = {
+        "metric_x": metric_x,
+        "metric_y": metric_y,
+        "correlation": corr_value,
+        "row_count": len(rows),
+    }
+    return {
+        "operation_type": "correlation",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_correlation_answer(
+            metric_x=metric_x,
+            metric_y=metric_y,
+            correlation=corr_value,
+            row_count=len(rows),
+            window_label=window_label,
+            lab_name=resolved_lab_name,
+        ),
+        "chart_payload": db_charts.build_scatter_chart(
+            metric_x=metric_x,
+            metric_y=metric_y,
+            unit_x=db_helpers.metric_unit(metric_x),
+            unit_y=db_helpers.metric_unit(metric_y),
+            window_label=window_label,
+            rows=rows,
+            correlation=corr_value,
+            lookback_points=max_chart_lookback_points,
+        ),
+        "correlation_data": correlation_data,
+        "metric_alias": f"{metric_x}_vs_{metric_y}",
+        "metrics_used": [metric_x, metric_y],
+    }
+
+
+def _handle_comparison_multi(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    hinted_metrics: List[str],
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if not (intent == IntentType.COMPARISON_DB and len(hinted_metrics) >= 2):
+        return None
+    compare_metrics = hinted_metrics[:4]
+    metric_columns = [
+        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
+        for metric in compare_metrics
+        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+    ]
+    if len(metric_columns) < 1:
+        return {
+            "operation_type": "comparison_multi_metric",
+            "rows": [],
+            "fallback_answer": "I couldn't map planner-selected metrics for comparison.",
+            "chart_payload": db_charts.empty_chart(),
+            "metrics_used": [],
+        }
+    compared_spaces = db_parsing.extract_compared_spaces(question)
+    if not compared_spaces and resolved_lab_name:
+        compared_spaces = [resolved_lab_name]
+    select_metrics_sql = ", ".join([f"AVG({column}) AS {metric}" for metric, column in metric_columns])
+    if len(compared_spaces) >= 2:
+        sql = f"""
+            SELECT lab_space, {select_metrics_sql}
+            FROM lab_ieq_final
+            WHERE lab_space = ANY(%s)
+              AND bucket >= %s
+              AND bucket < %s
+            GROUP BY lab_space
+            ORDER BY lab_space ASC
+            LIMIT 2
+        """
+        cur.execute(sql, (compared_spaces, window_start, window_end))
+    else:
+        sql = f"""
+            SELECT lab_space, {select_metrics_sql}
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+            GROUP BY lab_space
+            ORDER BY lab_space ASC
+            LIMIT 2
+        """
+        cur.execute(sql, (window_start, window_end))
+    rows = [dict(row) for row in cur.fetchall()]
+    metric_names = [m for m, _ in metric_columns]
+    return {
+        "operation_type": "comparison_multi_metric",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_multi_metric_comparison_answer(
+            metric_aliases=metric_names,
+            rows=rows,
+            window_label=window_label,
+        ),
+        "chart_payload": db_helpers.build_multi_metric_bar_chart(
+            metric_aliases=metric_names,
+            unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
+            window_label=window_label,
+            rows=rows,
+        ),
+        "metric_alias": metric_names[0],
+        "metrics_used": metric_names,
+        "compared_spaces": compared_spaces,
+    }
+
+
+def _handle_aggregation_multi(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    requested_metrics: List[str],
+    compared_spaces: List[str],
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if not (intent == IntentType.AGGREGATION_DB and len(requested_metrics) >= 2 and len(compared_spaces) < 2):
+        return None
+    if db_helpers.is_comfort_assessment_query_text(question):
+        selected_metrics = requested_metrics[:6]
+    elif db_helpers.is_air_quality_query_text(question):
+        selected_metrics = requested_metrics[:5]
+    else:
+        selected_metrics = requested_metrics[:4]
+    metric_columns = [
+        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
+        for metric in selected_metrics
+        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+    ]
+    if len(metric_columns) < 1:
+        return {
+            "operation_type": "aggregation_multi_metric",
+            "rows": [],
+            "fallback_answer": "I couldn't map requested metrics for analysis.",
+            "chart_payload": db_charts.empty_chart(),
+            "metrics_used": [],
+        }
+    select_metrics_sql = ", ".join(
+        [
+            (
+                f"AVG({column}) AS {metric}, "
+                f"MIN({column}) AS {metric}_min, "
+                f"MAX({column}) AS {metric}_max, "
+                f"STDDEV_POP({column}) AS {metric}_stddev"
+            )
+            for metric, column in metric_columns
+        ]
+    )
+    sql = f"""
+        SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+        FROM lab_ieq_final
+        WHERE bucket >= %s
+          AND bucket < %s
+          AND (%s IS NULL OR lab_space = %s)
+        GROUP BY lab_space
+        ORDER BY reading_count DESC
+        LIMIT 1
+    """
+    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+    row = cur.fetchone()
+    rows = [dict(row)] if row else []
+    metric_names = [m for m, _ in metric_columns]
+    return {
+        "operation_type": "aggregation_multi_metric",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
+            metric_aliases=metric_names,
+            row=rows[0] if rows else {},
+            window_label=window_label,
+        ),
+        "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
+            metric_aliases=metric_names,
+            unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
+            window_label=window_label,
+            row=rows[0] if rows else {},
+        ),
+        "metric_alias": metric_names[0],
+        "metrics_used": metric_names,
+    }
+
+
+def _handle_point_lookup(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    requested_metrics: List[str],
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    max_chart_lookback_points: int,
+) -> Optional[Dict[str, Any]]:
+    if intent not in {IntentType.POINT_LOOKUP_DB, IntentType.CURRENT_STATUS_DB}:
+        return None
+    is_multi = db_helpers.is_air_quality_query_text(question) or db_helpers.is_comfort_assessment_query_text(question)
+    if is_multi:
+        selected_metrics = requested_metrics[:6] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
+        metric_columns = [
+            (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
+            for metric in selected_metrics
+            if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+        ]
+        if len(metric_columns) < 1:
+            return {
+                "operation_type": "point_lookup_multi_metric",
+                "rows": [],
+                "fallback_answer": "I couldn't map requested air-quality metrics for point lookup.",
+                "chart_payload": db_charts.empty_chart(),
+                "metrics_used": [],
+            }
+        select_metrics_sql = ", ".join([f"{column} AS {metric}" for metric, column in metric_columns])
+        sql = f"""
+            SELECT lab_space, bucket, {select_metrics_sql}
+            FROM lab_ieq_final
+            WHERE (%s IS NULL OR lab_space = %s)
+              AND bucket >= %s
+              AND bucket < %s
+            ORDER BY bucket DESC
+            LIMIT 1
+        """
+        cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
+        row = cur.fetchone()
+        rows = [dict(row)] if row else []
+        metric_names = [m for m, _ in metric_columns]
+        return {
+            "operation_type": "point_lookup_multi_metric",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
+                metric_aliases=metric_names,
+                row=rows[0] if rows else {},
+                window_label=window_label,
+            ),
+            "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
+                metric_aliases=metric_names,
+                unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
+                window_label=window_label,
+                row=rows[0] if rows else {},
+            ),
+            "metric_alias": metric_names[0],
+            "metrics_used": metric_names,
+        }
+
+    sql = f"""
+        SELECT lab_space, bucket, {metric_column} AS value
+        FROM lab_ieq_final
+        WHERE (%s IS NULL OR lab_space = %s)
+          AND bucket >= %s
+          AND bucket < %s
+        ORDER BY bucket DESC
+        LIMIT 1
+    """
+    cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
+    row = cur.fetchone()
+    rows = [dict(row)] if row else []
+    trend_sql = f"""
+        SELECT bucket, {metric_column} AS value
+        FROM lab_ieq_final
+        WHERE (%s IS NULL OR lab_space = %s)
+          AND bucket >= %s
+          AND bucket < %s
+        ORDER BY bucket ASC
+        LIMIT 500
+    """
+    cur.execute(trend_sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
+    trend_rows = [dict(item) for item in cur.fetchall()]
+    series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
+    return {
+        "operation_type": "point_lookup",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_point_lookup_answer(metric_alias, row or {}, window_label),
+        "chart_payload": db_charts.build_line_chart(
+            metric_alias=metric_alias,
+            unit=unit,
+            window_label=window_label,
+            series_rows=trend_rows,
+            series_name=str(series_name),
+            lookback_points=max_chart_lookback_points,
+        ),
+        "metrics_used": [metric_alias],
+    }
+
+
+def _handle_anomaly(
+    *,
+    cur: Any,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    max_chart_lookback_points: int,
+) -> Optional[Dict[str, Any]]:
+    if intent != IntentType.ANOMALY_ANALYSIS_DB:
+        return None
+    sql = f"""
+        SELECT lab_space, bucket, {metric_column} AS value
+        FROM lab_ieq_final
+        WHERE (%s IS NULL OR lab_space = %s)
+          AND bucket >= %s
+          AND bucket < %s
+          AND {metric_column} IS NOT NULL
+        ORDER BY bucket ASC
+        LIMIT 5000
+    """
+    cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
+    rows = [dict(item) for item in cur.fetchall()]
+    anomalies = db_helpers.detect_anomaly_points(rows)
+    series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
+    return {
+        "operation_type": "anomaly",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_anomaly_answer(
+            metric_alias=metric_alias,
+            rows=rows,
+            anomalies=anomalies,
+            window_label=window_label,
+            lab_name=resolved_lab_name,
+        ),
+        "chart_payload": db_charts.build_anomaly_chart(
+            metric_alias=metric_alias,
+            unit=unit,
+            window_label=window_label,
+            series_rows=rows,
+            anomalies=anomalies,
+            series_name=str(series_name),
+            lookback_points=max_chart_lookback_points,
+        ),
+        "metrics_used": [metric_alias],
+    }
+
+
+def _handle_comparison(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if intent != IntentType.COMPARISON_DB:
+        return None
+    compared_spaces = db_parsing.extract_compared_spaces(question)
+    if not compared_spaces and resolved_lab_name:
+        compared_spaces = [resolved_lab_name]
+    if len(compared_spaces) >= 2:
+        sql = f"""
+            SELECT lab_space, AVG({metric_column}) AS avg_value
+            FROM lab_ieq_final
+            WHERE lab_space = ANY(%s)
+              AND bucket >= %s
+              AND bucket < %s
+            GROUP BY lab_space
+            ORDER BY avg_value DESC
+            LIMIT 2
+        """
+        cur.execute(sql, (compared_spaces, window_start, window_end))
+    else:
+        sql = f"""
+            SELECT lab_space, AVG({metric_column}) AS avg_value
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+            GROUP BY lab_space
+            ORDER BY avg_value DESC
+            LIMIT 2
+        """
+        cur.execute(sql, (window_start, window_end))
+    rows = [dict(row) for row in cur.fetchall()]
+    return {
+        "operation_type": "comparison",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_comparison_answer(metric_alias, rows, window_label),
+        "chart_payload": db_charts.build_bar_chart(
+            metric_alias=metric_alias,
+            unit=unit,
+            window_label=window_label,
+            rows=rows,
+            value_key="avg_value",
+        ),
+        "metrics_used": [metric_alias],
+        "compared_spaces": compared_spaces,
+    }
+
+
+def _handle_forecast(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    max_chart_lookback_points: int,
+) -> Optional[Dict[str, Any]]:
+    if not (intent == IntentType.FORECAST_DB or db_parsing.wants_forecast(question)):
+        return None
+    horizon_hours, _ = db_parsing.extract_forecast_horizon_hours(question)
+    forecast_window_start, forecast_window_end, forecast_window_label = db_parsing.forecast_history_window(
+        question=question,
+        horizon_hours=horizon_hours,
+        default_start=window_start,
+        default_end=window_end,
+        default_label=window_label,
+    )
+    sql = f"""
+        SELECT bucket, AVG({metric_column}) AS value
+        FROM lab_ieq_final
+        WHERE bucket >= %s
+          AND bucket < %s
+          AND (%s IS NULL OR lab_space = %s)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        LIMIT 1000
+    """
+    cur.execute(sql, (forecast_window_start, forecast_window_end, resolved_lab_name, resolved_lab_name))
+    rows = [dict(row) for row in cur.fetchall()]
+    forecast_data = db_helpers.build_forecast_from_rows(rows, horizon_hours=horizon_hours)
+    effective_horizon_hours = int((forecast_data or {}).get("horizon_hours") or horizon_hours)
+    effective_horizon_label = f"next {effective_horizon_hours} hour(s)"
+    series_name = resolved_lab_name or "selected_scope"
+    return {
+        "operation_type": "prediction",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_forecast_answer(
+            metric_alias=metric_alias,
+            forecast=forecast_data,
+            window_label=forecast_window_label,
+            horizon_label=effective_horizon_label,
+        ),
+        "chart_payload": db_charts.build_forecast_chart(
+            metric_alias=metric_alias,
+            unit=unit,
+            window_label=f"{forecast_window_label} + {effective_horizon_label}",
+            history_rows=rows,
+            forecast=forecast_data,
+            series_name=str(series_name),
+            lookback_points=max_chart_lookback_points,
+        ),
+        "forecast_data": forecast_data,
+        "metrics_used": [metric_alias],
+        "window_start": forecast_window_start,
+        "window_end": forecast_window_end,
+        "window_label": forecast_window_label,
+    }
+
+
+def _handle_default(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    compared_spaces: List[str],
+    max_chart_lookback_points: int,
+) -> Dict[str, Any]:
+    if intent == IntentType.AGGREGATION_DB and len(compared_spaces) >= 2:
+        sql = f"""
+            SELECT lab_space, AVG({metric_column}) AS avg_value
+            FROM lab_ieq_final
+            WHERE lab_space = ANY(%s)
+              AND bucket >= %s
+              AND bucket < %s
+            GROUP BY lab_space
+            ORDER BY avg_value DESC
+            LIMIT 2
+        """
+        cur.execute(sql, (compared_spaces, window_start, window_end))
+        rows = [dict(row) for row in cur.fetchall()]
+        return {
+            "operation_type": "comparison",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_comparison_answer(metric_alias, rows, window_label),
+            "chart_payload": db_charts.build_bar_chart(
+                metric_alias=metric_alias,
+                unit=unit,
+                window_label=window_label,
+                rows=rows,
+                value_key="avg_value",
+            ),
+            "metrics_used": [metric_alias],
+            "compared_spaces": compared_spaces,
+        }
+
+    if db_parsing.wants_time_series(question):
+        sql = f"""
+            SELECT lab_space, bucket, {metric_column} AS value
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+              AND (%s IS NULL OR lab_space = %s)
+            ORDER BY bucket ASC
+            LIMIT 1000
+        """
+        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+        rows = [dict(row) for row in cur.fetchall()]
+        series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
+        return {
+            "operation_type": "timeseries",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_timeseries_answer(metric_alias, rows, window_label),
+            "chart_payload": db_charts.build_line_chart(
+                metric_alias=metric_alias,
+                unit=unit,
+                window_label=window_label,
+                series_rows=rows,
+                series_name=str(series_name),
+                lookback_points=max_chart_lookback_points,
+            ),
+            "metrics_used": [metric_alias],
+        }
+
+    sql = f"""
+        SELECT lab_space,
+               AVG({metric_column}) AS avg_value,
+               MIN({metric_column}) AS min_value,
+               MAX({metric_column}) AS max_value,
+               AVG(contri_thermal) AS contri_thermal,
+               AVG(contri_light) AS contri_light,
+               AVG(contri_air) AS contri_air,
+               AVG(contri_acoustic) AS contri_acoustic,
+               AVG(contri_acoustic) AS contri_acustic,
+               COUNT(*) AS reading_count
+        FROM lab_ieq_final
+        WHERE bucket >= %s
+          AND bucket < %s
+          AND (%s IS NULL OR lab_space = %s)
+        GROUP BY lab_space
+        ORDER BY avg_value DESC
+        LIMIT 10
+    """
+    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+    rows = [dict(row) for row in cur.fetchall()]
+    return {
+        "operation_type": "aggregation",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
+        "chart_payload": db_charts.build_bar_chart(
+            metric_alias=metric_alias,
+            unit=unit,
+            window_label=window_label,
+            rows=rows,
+            value_key="avg_value",
+        ),
+        "metrics_used": [metric_alias],
+    }
+
+
+def execute_intent_query(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    compared_spaces: List[str],
+    explicit_metrics: List[str],
+    hinted_metrics: List[str],
+    max_chart_lookback_points: int,
+) -> Dict[str, Any]:
+    result = _base_result(metric_alias=metric_alias, window_label=window_label)
+    result["window_start"] = window_start
+    result["window_end"] = window_end
+    result["compared_spaces"] = list(compared_spaces)
+
+    requested_metrics = _requested_metrics(question, explicit_metrics, hinted_metrics)
+
+    handlers = [
+        lambda: _handle_correlation(
+            cur=cur,
+            question=question,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            requested_metrics=requested_metrics,
+            max_chart_lookback_points=max_chart_lookback_points,
+        ),
+        lambda: _handle_comparison_multi(
+            cur=cur,
+            question=question,
+            intent=intent,
+            hinted_metrics=hinted_metrics,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+        ),
+        lambda: _handle_aggregation_multi(
+            cur=cur,
+            question=question,
+            intent=intent,
+            requested_metrics=requested_metrics,
+            compared_spaces=compared_spaces,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+        ),
+        lambda: _handle_point_lookup(
+            cur=cur,
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
+            requested_metrics=requested_metrics,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            max_chart_lookback_points=max_chart_lookback_points,
+        ),
+        lambda: _handle_anomaly(
+            cur=cur,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            max_chart_lookback_points=max_chart_lookback_points,
+        ),
+        lambda: _handle_comparison(
+            cur=cur,
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+        ),
+        lambda: _handle_forecast(
+            cur=cur,
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            max_chart_lookback_points=max_chart_lookback_points,
+        ),
+    ]
+
+    selected: Optional[Dict[str, Any]] = None
+    for handle in handlers:
+        candidate = handle()
+        if candidate:
+            selected = candidate
+            break
+    if not selected:
+        selected = _handle_default(
+            cur=cur,
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            compared_spaces=compared_spaces,
+            max_chart_lookback_points=max_chart_lookback_points,
+        )
+
+    result.update(selected)
+    # Preserve original scope values when branch did not override them.
+    result.setdefault("window_start", window_start)
+    result.setdefault("window_end", window_end)
+    result.setdefault("window_label", window_label)
+    result.setdefault("compared_spaces", list(compared_spaces))
+    result.setdefault("forecast_data", None)
+    result.setdefault("correlation_data", None)
+    return result

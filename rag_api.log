@@ -1,0 +1,19 @@
+Importing plotly failed. Interactive plots will not work.
+INFO:     Started server process [4172991]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+Starting RAG API server on 0.0.0.0:8001
+API docs available at http://0.0.0.0:8001/docs
+INFO:     192.168.50.99:37602 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-03-28 19:56:11,405 INFO sentence_transformers.SentenceTransformer: Use pytorch device_name: cuda:0
+2026-03-28 19:56:11,406 INFO sentence_transformers.SentenceTransformer: Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-03-28 19:56:15,651 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:47182 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-03-28 19:56:33,182 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:47022 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-03-28 19:56:49,028 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:41942 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-03-28 19:56:59,702 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:45500 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-03-28 19:57:15,104 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
