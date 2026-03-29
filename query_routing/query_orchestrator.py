@@ -19,6 +19,8 @@ try:
         RoutePlan,
         plan_route,
     )
+    from query_routing.route_policy_engine import build_route_decision_contract
+    from query_routing.router_types import RouteDecisionContract, RouteExecutor
     from query_routing.query_use_cases import (
         build_clarify_result,
         execute_db_use_case,
@@ -26,9 +28,13 @@ try:
     )
     from query_routing.observability import (
         get_observability_snapshot,
+        record_endpoint_executor,
         record_critic_outcome,
+        record_rollout_selection,
         record_route_plan,
+        record_shadow_comparison,
     )
+    from executors.db_support.query_parsing import extract_space_from_question
 except ImportError:
     from ..core_settings import load_settings
     from ..evidence.evidence_layer import build_repaired_evidence, normalize_evidence
@@ -44,6 +50,8 @@ except ImportError:
         RoutePlan,
         plan_route,
     )
+    from .route_policy_engine import build_route_decision_contract
+    from .router_types import RouteDecisionContract, RouteExecutor
     from .query_use_cases import (
         build_clarify_result,
         execute_db_use_case,
@@ -51,15 +59,100 @@ except ImportError:
     )
     from .observability import (
         get_observability_snapshot,
+        record_endpoint_executor,
         record_critic_outcome,
+        record_rollout_selection,
         record_route_plan,
+        record_shadow_comparison,
     )
+    from ..executors.db_support.query_parsing import extract_space_from_question
 
 
 def get_route_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
     route_plan = plan_route(question=question, lab_name=lab_name)
     record_route_plan(route_plan)
     return route_plan
+
+
+def get_route_decision_contract(
+    question: str,
+    lab_name: Optional[str],
+    allow_clarify: bool = True,
+    route_plan: Optional[RoutePlan] = None,
+) -> RouteDecisionContract:
+    if route_plan is None:
+        route_plan = get_route_plan(question=question, lab_name=lab_name)
+    primary_contract = build_route_decision_contract(
+        latest_user_question=question,
+        route_plan=route_plan,
+        allow_clarify=allow_clarify,
+    )
+    planner_parameters = route_plan.planner_parameters or {}
+    signals = planner_parameters.get("query_signals") or {}
+    scope_class = str(signals.get("query_scope_class") or "").strip().lower()
+    legacy_mode = str(planner_parameters.get("response_mode") or "").strip().lower()
+    legacy_asks_db = bool(signals.get("asks_for_db_facts"))
+    legacy_executor = RouteExecutor.DB_QUERY
+    legacy_trace: list[str] = []
+    if scope_class == "non_domain":
+        legacy_executor = RouteExecutor.KNOWLEDGE_QA
+        legacy_trace.append("legacy_non_domain_knowledge")
+    elif legacy_mode == "knowledge_only" and not legacy_asks_db:
+        legacy_executor = RouteExecutor.KNOWLEDGE_QA
+        legacy_trace.append("legacy_knowledge_mode")
+    else:
+        legacy_executor = RouteExecutor.DB_QUERY
+        legacy_trace.append("legacy_db_default")
+    if should_clarify(route_plan=route_plan, allow_clarify=allow_clarify):
+        legacy_executor = RouteExecutor.CLARIFY_GATE
+        legacy_trace = ["legacy_clarify_gate"]
+    legacy_contract = RouteDecisionContract(
+        latest_user_question=primary_contract.latest_user_question,
+        latest_question_hash=primary_contract.latest_question_hash,
+        policy_version="legacy-router-v1",
+        route_plan=route_plan,
+        needs_measured_data=(legacy_executor == RouteExecutor.DB_QUERY),
+        executor=legacy_executor,
+        execution_intent=route_plan.decision.intent,
+        execution_intent_value=route_plan.decision.intent.value,
+        query_scope_class=scope_class or primary_contract.query_scope_class,
+        rule_trace=tuple(legacy_trace),
+    )
+    settings = load_settings()
+    selected_contract = primary_contract
+    if settings.router_force_legacy or not settings.router_policy_rollout_enabled:
+        selected_contract = legacy_contract
+    else:
+        rollout_percent = float(settings.router_policy_rollout_percent)
+        if rollout_percent <= 0.0:
+            selected_contract = legacy_contract
+        elif rollout_percent < 100.0:
+            bucket = int(primary_contract.latest_question_hash[:6], 16) % 10000
+            ratio = bucket / 100.0
+            selected_contract = primary_contract if ratio < rollout_percent else legacy_contract
+    record_rollout_selection("policy" if selected_contract.policy_version == primary_contract.policy_version else "legacy")
+    shadow_enabled = bool(settings.router_shadow_mode_enabled)
+    sampled = False
+    if shadow_enabled:
+        sample_rate = max(0.0, min(1.0, float(settings.router_shadow_sample_rate)))
+        if sample_rate >= 1.0:
+            sampled = True
+        elif sample_rate > 0.0:
+            sample_bucket = int(primary_contract.latest_question_hash[6:10], 16) / float(0xFFFF)
+            sampled = sample_bucket < sample_rate
+    if sampled:
+        if selected_contract.policy_version == primary_contract.policy_version:
+            active_exec = primary_contract.executor.value
+            shadow_exec = legacy_contract.executor.value
+        else:
+            active_exec = legacy_contract.executor.value
+            shadow_exec = primary_contract.executor.value
+        record_shadow_comparison(
+            sampled=True,
+            active_executor=active_exec,
+            shadow_executor=shadow_exec,
+        )
+    return selected_contract
 
 
 def query_scope_class(route_plan: RoutePlan) -> str:
@@ -90,14 +183,17 @@ def should_use_knowledge_executor(route_plan: RoutePlan) -> bool:
         return True
     if mode != "knowledge_only":
         return False
-    # If query asks for scoped/measured facts, keep DB execution even for QA phrasing.
     if bool(signals.get("asks_for_db_facts")):
         return False
     return True
 
 
 def resolve_execution_intent(intent: IntentType) -> IntentType:
-    """Use router task intent directly for DB execution."""
+    """Normalize router intent to a DB-executable intent."""
+    if intent in {IntentType.DEFINITION_EXPLANATION, IntentType.UNKNOWN_FALLBACK}:
+        # When policy forces measured-data DB execution for broad semantic asks
+        # (for example: "air quality in smart lab"), use current-status semantics.
+        return IntentType.CURRENT_STATUS_DB
     return intent
 
 
@@ -150,6 +246,25 @@ _TIME_PHRASES = (
     "this month",
     "last month",
 )
+_FOLLOW_UP_HINTS = (
+    "what about",
+    "and what about",
+    "and ",
+    "also",
+    "how about",
+    "what else",
+    "that one",
+    "the same",
+)
+_CLARIFICATION_SELECTION_HINTS = {
+    "current_status_db",
+    "point_lookup_db",
+    "aggregation_db",
+    "comparison_db",
+    "anomaly_analysis_db",
+    "forecast_db",
+    "definition_explanation",
+}
 
 _MONTH_TOKEN_TO_NUMBER = {
     "january": 1,
@@ -195,6 +310,9 @@ def _extract_requested_metrics(question: str) -> list[str]:
 
 def _requested_time_phrase(question: str) -> Optional[str]:
     q = (question or "").lower()
+    for token in ("right now", "at this moment", "latest", "current", "now"):
+        if token in q:
+            return token
     for phrase in _TIME_PHRASES:
         if phrase in q:
             return phrase
@@ -202,6 +320,119 @@ def _requested_time_phrase(question: str) -> Optional[str]:
     if m:
         return m.group(0)
     return None
+
+
+def _context_user_lines(conversation_context: str) -> list[str]:
+    lines: list[str] = []
+    for line in str(conversation_context or "").splitlines():
+        if line.strip().lower().startswith("user:"):
+            lines.append(line.split(":", 1)[1].strip())
+    return lines
+
+
+def _latest_value_from_user_lines(user_lines: list[str], extractor) -> Any:
+    for candidate in reversed(user_lines):
+        value = extractor(candidate)
+        if value:
+            return value
+    return None
+
+
+def _is_follow_up_question(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    return any(hint in q for hint in _FOLLOW_UP_HINTS)
+
+
+def _is_clarification_selection(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    return q in _CLARIFICATION_SELECTION_HINTS
+
+
+def _apply_followup_memory(
+    *,
+    question: str,
+    conversation_context: str,
+    lab_name: Optional[str],
+    route_plan: RoutePlan,
+) -> tuple[str, Optional[str], Dict[str, Any]]:
+    """Carry prior scope into underspecified follow-up turns for DB execution."""
+    base_question = str(question or "").strip()
+    if not base_question or not conversation_context:
+        return base_question, lab_name, {"applied": False}
+
+    planner_signals = (route_plan.planner_parameters or {}).get("query_signals") or {}
+    has_lab_reference = bool(planner_signals.get("has_lab_reference"))
+    has_time_window_hint = bool(planner_signals.get("has_time_window_hint"))
+    has_metric_reference = bool(planner_signals.get("has_metric_reference"))
+    if lab_name and has_lab_reference and has_time_window_hint:
+        return base_question, lab_name, {"applied": False}
+
+    if not (_is_follow_up_question(base_question) or _is_clarification_selection(base_question)):
+        return base_question, lab_name, {"applied": False}
+
+    user_lines = _context_user_lines(conversation_context)
+    previous_user = user_lines[-1] if user_lines else ""
+    if not previous_user:
+        return base_question, lab_name, {"applied": False}
+
+    previous_lab = _latest_value_from_user_lines(user_lines, extract_space_from_question)
+    previous_time = _latest_value_from_user_lines(user_lines, _requested_time_phrase)
+    current_metrics = _extract_requested_metrics(base_question)
+    previous_metric = _latest_value_from_user_lines(
+        user_lines, lambda text: (_extract_requested_metrics(text) or [None])[0]
+    )
+
+    effective_lab = lab_name
+    effective_question = base_question
+    carried_lab = None
+    carried_time = None
+    carried_metric = None
+
+    if not effective_lab and not has_lab_reference and previous_lab:
+        effective_lab = previous_lab
+        carried_lab = previous_lab
+    if not has_time_window_hint and previous_time:
+        effective_question = f"{effective_question} ({previous_time})"
+        carried_time = previous_time
+    if not has_metric_reference and not current_metrics and previous_metric:
+        carried_metric = previous_metric
+        effective_question = f"{effective_question} ({carried_metric})"
+
+    applied = bool(carried_lab or carried_time or carried_metric)
+    return effective_question, effective_lab, {
+        "applied": applied,
+        "previous_user": previous_user if applied else "",
+        "carried_lab_name": carried_lab,
+        "carried_time_phrase": carried_time,
+        "carried_metric": carried_metric,
+    }
+
+
+def resolve_db_followup_memory(
+    *,
+    question: str,
+    conversation_context: str,
+    lab_name: Optional[str],
+    route_plan: RoutePlan,
+) -> Dict[str, Any]:
+    """Public wrapper for DB follow-up scope carry-over."""
+    effective_question, effective_lab_name, details = _apply_followup_memory(
+        question=question,
+        conversation_context=conversation_context,
+        lab_name=lab_name,
+        route_plan=route_plan,
+    )
+    return {
+        "effective_question": effective_question,
+        "effective_lab_name": effective_lab_name,
+        "applied": bool(details.get("applied")),
+        "carried_lab_name": details.get("carried_lab_name"),
+        "carried_time_phrase": details.get("carried_time_phrase"),
+        "carried_metric": details.get("carried_metric"),
+        "previous_user": details.get("previous_user"),
+    }
 
 
 def _question_needs_recommendation(question: str) -> bool:
@@ -382,6 +613,10 @@ def _attach_observability_snapshot(result: Dict[str, Any]) -> Dict[str, Any]:
         "planner_fallback_rate_max": 0.10,
         "critic_failure_rate_target": 0.02,
         "critic_failure_rate_max": 0.05,
+        "shadow_diff_rate_target": 0.10,
+        "shadow_diff_rate_max": 0.20,
+        "sync_stream_flip_rate_target": 0.0,
+        "sync_stream_flip_rate_max": 0.01,
     }
     result["metadata"] = metadata
     return result
@@ -419,8 +654,17 @@ def _build_decomposition_prompt(template: DecompositionTemplate, question: str) 
     return f"Provide concise likely explanations for this anomaly question: {question}"
 
 
+def _merge_generation_context(latest_user_question: str, conversation_context: str) -> str:
+    latest = str(latest_user_question or "").strip()
+    context = str(conversation_context or "").strip()
+    if not context:
+        return latest
+    return f"{latest}\n\n{context}"
+
+
 def _execute_decomposed_query(
     question: str,
+    generation_question: str,
     k: int,
     lab_name: Optional[str],
     route_plan: RoutePlan,
@@ -512,7 +756,7 @@ def _execute_decomposed_query(
     )
 
     secondary_result = answer_env_question_with_metadata(
-        user_question=_build_decomposition_prompt(template=template, question=question),
+        user_question=_build_decomposition_prompt(template=template, question=generation_question),
         k=max(1, min(k, 8)),
         space=lab_name,
     )
@@ -598,10 +842,28 @@ def _execute_decomposed_query(
     }
 
 
-def execute_query(question: str, k: int, lab_name: Optional[str], allow_clarify: bool = True) -> Dict:
-    route_plan = get_route_plan(question=question, lab_name=lab_name)
+def execute_query(
+    question: str,
+    k: int,
+    lab_name: Optional[str],
+    allow_clarify: bool = True,
+    endpoint_key: str = "query_sync",
+    conversation_context: str = "",
+) -> Dict:
+    generation_question = _merge_generation_context(question, conversation_context)
+    route_contract = get_route_decision_contract(
+        question=question,
+        lab_name=lab_name,
+        allow_clarify=allow_clarify,
+    )
+    route_plan = route_contract.route_plan
     decision = route_plan.decision
-    if should_clarify(route_plan=route_plan, allow_clarify=allow_clarify):
+    record_endpoint_executor(
+        latest_question_hash=route_contract.latest_question_hash,
+        endpoint_key=endpoint_key,
+        executor=route_contract.executor.value,
+    )
+    if route_contract.executor == RouteExecutor.CLARIFY_GATE:
         clarify_result = build_clarify_result(
             route_plan=route_plan,
             decision=decision,
@@ -612,18 +874,36 @@ def execute_query(question: str, k: int, lab_name: Optional[str], allow_clarify:
         )
         return _attach_observability_snapshot(clarify_result)
 
+    execution_question, effective_lab_name, memory_carryover = _apply_followup_memory(
+        question=question,
+        conversation_context=conversation_context,
+        lab_name=lab_name,
+        route_plan=route_plan,
+    )
+
     if _is_decomposition_allowed(route_plan):
         decomposed = _execute_decomposed_query(
-            question=question,
+            question=execution_question,
+            generation_question=generation_question,
             k=k,
-            lab_name=lab_name,
+            lab_name=effective_lab_name,
             route_plan=route_plan,
         )
+        decomposed_meta = dict(decomposed.get("metadata") or {})
+        decomposed_meta["latest_question_hash"] = route_contract.latest_question_hash
+        decomposed_meta["policy_version"] = route_contract.policy_version
+        decomposed_meta["rule_trace"] = list(route_contract.rule_trace)
+        decomposed_meta["needs_measured_data"] = route_contract.needs_measured_data
+        decomposed_meta["memory_carryover_applied"] = bool(memory_carryover.get("applied"))
+        decomposed_meta["memory_carried_lab_name"] = memory_carryover.get("carried_lab_name")
+        decomposed_meta["memory_carried_time_phrase"] = memory_carryover.get("carried_time_phrase")
+        decomposed_meta["memory_carried_metric"] = memory_carryover.get("carried_metric")
+        decomposed["metadata"] = decomposed_meta
         return _attach_observability_snapshot(_apply_critic(result=decomposed, question=question))
 
-    if should_use_knowledge_executor(route_plan):
+    if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
         knowledge_result = execute_knowledge_use_case(
-            question=question,
+            question=generation_question,
             k=k,
             lab_name=lab_name,
             route_plan=route_plan,
@@ -631,37 +911,72 @@ def execute_query(question: str, k: int, lab_name: Optional[str], allow_clarify:
             scope_guardrail_builder=build_non_domain_scope_message,
             answer_with_metadata_fn=answer_env_question_with_metadata,
         )
+        knowledge_meta = dict(knowledge_result.get("metadata") or {})
+        knowledge_meta["latest_question_hash"] = route_contract.latest_question_hash
+        knowledge_meta["policy_version"] = route_contract.policy_version
+        knowledge_meta["rule_trace"] = list(route_contract.rule_trace)
+        knowledge_meta["needs_measured_data"] = route_contract.needs_measured_data
+        knowledge_result["metadata"] = knowledge_meta
         return _attach_observability_snapshot(_apply_critic(result=knowledge_result, question=question))
 
-    execution_intent = resolve_execution_intent(decision.intent)
+    execution_intent = route_contract.execution_intent
     db_result = execute_db_use_case(
-        question=question,
+        question=execution_question,
         k=k,
-        lab_name=lab_name,
+        lab_name=effective_lab_name,
         route_plan=route_plan,
         decision=decision,
         execution_intent=execution_intent,
         run_db_query_fn=run_db_query,
     )
+    db_meta = dict(db_result.get("metadata") or {})
+    db_meta["latest_question_hash"] = route_contract.latest_question_hash
+    db_meta["policy_version"] = route_contract.policy_version
+    db_meta["rule_trace"] = list(route_contract.rule_trace)
+    db_meta["needs_measured_data"] = route_contract.needs_measured_data
+    db_meta["memory_carryover_applied"] = bool(memory_carryover.get("applied"))
+    db_meta["memory_carried_lab_name"] = memory_carryover.get("carried_lab_name")
+    db_meta["memory_carried_time_phrase"] = memory_carryover.get("carried_time_phrase")
+    db_meta["memory_carried_metric"] = memory_carryover.get("carried_metric")
+    db_result["metadata"] = db_meta
     return _attach_observability_snapshot(_apply_critic(result=db_result, question=question))
 
 
-async def stream_query(question: str, k: int, lab_name: Optional[str]) -> AsyncIterator[str]:
-    route_plan = get_route_plan(question=question, lab_name=lab_name)
+async def stream_query(
+    question: str,
+    k: int,
+    lab_name: Optional[str],
+    endpoint_key: str = "query_stream",
+    conversation_context: str = "",
+) -> AsyncIterator[str]:
+    generation_question = _merge_generation_context(question, conversation_context)
+    route_contract = get_route_decision_contract(question=question, lab_name=lab_name, allow_clarify=False)
+    route_plan = route_contract.route_plan
     decision = route_plan.decision
-    if should_use_knowledge_executor(route_plan):
+    record_endpoint_executor(
+        latest_question_hash=route_contract.latest_question_hash,
+        endpoint_key=endpoint_key,
+        executor=route_contract.executor.value,
+    )
+    if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
         async for chunk in stream_answer_env_question(
-            user_question=question, k=max(1, min(k, 8)), space=lab_name
+            user_question=generation_question, k=max(1, min(k, 8)), space=lab_name
         ):
             yield chunk
         return
 
-    execution_intent = resolve_execution_intent(decision.intent)
+    execution_question, effective_lab_name, _ = _apply_followup_memory(
+        question=question,
+        conversation_context=conversation_context,
+        lab_name=lab_name,
+        route_plan=route_plan,
+    )
+    execution_intent = route_contract.execution_intent
 
     async for chunk in stream_db_query(
-        question=question,
+        question=execution_question,
         intent=execution_intent,
-        lab_name=lab_name,
+        lab_name=effective_lab_name,
         planner_hints=route_plan.planner_parameters,
     ):
         yield chunk

@@ -17,9 +17,10 @@ ROOT_DIR = os.path.abspath(os.path.join(REPO_DIR, ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from prompting.shared_prompts import build_grounded_context_sections
+from prompting.shared_prompts import SHARED_SYSTEM_PROMPT, build_grounded_context_sections
 from executors.env_query_langchain import build_card_grounded_context, search_knowledge_cards
 from executors.db_query_executor import _build_db_payload
+from executors.db_support.response_helpers import db_response_directive, is_air_quality_query_text
 from knowledge_cards.loader import KnowledgeCardValidationError, normalize_card
 
 
@@ -41,18 +42,6 @@ class _FakeCursor:
 
     def __exit__(self, exc_type, exc, tb):
         return False
-
-
-class _FakeConnection:
-    def __init__(self, rows):
-        self.rows = rows
-        self.cursor_obj = _FakeCursor(rows)
-
-    def cursor(self, cursor_factory=None):
-        return self.cursor_obj
-
-    def close(self):
-        return None
 
 
 class KnowledgeCardTests(unittest.TestCase):
@@ -113,6 +102,10 @@ class KnowledgeCardTests(unittest.TestCase):
         self.assertIn("## Knowledge Interpretation Cards", rendered)
         self.assertIn("## Communication Guardrails", rendered)
 
+    def test_shared_system_prompt_prioritizes_user_question(self):
+        self.assertIn("user's exact question is the primary task", SHARED_SYSTEM_PROMPT)
+        self.assertIn("If the user asks for \"risk(s)\", focus on concrete risks", SHARED_SYSTEM_PROMPT)
+
     def test_card_grounded_context_converts_windows_to_gmt4(self):
         rendered = build_card_grounded_context(
             cards=[
@@ -132,10 +125,10 @@ class KnowledgeCardTests(unittest.TestCase):
         self.assertIn("2026-03-28T15:15:28+04:00", rendered)
 
     @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.psycopg2.connect")
+    @patch("executors.env_query_langchain.get_cursor")
     def test_search_knowledge_cards_prefers_explanations_for_definition_query(
         self,
-        mock_connect,
+        mock_get_cursor,
         mock_embed_texts,
     ):
         mock_embed_texts.return_value = [[0.1, 0.2]]
@@ -167,16 +160,16 @@ class KnowledgeCardTests(unittest.TestCase):
                 "distance": 0.72,
             },
         ]
-        mock_connect.return_value = _FakeConnection(rows)
+        mock_get_cursor.return_value = _FakeCursor(rows)
 
         result = search_knowledge_cards("what does pm2.5 mean", k=2)
         self.assertEqual(result[0]["card_type"], "explanation")
 
     @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.psycopg2.connect")
+    @patch("executors.env_query_langchain.get_cursor")
     def test_search_knowledge_cards_can_return_interpretation_for_assessment_query(
         self,
-        mock_connect,
+        mock_get_cursor,
         mock_embed_texts,
     ):
         mock_embed_texts.return_value = [[0.1, 0.2]]
@@ -208,16 +201,16 @@ class KnowledgeCardTests(unittest.TestCase):
                 "distance": 0.80,
             },
         ]
-        mock_connect.return_value = _FakeConnection(rows)
+        mock_get_cursor.return_value = _FakeCursor(rows)
 
         result = search_knowledge_cards("is 28 ug/m3 pm2.5 okay", k=2)
         self.assertEqual(result[0]["card_type"], "interpretation")
 
     @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.psycopg2.connect")
+    @patch("executors.env_query_langchain.get_cursor")
     def test_search_knowledge_cards_keeps_caveat_for_health_risk_queries(
         self,
-        mock_connect,
+        mock_get_cursor,
         mock_embed_texts,
     ):
         mock_embed_texts.return_value = [[0.1, 0.2]]
@@ -249,10 +242,18 @@ class KnowledgeCardTests(unittest.TestCase):
                 "distance": 0.70,
             },
         ]
-        mock_connect.return_value = _FakeConnection(rows)
+        mock_get_cursor.return_value = _FakeCursor(rows)
 
         result = search_knowledge_cards("is this a health risk", k=2)
         self.assertEqual(result[0]["card_type"], "caveat")
+
+    def test_db_point_lookup_directive_is_question_first_for_risk_queries(self):
+        directive = db_response_directive("current_status_db", question="What are the main air quality risks today?")
+        self.assertIn("First, directly answer the exact question asked.", directive)
+        self.assertIn("start with the risk level", directive)
+
+    def test_issue_triage_question_treated_as_air_quality_query(self):
+        self.assertTrue(is_air_quality_query_text("Is there any issue right now in the smart lab?"))
 
 
 if __name__ == "__main__":

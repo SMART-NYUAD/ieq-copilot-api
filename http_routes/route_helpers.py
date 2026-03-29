@@ -21,12 +21,15 @@ SSE_HEADERS: Dict[str, str] = {
 }
 
 
-def build_effective_question(question: str, conversation_id: Optional[str]) -> Tuple[str, Optional[str], bool]:
-    """Attach compact conversation context to a question when available."""
+def build_query_inputs(
+    question: str,
+    conversation_id: Optional[str],
+) -> Tuple[str, Optional[str], str, bool]:
+    """Split latest question and conversation context for deterministic routing."""
     normalized_conversation_id, context_block = build_compact_context(conversation_id)
     if context_block:
-        return f"{question}\n\n{context_block}", normalized_conversation_id, True
-    return question, normalized_conversation_id, False
+        return str(question or "").strip(), normalized_conversation_id, context_block, True
+    return str(question or "").strip(), normalized_conversation_id, "", False
 
 
 def persist_turn(conversation_id: Optional[str], question: str, answer: str) -> Optional[int]:
@@ -93,5 +96,17 @@ def attach_conversation_metadata(
     merged["conversation_id"] = conversation_id
     merged["conversation_context_applied"] = conversation_context_applied
     merged["turn_index"] = turn_index
+    return merged
+
+
+def attach_policy_metadata(metadata: Dict[str, Any], route_contract: Optional[Any]) -> Dict[str, Any]:
+    """Attach deterministic policy-engine fields when available."""
+    merged = dict(metadata or {})
+    if route_contract is None:
+        return merged
+    merged["latest_question_hash"] = getattr(route_contract, "latest_question_hash", None)
+    merged["needs_measured_data"] = bool(getattr(route_contract, "needs_measured_data", False))
+    merged["policy_version"] = str(getattr(route_contract, "policy_version", "") or "")
+    merged["rule_trace"] = list(getattr(route_contract, "rule_trace", ()) or [])
     return merged
 

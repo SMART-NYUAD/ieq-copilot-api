@@ -64,6 +64,9 @@ class QueryRoutePreviewTests(unittest.TestCase):
         self.assertEqual(payload["answer_strategy"], "direct")
         self.assertEqual(payload["secondary_intents"], ["aggregation_db"])
         self.assertIsNone(payload["decomposition_template"])
+        self.assertIn("selected_executor", payload)
+        self.assertIn("policy_version", payload)
+        self.assertIn("rule_trace", payload)
 
     @patch("http_routes.query_routes.get_route_plan")
     def test_preview_route_includes_template_id(self, mock_get_route_plan):

@@ -11,8 +11,11 @@ if SERVER_DIR not in sys.path:
 from query_routing.observability import (
     evaluate_rollout_slo,
     get_observability_snapshot,
+    record_endpoint_executor,
     record_critic_outcome,
+    record_rollout_selection,
     record_route_plan,
+    record_shadow_comparison,
     reset_observability_metrics,
 )
 from query_routing.intent_classifier import IntentType, RouteDecision
@@ -57,6 +60,20 @@ class ObservabilityMetricsTests(unittest.TestCase):
         record_route_plan(plan_success)
         record_critic_outcome("pass")
         record_critic_outcome("warn")
+        record_rollout_selection("policy")
+        record_rollout_selection("legacy")
+        record_shadow_comparison(sampled=True, active_executor="db_query", shadow_executor="knowledge_qa")
+        record_shadow_comparison(sampled=True, active_executor="db_query", shadow_executor="db_query")
+        record_endpoint_executor(
+            latest_question_hash="abc123",
+            endpoint_key="query_sync",
+            executor="db_query",
+        )
+        record_endpoint_executor(
+            latest_question_hash="abc123",
+            endpoint_key="query_sync",
+            executor="knowledge_qa",
+        )
 
         snapshot = get_observability_snapshot()
         self.assertEqual(snapshot["planner_total"], 2)
@@ -67,15 +84,26 @@ class ObservabilityMetricsTests(unittest.TestCase):
         self.assertEqual(snapshot["critic_failure_total"], 1)
         self.assertAlmostEqual(snapshot["critic_failure_rate"], 0.5)
         self.assertEqual(snapshot["decomposition_template_usage"].get("trend_interpretation"), 1)
+        self.assertEqual(snapshot["rollout_policy_total"], 1)
+        self.assertEqual(snapshot["rollout_legacy_total"], 1)
+        self.assertEqual(snapshot["shadow_total"], 2)
+        self.assertEqual(snapshot["shadow_diff_total"], 1)
+        self.assertAlmostEqual(snapshot["shadow_diff_rate"], 0.5)
+        self.assertEqual(snapshot["sync_stream_total"], 2)
+        self.assertEqual(snapshot["sync_stream_flip_total"], 1)
 
     def test_rollout_slo_gate_blocks_on_high_rates(self):
         snapshot = {
             "planner_fallback_rate": 0.12,
             "critic_failure_rate": 0.06,
+            "shadow_diff_rate": 0.25,
+            "sync_stream_flip_rate": 0.02,
         }
         gate = evaluate_rollout_slo(snapshot)
         self.assertFalse(gate["fallback_max_ok"])
         self.assertFalse(gate["critic_max_ok"])
+        self.assertFalse(gate["shadow_max_ok"])
+        self.assertFalse(gate["parity_max_ok"])
         self.assertTrue(gate["rollout_blocked"])
 
 

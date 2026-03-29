@@ -47,6 +47,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertEqual(plan.planner_parameters.get("response_mode"), "knowledge_only")
         self.assertTrue(plan.planner_parameters.get("query_signals", {}).get("is_general_knowledge_question"))
         self.assertFalse(plan.planner_parameters.get("query_signals", {}).get("asks_for_db_facts"))
+        mock_call.assert_not_called()
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_planner_accepts_explicit_response_mode(self, mock_call):
@@ -63,6 +64,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         }
         plan = plan_route("Explain IEQ comfort bands.")
         self.assertEqual(plan.planner_parameters.get("response_mode"), "knowledge_only")
+        mock_call.assert_not_called()
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_definition_question_with_default_lab_hint_stays_knowledge_mode(self, mock_call):
@@ -81,6 +83,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         signals = plan.planner_parameters.get("query_signals", {})
         self.assertTrue(signals.get("is_general_knowledge_question"))
         self.assertFalse(signals.get("asks_for_db_facts"))
+        mock_call.assert_not_called()
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_comfort_question_in_specific_lab_forces_db_facts_signal(self, mock_call):
@@ -317,6 +320,56 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertFalse(result["metadata"]["clarification_required"])
         mock_answer_with_metadata.assert_not_called()
         mock_run_db.assert_called_once()
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_orchestrator_routes_to_clarify_on_db_invariant_violation(self, mock_route_plan, mock_run_db):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.AGGREGATION_DB,
+                confidence=0.9,
+                reason="aggregation",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={"response_mode": "db"},
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "Please clarify metric/time/lab scope.",
+            "timescale": "clarify",
+            "llm_used": False,
+            "time_window": {"label": "last 24 hours", "start": "x", "end": "y"},
+            "resolved_lab_name": None,
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "invariant_violation": {"allowed": False, "violations": ["metric_not_justified"]},
+            "evidence": {
+                "evidence_kind": "clarify_gate",
+                "metric_aliases": [],
+                "provenance_sources": [],
+                "confidence_notes": ["db_invariant_violation"],
+                "recommendation_allowed": False,
+            },
+        }
+        result = execute_query(
+            question="How is it there?",
+            k=4,
+            lab_name=None,
+            allow_clarify=True,
+        )
+        self.assertEqual(result["timescale"], "clarify")
+        self.assertEqual(result["metadata"]["executor"], "clarify_gate")
+        self.assertTrue(result["metadata"]["clarification_required"])
+        self.assertIn("db_invariant_violation", result["metadata"])
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
@@ -672,6 +725,71 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertEqual((result["metadata"].get("evidence") or {}).get("evidence_kind"), "knowledge_qa")
 
     @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_db_follow_up_inherits_lab_and_time_from_context(self, mock_route_plan, mock_run_db):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.CURRENT_STATUS_DB,
+                confidence=0.9,
+                reason="follow_up_metric_only",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "has_lab_reference": False,
+                    "has_time_window_hint": False,
+                    "has_metric_reference": True,
+                    "asks_for_db_facts": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "PM2.5 stayed low this week in shores_office.",
+            "timescale": "1hour",
+            "llm_used": True,
+            "time_window": {"label": "this week", "start": "x", "end": "y"},
+            "resolved_lab_name": "shores_office",
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["pm25"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+
+        result = execute_query(
+            question="And what about the PM2.5?",
+            k=4,
+            lab_name=None,
+            conversation_context=(
+                "Previous conversation context (most recent last):\n"
+                "User: Which metric is driving poor IEQ in shores_office this week?\n"
+                "Assistant: CO2 is the main driver this week."
+            ),
+        )
+
+        kwargs = mock_run_db.call_args.kwargs
+        self.assertEqual(kwargs.get("lab_name"), "shores_office")
+        self.assertIn("this week", str(kwargs.get("question") or "").lower())
+        self.assertTrue(bool(result["metadata"].get("memory_carryover_applied")))
+        self.assertEqual(result["metadata"].get("memory_carried_lab_name"), "shores_office")
+        self.assertEqual(result["metadata"].get("memory_carried_time_phrase"), "this week")
+
+    @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
     @patch("query_routing.query_orchestrator.get_route_plan")
     def test_non_domain_scope_forces_knowledge_executor(
@@ -722,7 +840,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_non_domain_scope_rewrites_vague_insufficient_message(
+    def test_non_domain_scope_keeps_llm_response_without_hardcoded_rewrite(
         self, mock_route_plan, mock_answer_with_metadata, mock_run_db
     ):
         mock_route_plan.return_value = RoutePlan(
@@ -761,11 +879,64 @@ class GeneralQaRoutingTests(unittest.TestCase):
             lab_name=None,
         )
 
-        self.assertIn("I focus on Indoor Environmental Quality (IEQ) questions.", result["answer"])
-        self.assertNotIn("I don't know from the available data.", result["answer"])
-        self.assertTrue(bool(result["metadata"].get("scope_guardrail_applied")))
+        self.assertIn("I don't know from the available data.", result["answer"])
+        self.assertFalse(bool(result["metadata"].get("scope_guardrail_applied")))
         self.assertEqual(result["metadata"]["executor"], "knowledge_qa")
         mock_run_db.assert_not_called()
+        mock_answer_with_metadata.assert_called_once()
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_non_domain_identity_query_returns_conversational_intro(
+        self, mock_route_plan, mock_answer_with_metadata, mock_run_db
+    ):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.DEFINITION_EXPLANATION,
+                confidence=0.9,
+                reason="social_identity",
+            ),
+            intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "knowledge_only",
+                "query_signals": {
+                    "query_scope_class": "non_domain",
+                    "asks_for_db_facts": False,
+                    "is_social_identity_query": True,
+                },
+            },
+        )
+
+        mock_answer_with_metadata.return_value = {
+            "answer": "I am your campus IEQ assistant and I can help with both general questions and sensor-grounded environmental insights.",
+            "cards_retrieved": 0,
+            "knowledge_cards_retrieved": 0,
+            "evidence": {
+                "evidence_kind": "knowledge_qa",
+                "metric_aliases": [],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+
+        result = execute_query(
+            question="Who are you?",
+            k=4,
+            lab_name=None,
+        )
+
+        self.assertIn("campus IEQ assistant", result["answer"])
+        self.assertFalse(bool(result["metadata"].get("scope_guardrail_applied")))
+        self.assertEqual(result["metadata"]["executor"], "knowledge_qa")
+        mock_run_db.assert_not_called()
+        mock_answer_with_metadata.assert_called_once()
 
     def test_query_scope_class_domain_for_scoped_ieq_question(self):
         signals = extract_query_signals("What is today's IEQ in smart_lab?", lab_name=None)

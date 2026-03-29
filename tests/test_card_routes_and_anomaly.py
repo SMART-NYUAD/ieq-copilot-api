@@ -18,10 +18,10 @@ from executors.db_query_executor import _detect_anomaly_points
 
 
 class CardRoutesAndAnomalyTests(unittest.TestCase):
-    def test_execution_intent_uses_router_task_intents_directly(self):
+    def test_execution_intent_maps_semantic_to_current_status_for_db(self):
         self.assertEqual(
             resolve_execution_intent(IntentType.DEFINITION_EXPLANATION),
-            IntentType.DEFINITION_EXPLANATION,
+            IntentType.CURRENT_STATUS_DB,
         )
         self.assertEqual(
             resolve_execution_intent(IntentType.CURRENT_STATUS_DB),
@@ -33,7 +33,7 @@ class CardRoutesAndAnomalyTests(unittest.TestCase):
         )
         self.assertEqual(
             resolve_execution_intent(IntentType.UNKNOWN_FALLBACK),
-            IntentType.UNKNOWN_FALLBACK,
+            IntentType.CURRENT_STATUS_DB,
         )
 
     def test_db_intents_are_not_remapped(self):

@@ -256,9 +256,72 @@ def _build_success_plan(
     )
 
 
+def _should_fastpath_knowledge_route(query_signals: Dict[str, Any]) -> bool:
+    scope_class = str(query_signals.get("query_scope_class") or "").strip().lower()
+    if scope_class == QueryScopeClass.NON_DOMAIN.value:
+        return True
+    # Conceptual/general-knowledge asks without DB-facts requirement do not need
+    # an extra planner LLM round-trip.
+    if bool(query_signals.get("is_general_knowledge_question")) and not bool(query_signals.get("asks_for_db_facts")):
+        return True
+    return False
+
+
+def _build_fastpath_knowledge_plan(
+    *,
+    model: str,
+    question: str,
+    query_signals: Dict[str, Any],
+) -> RoutePlan:
+    decision = RouteDecision(
+        intent=IntentType.DEFINITION_EXPLANATION,
+        confidence=0.9 if str(query_signals.get("query_scope_class") or "") == QueryScopeClass.NON_DOMAIN.value else 0.85,
+        reason="signal_fastpath_knowledge",
+    )
+    planner_parameters = normalize_planner_parameters(
+        raw_plan={
+            "response_mode": "knowledge_only",
+            "needs_cards": True,
+            "card_topics": ["definitions", "metric_explanations"],
+            "max_cards": 4,
+        },
+        question=question,
+        intent=decision.intent,
+        query_signals=query_signals,
+    )
+    return RoutePlan(
+        decision=decision,
+        intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
+        route_source="signal_fastpath",
+        planner_model=model,
+        planner_fallback_used=False,
+        planner_fallback_reason=None,
+        planner_raw={
+            "intent_category": IntentCategory.SEMANTIC_EXPLANATORY.value,
+            "intent": decision.intent.value,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "response_mode": "knowledge_only",
+            "needs_cards": True,
+            "card_topics": ["definitions", "metric_explanations"],
+            "max_cards": 4,
+        },
+        planner_parameters=planner_parameters,
+        answer_strategy=AnswerStrategy.DIRECT,
+        secondary_intents=tuple(),
+        decomposition_template=None,
+    )
+
+
 def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     model = router_model()
     query_signals = extract_query_signals(question=question, lab_name=lab_name)
+    if _should_fastpath_knowledge_route(query_signals):
+        return _build_fastpath_knowledge_plan(
+            model=model,
+            question=question,
+            query_signals=query_signals,
+        )
     if router_mode() == "legacy":
         return legacy_plan(question=question, model=model, reason="router_mode_legacy")
 

@@ -26,6 +26,12 @@ _TIME_WINDOW_HINT_RE = re.compile(
 )
 _GENERAL_QA_HINTS = (
     "what is",
+    "who are you",
+    "what are you",
+    "what can you do",
+    "introduce yourself",
+    "tell me about yourself",
+    "your name",
     "what does",
     "meaning of",
     "explain",
@@ -91,10 +97,31 @@ _DB_SCOPE_HINTS = (
     "past ",
 )
 _CONVERSATION_CONTEXT_MARKER = "\n\nprevious conversation context"
+_SOCIAL_IDENTITY_RE = re.compile(
+    r"\b(" 
+    r"who are you|what are you|what can you do|"
+    r"introduce yourself|tell me about yourself|"
+    r"your name|are you (?:an? )?(?:ai|assistant|bot)"
+    r")\b"
+)
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(?:hi|hello|hey|yo|good\s+morning|good\s+afternoon|good\s+evening)\W*$"
+)
+_GENERAL_CONVERSATION_QUESTION_RE = re.compile(
+    r"^\s*(?:who|what|when|where|why|how|can|could|would|is|are|do|does|did)\b"
+)
 
 
 def _is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
+    issue_hints = ("issue", "issues", "problem", "problems", "anything wrong", "wrong")
+    currentness_hints = ("right now", "now", "current", "currently", "latest", "today", "at this moment")
+    if any(hint in q for hint in issue_hints) and (
+        any(hint in q for hint in currentness_hints)
+        or "_lab" in q
+        or re.search(r"\b[a-z0-9]+\s+lab\b", q) is not None
+    ):
+        return True
     if any(hint in q for hint in ("air quality", "indoor air quality", "ieq")):
         return True
     if re.search(r"\bhow\s+(?:is|was)\s+the\s+air\b", q):
@@ -114,6 +141,15 @@ def _latest_user_question(question: str) -> str:
     if marker_idx >= 0:
         text = text[:marker_idx]
     return text.strip()
+
+
+def _is_social_identity_query(question: str) -> bool:
+    text = _latest_user_question(question).lower().strip()
+    if not text:
+        return False
+    if _SOCIAL_IDENTITY_RE.search(text):
+        return True
+    return bool(_GREETING_ONLY_RE.match(text))
 
 
 def _extract_lab_candidates(question: str, lab_name: Optional[str]) -> list[str]:
@@ -161,6 +197,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     has_time_window_hint = bool(_TIME_WINDOW_HINT_RE.search(q))
     has_metric_reference = bool(_METRIC_TOKEN_RE.search(q))
     has_general_qa_phrase = any(hint in q for hint in _GENERAL_QA_HINTS)
+    is_social_identity_query = _is_social_identity_query(latest_question)
     has_conceptual_ieq_term = any(hint in q for hint in _IEQ_CONCEPTUAL_HINTS)
     has_knowledge_domain = any(hint in q for hint in _KNOWLEDGE_DOMAIN_HINTS) or (
         has_conceptual_ieq_term and has_general_qa_phrase
@@ -181,8 +218,16 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         or is_air_assessment_phrase
         or is_comfort_assessment_phrase
     )
+    is_general_conversation_question = (
+        not has_domain_anchor and bool(_GENERAL_CONVERSATION_QUESTION_RE.search(q))
+    )
     if not has_domain_anchor:
-        if has_time_window_hint or has_general_qa_phrase:
+        if (
+            has_time_window_hint
+            or has_general_qa_phrase
+            or is_social_identity_query
+            or is_general_conversation_question
+        ):
             query_scope_class = QueryScopeClass.NON_DOMAIN.value
         else:
             query_scope_class = QueryScopeClass.AMBIGUOUS.value
@@ -212,10 +257,14 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         "has_lab_reference": has_lab_reference,
         "has_time_window_hint": has_time_window_hint,
         "has_metric_reference": has_metric_reference,
+        "has_db_scope_phrase": has_db_scope_phrase,
         "is_air_assessment_phrase": is_air_assessment_phrase,
         "is_general_knowledge_question": is_general_knowledge_question,
+        "is_social_identity_query": is_social_identity_query,
+        "is_general_conversation_question": is_general_conversation_question,
         "is_comfort_assessment_phrase": is_comfort_assessment_phrase,
         "asks_for_db_facts": asks_for_db_facts,
         "query_scope_class": query_scope_class,
+        "has_domain_anchor": has_domain_anchor,
         "lab_candidates": lab_candidates,
     }

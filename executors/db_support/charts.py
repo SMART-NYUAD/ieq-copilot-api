@@ -2,17 +2,39 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+_TARGET_TZ = timezone(timedelta(hours=4))
+
+
+def _to_target_timezone(dt: datetime) -> datetime:
+    normalized = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(_TARGET_TZ)
+
+
+def _clip_rows(rows: List[Dict[str, Any]], lookback_points: int) -> List[Dict[str, Any]]:
+    if lookback_points and lookback_points > 0:
+        return (rows or [])[-lookback_points:]
+    return list(rows or [])
 
 
 def _serialize_timestamp_value(value: Any) -> Any:
     if isinstance(value, datetime):
-        return value.isoformat()
+        return _to_target_timezone(value).isoformat()
     if isinstance(value, list):
         return [_serialize_timestamp_value(item) for item in value]
     if isinstance(value, dict):
         return {k: _serialize_timestamp_value(v) for k, v in value.items()}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        return _to_target_timezone(parsed).isoformat()
     return value
 
 
@@ -25,7 +47,7 @@ def build_line_chart(
     series_name: str,
     lookback_points: int = 72,
 ) -> Dict[str, Any]:
-    recent_rows = (series_rows or [])[-lookback_points:]
+    recent_rows = _clip_rows(series_rows, lookback_points)
     points = [
         {"x": _serialize_timestamp_value(row.get("bucket")), "y": float(row.get("value") or 0.0)}
         for row in recent_rows
@@ -53,7 +75,7 @@ def build_anomaly_chart(
     series_name: str,
     lookback_points: int = 72,
 ) -> Dict[str, Any]:
-    recent_rows = (series_rows or [])[-lookback_points:]
+    recent_rows = _clip_rows(series_rows, lookback_points)
     row_keys = {
         (_serialize_timestamp_value(row.get("bucket")), float(row.get("value")))
         for row in recent_rows
@@ -97,7 +119,7 @@ def build_forecast_chart(
     series_name: str,
     lookback_points: int = 72,
 ) -> Dict[str, Any]:
-    recent_history_rows = (history_rows or [])[-lookback_points:]
+    recent_history_rows = _clip_rows(history_rows, lookback_points)
     history_points = [
         {"x": _serialize_timestamp_value(row.get("bucket")), "y": float(row.get("value") or 0.0)}
         for row in recent_history_rows
@@ -161,7 +183,7 @@ def build_scatter_chart(
 ) -> Dict[str, Any]:
     points = [
         {"x": float(row.get("x_value")), "y": float(row.get("y_value")), "t": str(row.get("bucket"))}
-        for row in rows[-lookback_points:]
+        for row in _clip_rows(rows, lookback_points)
         if row.get("x_value") is not None and row.get("y_value") is not None
     ]
     corr_label = "n/a" if correlation is None else f"{correlation:.3f}"

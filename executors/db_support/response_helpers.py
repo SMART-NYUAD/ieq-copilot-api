@@ -33,23 +33,26 @@ METRIC_UNIT_MAP = {
     "index": "index",
 }
 
-MAX_CHART_LOOKBACK_POINTS = 72  # 3 days at hourly resolution
+MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
 _TARGET_TZ = timezone(timedelta(hours=4))
 
 DB_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from a structured DB query result.
-- For air-quality assessment queries, include:
+- First, answer the exact user question directly before additional detail.
+- For air-quality assessment/summary queries, include:
   1) overall status,
   2) metric-by-metric interpretation,
   3) explicit analysis window using the provided time bounds ("from ... to ..."),
   4) stability/trend summary and notable peaks/dips when those stats are available,
   5) missing-metric coverage note (especially TVOC, PM2.5, CO2, humidity),
-  6) confidence qualifier tied to metric coverage,
-  7) 2-4 practical recommendations.
+  6) confidence qualifier tied to metric coverage.
+- For risk-focused questions, lead with the main risk level and concrete risk drivers first.
+- Provide recommendations only when asked, when conditions are concerning, or when user asks for next steps.
+- If recommendations are not needed, do not add a "Recommendations" section.
 - When `display_start` and `display_end` are present in measured room facts, copy those values verbatim
     when mentioning the analysis window. Do not rewrite or infer date/month values.
 - If a metric was requested but not available, explicitly state it as "not available in this window".
-- Keep recommendations actionable and grounded in provided measurements/guidelines.
+- If recommendations are included, keep them actionable and grounded in provided measurements/guidelines.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = """
 You are answering a point lookup from a structured DB query result.
@@ -60,30 +63,33 @@ You are answering a point lookup from a structured DB query result.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = """
 You are answering a current air-quality point lookup from a structured DB query result.
+- First, directly answer the exact question asked.
 - Provide an overall current air-quality status in plain language.
 - Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, TVOC, humidity, and IEQ when present).
 - Explain what occupants would likely notice/feel.
-- Add 2-4 practical recommendations (maintenance actions are allowed when conditions are good).
+- Add recommendations only when the user asks for them or risk/quality concerns justify action.
+- If conditions are stable/good and no action is requested, end with assessment only (no recommendation bullets).
 - If any core metric is missing, call it out clearly and lower confidence in the overall assessment.
+- If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
 - Do not collapse the answer to a single sentence.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 - Highlight which space is better/worse for each available metric and by how much.
 - Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
-- End with 2-4 practical actions to improve the weaker metric(s).
+- Include practical actions only if the user asks for actions or the weaker metric is materially concerning.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_FORECAST = """
 You are answering a forecast from a structured DB query result.
 - Report forecast horizon, trend direction, and confidence in plain language.
 - Mention assumptions/limits and avoid deterministic claims beyond provided forecast output.
-- Provide 2-3 operational recommendations tied to confidence and trend.
+- Provide operational recommendations only when requested or when confidence/risk warrants cautionary action.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = """
 You are answering an anomaly analysis from a structured DB query result.
 - State whether anomalies were detected, when they occurred, and likely occupant impact.
 - If no anomalies are detected, say so explicitly.
-- Provide 2-4 practical troubleshooting/monitoring actions grounded in observed data.
+- Provide troubleshooting/monitoring actions when the user asks for next steps or anomalies are material.
 """.strip()
 
 
@@ -117,6 +123,8 @@ def serialize_timestamp_value(value: Any) -> Any:
 
 def is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
+    if is_issue_triage_query_text(q):
+        return True
     if any(hint in q for hint in ("air quality", "indoor air quality", "ieq")):
         return True
     if re.search(r"\bhow\s+(?:is|was)\s+the\s+air\b", q):
@@ -124,6 +132,25 @@ def is_air_quality_query_text(question: str) -> bool:
     if re.search(r"\bthe\s+air\b", q) and ("_lab" in q or re.search(r"\b[a-z0-9]+\s+lab\b", q) is not None):
         return True
     return False
+
+
+def is_issue_triage_query_text(question: str) -> bool:
+    q = (question or "").lower()
+    issue_hints = (
+        "issue",
+        "issues",
+        "problem",
+        "problems",
+        "anything wrong",
+        "any issue",
+        "any issues",
+        "wrong",
+    )
+    currentness_hints = ("right now", "now", "current", "currently", "latest", "today", "at this moment")
+    has_issue_hint = any(hint in q for hint in issue_hints)
+    has_currentness_hint = any(hint in q for hint in currentness_hints)
+    has_lab_reference = ("_lab" in q) or (re.search(r"\b[a-z0-9]+\s+lab\b", q) is not None)
+    return has_issue_hint and (has_currentness_hint or has_lab_reference)
 
 
 def is_comfort_assessment_query_text(question: str) -> bool:
@@ -143,7 +170,11 @@ def is_comfort_assessment_query_text(question: str) -> bool:
 def db_response_directive(intent: Any, question: str = "") -> str:
     intent_value = getattr(intent, "value", str(intent))
     if intent_value in {"point_lookup_db", "current_status_db"}:
-        if is_air_quality_query_text(question) or is_comfort_assessment_query_text(question):
+        if (
+            is_air_quality_query_text(question)
+            or is_comfort_assessment_query_text(question)
+            or is_issue_triage_query_text(question)
+        ):
             return DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP
         return DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP
     if intent_value == "comparison_db":

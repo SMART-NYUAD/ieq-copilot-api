@@ -64,6 +64,16 @@ _CORRELATION_HINTS = (
 _TARGET_TZ = timezone(timedelta(hours=4))
 _TARGET_TZ_LABEL = "GMT+4"
 _CONVERSATION_CONTEXT_MARKER = "\n\nprevious conversation context"
+_TIME_HINT_RE = re.compile(
+    r"\b("
+    r"today|yesterday|this week|last week|this month|last month|"
+    r"last\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"past\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"\d{4}-\d{1,2}-\d{1,2}|"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
+    r"january|february|march|april|june|july|august|september|october|november|december)"
+    r")\b"
+)
 
 _LAB_NAMES_CACHE: Tuple[str, ...] = tuple()
 _LAB_NAMES_CACHE_TS: float = 0.0
@@ -272,6 +282,21 @@ def extract_metric_aliases(question: str) -> List[str]:
     return ordered
 
 
+def is_generic_air_quality_scope_query(question: str) -> bool:
+    """Detect broad IEQ/air-quality asks where metric/time defaults are acceptable."""
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    air_quality_hints = (
+        "air quality",
+        "indoor air quality",
+        "ieq",
+        "environment quality",
+        "indoor environment",
+    )
+    return any(hint in q for hint in air_quality_hints)
+
+
 def normalize_metric_alias(metric: str) -> Optional[str]:
     m = str(metric or "").strip().lower().replace(" ", "_")
     if m == "air":
@@ -293,6 +318,102 @@ def planner_metrics(planner_hints: Optional[Dict[str, Any]]) -> List[str]:
         if normalized and normalized not in out:
             out.append(normalized)
     return out
+
+
+def validate_db_execution_invariants(
+    *,
+    question: str,
+    intent: IntentType,
+    selected_metric: str,
+    resolved_lab_name: Optional[str],
+    request_lab_name: Optional[str],
+    explicit_metrics: List[str],
+    hinted_metrics: List[str],
+    planner_hints: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Verify DB execution inputs are justified by current question/planner output."""
+    q = str(question or "").strip().lower()
+    signals = (planner_hints or {}).get("query_signals") if isinstance(planner_hints, dict) else {}
+    signals = signals if isinstance(signals, dict) else {}
+    selected = normalize_metric_alias(selected_metric) or selected_metric
+    generic_air_quality_query = is_generic_air_quality_scope_query(q)
+
+    has_time_hint = bool(signals.get("has_time_window_hint")) or _TIME_HINT_RE.search(q) is not None
+    has_currentness_hint = any(token in q for token in ("current", "now", "latest", "right now", "at this moment"))
+    has_lab_hint = bool(signals.get("has_lab_reference")) or bool(request_lab_name)
+    has_db_scope = bool(signals.get("asks_for_db_facts")) or bool(signals.get("has_db_scope_phrase"))
+    has_metric_hint = bool(signals.get("has_metric_reference")) or (selected in explicit_metrics)
+    metric_explicit_in_planner = selected in hinted_metrics
+    analytical_intent = intent in {
+        IntentType.AGGREGATION_DB,
+        IntentType.COMPARISON_DB,
+        IntentType.ANOMALY_ANALYSIS_DB,
+        IntentType.FORECAST_DB,
+    }
+
+    metric_justified = has_metric_hint or metric_explicit_in_planner
+    if not metric_justified and selected in {"ieq", "co2", "pm25", "tvoc", "humidity"}:
+        # Permit core IEQ defaults when user asks generic air-quality status.
+        metric_justified = generic_air_quality_query or any(token in q for token in ("comfortable", "comfort"))
+    if not metric_justified and analytical_intent and has_db_scope:
+        # For comparison/anomaly/forecast style intents, fallback metric defaults are valid.
+        metric_justified = True
+
+    time_justified = has_time_hint or has_currentness_hint or intent in {
+        IntentType.CURRENT_STATUS_DB,
+        IntentType.POINT_LOOKUP_DB,
+    }
+    if not time_justified and analytical_intent and has_db_scope:
+        # Aggregation-like intents can safely use deterministic default windows.
+        time_justified = True
+    resolved_lab_token = str(resolved_lab_name or "").strip().lower()
+    has_prepositional_lab_scope = False
+    if resolved_lab_token:
+        scope_patterns = (
+            rf"\bin\s+{re.escape(resolved_lab_token)}\b",
+            rf"\bfor\s+{re.escape(resolved_lab_token)}\b",
+            rf"\bat\s+{re.escape(resolved_lab_token)}\b",
+            rf"\bin\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
+            rf"\bfor\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
+            rf"\bat\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
+        )
+        has_prepositional_lab_scope = any(re.search(pattern, q) is not None for pattern in scope_patterns)
+    lab_justified = (
+        resolved_lab_name is None
+        or bool(has_lab_hint)
+        or bool(request_lab_name)
+        or has_prepositional_lab_scope
+        or (generic_air_quality_query and resolved_lab_name is not None)
+    )
+    if not has_db_scope and generic_air_quality_query:
+        has_db_scope = True
+    db_scope_justified = has_db_scope or has_time_hint or has_lab_hint or has_metric_hint or generic_air_quality_query
+
+    violations: List[str] = []
+    if not metric_justified:
+        violations.append("metric_not_justified")
+    if not time_justified:
+        violations.append("time_window_not_justified")
+    if not lab_justified:
+        violations.append("lab_scope_not_justified")
+    if not db_scope_justified:
+        violations.append("db_scope_not_justified")
+
+    allowed = len(violations) == 0
+    return {
+        "allowed": allowed,
+        "violations": violations,
+        "justification": {
+            "selected_metric": selected,
+            "resolved_lab_name": resolved_lab_name,
+            "request_lab_name": request_lab_name,
+            "has_time_hint": has_time_hint,
+            "has_lab_hint": has_lab_hint,
+            "has_metric_hint": has_metric_hint,
+            "metric_explicit_in_planner": metric_explicit_in_planner,
+            "has_db_scope": has_db_scope,
+        },
+    }
 
 
 def planner_card_controls(planner_hints: Optional[Dict[str, Any]]) -> Tuple[bool, List[str], int]:

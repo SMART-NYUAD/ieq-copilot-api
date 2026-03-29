@@ -14,11 +14,14 @@ if REPO_DIR not in sys.path:
 
 from query_routing.intent_classifier import IntentType
 from executors.db_query_executor import _build_db_payload, _default_window_hours_for_intent
+from executors.db_support.charts import build_forecast_chart
+from executors.db_support.query_handlers import execute_intent_query
 from executors.db_support.query_parsing import (
     extract_metric_aliases,
     extract_time_window,
     pick_metric,
     strip_conversation_context,
+    validate_db_execution_invariants,
 )
 
 
@@ -84,6 +87,247 @@ class DbDefaultWindowTests(unittest.TestCase):
         metric_alias, _ = pick_metric(cleaned)
         self.assertEqual(metric_alias, "ieq")
         self.assertEqual(extract_metric_aliases(cleaned), [])
+
+    def test_invariants_allow_comparison_without_explicit_metric_or_time(self):
+        result = validate_db_execution_invariants(
+            question="Compare smart_lab vs concrete_lab",
+            intent=IntentType.COMPARISON_DB,
+            selected_metric="ieq",
+            resolved_lab_name=None,
+            request_lab_name=None,
+            explicit_metrics=[],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": False,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_invariants_allow_forecast_with_default_metric_and_window(self):
+        result = validate_db_execution_invariants(
+            question="Predict next day in smart_lab",
+            intent=IntentType.FORECAST_DB,
+            selected_metric="pm25",
+            resolved_lab_name="smart_lab",
+            request_lab_name="smart_lab",
+            explicit_metrics=[],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": False,
+                    "has_lab_reference": True,
+                }
+            },
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_invariants_allow_prepositional_scope_for_non_lab_suffix_names(self):
+        result = validate_db_execution_invariants(
+            question="Which metric is driving poor IEQ in shores_office this week?",
+            intent=IntentType.AGGREGATION_DB,
+            selected_metric="ieq",
+            resolved_lab_name="shores_office",
+            request_lab_name=None,
+            explicit_metrics=["ieq"],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": True,
+                    "has_time_window_hint": True,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_forecast_handler_keeps_requested_window_for_chart_and_metadata(self):
+        class _Cursor:
+            def __init__(self):
+                self.calls = 0
+                self._rows = [
+                    [  # model history query rows
+                        {"bucket": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc), "value": 10.0},
+                        {"bucket": datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc), "value": 12.0},
+                    ],
+                    [  # requested window rows
+                        {"bucket": datetime(2026, 3, 27, 0, 0, tzinfo=timezone.utc), "value": 15.0},
+                        {"bucket": datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc), "value": 14.0},
+                    ],
+                ]
+
+            def execute(self, _sql, _params):
+                self.calls += 1
+
+            def fetchall(self):
+                idx = max(0, min(self.calls - 1, len(self._rows) - 1))
+                return self._rows[idx]
+
+            def fetchone(self):
+                return None
+
+        cur = _Cursor()
+        start = datetime(2026, 3, 27, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
+        result = execute_intent_query(
+            cur=cur,
+            question="Forecast PM2.5 next day in smart_lab",
+            intent=IntentType.FORECAST_DB,
+            metric_alias="pm25",
+            metric_column="pm25_avg",
+            unit="ug/m3",
+            window_start=start,
+            window_end=end,
+            window_label="last 24 hours",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["pm25"],
+            hinted_metrics=[],
+            max_chart_lookback_points=72,
+        )
+        chart_title = (((result.get("chart_payload") or {}).get("chart") or {}).get("title") or "")
+        self.assertIn("last 24 hours", chart_title)
+        # Forecast handler should keep requested external window fields.
+        self.assertEqual(result.get("window_start"), start)
+        self.assertEqual(result.get("window_end"), end)
+
+    def test_forecast_handler_queries_latest_points_not_oldest(self):
+        class _Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, _params):
+                self.calls.append(str(sql))
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return None
+
+        cur = _Cursor()
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
+        execute_intent_query(
+            cur=cur,
+            question="Forecast PM2.5 in smart_lab next day",
+            intent=IntentType.FORECAST_DB,
+            metric_alias="pm25",
+            metric_column="pm25_avg",
+            unit="ug/m3",
+            window_start=start,
+            window_end=end,
+            window_label="last 24 hours",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["pm25"],
+            hinted_metrics=[],
+            max_chart_lookback_points=72,
+        )
+        self.assertGreaterEqual(len(cur.calls), 1)
+        forecast_sql = cur.calls[0].lower()
+        self.assertIn("order by bucket desc", forecast_sql)
+
+    def test_forecast_chart_uses_target_timezone_for_history_and_prediction(self):
+        history_rows = [
+            {"bucket": datetime(2026, 3, 29, 9, 0, tzinfo=timezone.utc), "value": 1.0},
+        ]
+        forecast = {
+            "forecast_points": [
+                {"bucket": datetime(2026, 3, 29, 14, 0, tzinfo=timezone(timedelta(hours=4))), "value": 2.0}
+            ]
+        }
+        chart = build_forecast_chart(
+            metric_alias="pm25",
+            unit="ug/m3",
+            window_label="last 24 hours + next 24 hour(s)",
+            history_rows=history_rows,
+            forecast=forecast,
+            series_name="smart_lab",
+            lookback_points=0,
+        )
+        series = ((chart.get("chart") or {}).get("series") or [])
+        history_x = series[0]["points"][0]["x"]
+        forecast_x = series[1]["points"][0]["x"]
+        self.assertTrue(history_x.endswith("+04:00"))
+        self.assertTrue(forecast_x.endswith("+04:00"))
+
+    def test_forecast_chart_with_zero_lookback_keeps_full_requested_history(self):
+        start = datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc)
+        history_rows = [
+            {"bucket": start + timedelta(hours=hour), "value": float(hour)}
+            for hour in range(100)
+        ]
+        chart = build_forecast_chart(
+            metric_alias="pm25",
+            unit="ug/m3",
+            window_label="last 100 hours + next 12 hour(s)",
+            history_rows=history_rows,
+            forecast={"forecast_points": []},
+            series_name="smart_lab",
+            lookback_points=0,
+        )
+        series = ((chart.get("chart") or {}).get("series") or [])
+        self.assertEqual(len(series[0]["points"]), 100)
+
+    def test_comparison_co2_query_expands_to_multi_metric_air_quality_pack(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return [
+                    {
+                        "lab_space": "smart_lab",
+                        "co2": 415.3,
+                        "pm25": 1.2,
+                        "tvoc": 0.08,
+                        "humidity": 44.2,
+                    },
+                    {
+                        "lab_space": "concrete_lab",
+                        "co2": 418.1,
+                        "pm25": 1.4,
+                        "tvoc": 0.09,
+                        "humidity": 45.1,
+                    },
+                ]
+
+            def fetchone(self):
+                return None
+
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="Compare CO2 levels in smart_lab vs concrete_lab in the last 24 hours",
+            intent=IntentType.COMPARISON_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc),
+            window_label="last 24 hours",
+            resolved_lab_name=None,
+            compared_spaces=[],
+            explicit_metrics=["co2"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+
+        self.assertEqual(result.get("operation_type"), "comparison_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertIn("co2", metrics_used)
+        self.assertIn("pm25", metrics_used)
+        self.assertIn("tvoc", metrics_used)
 
 
 if __name__ == "__main__":

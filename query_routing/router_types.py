@@ -37,6 +37,12 @@ class QueryScopeClass(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class RouteExecutor(str, Enum):
+    KNOWLEDGE_QA = "knowledge_qa"
+    DB_QUERY = "db_query"
+    CLARIFY_GATE = "clarify_gate"
+
+
 @dataclass(frozen=True)
 class RoutePlan:
     decision: RouteDecision
@@ -50,3 +56,19 @@ class RoutePlan:
     answer_strategy: AnswerStrategy = AnswerStrategy.DIRECT
     secondary_intents: Tuple[IntentType, ...] = field(default_factory=tuple)
     decomposition_template: Optional[DecompositionTemplate] = None
+
+
+@dataclass(frozen=True)
+class RouteDecisionContract:
+    """Single source-of-truth route decision consumed by runtime paths."""
+
+    latest_user_question: str
+    latest_question_hash: str
+    policy_version: str
+    route_plan: RoutePlan
+    needs_measured_data: bool
+    executor: RouteExecutor
+    execution_intent: IntentType
+    execution_intent_value: str
+    query_scope_class: str
+    rule_trace: Tuple[str, ...] = field(default_factory=tuple)

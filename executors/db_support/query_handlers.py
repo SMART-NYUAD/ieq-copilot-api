@@ -39,18 +39,40 @@ def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
     }
 
 
-def _requested_metrics(question: str, explicit_metrics: List[str], hinted_metrics: List[str]) -> List[str]:
+def _requested_metrics(
+    question: str,
+    explicit_metrics: List[str],
+    hinted_metrics: List[str],
+    intent: IntentType,
+) -> List[str]:
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
     if explicit_metrics:
-        return metrics
+        # For comparison-style air-quality asks (for example: "compare CO2 levels ..."),
+        # expand to a core multi-metric pack so responses include PM2.5/TVOC context.
+        q = str(question or "").lower()
+        explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
+        if not (
+            intent == IntentType.COMPARISON_DB
+            and explicit_air_metric
+            and any(token in q for token in ("compare", "vs", "versus"))
+        ):
+            return metrics
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
     is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
+    if not is_air_quality_query:
+        q = str(question or "").lower()
+        if (
+            intent == IntentType.COMPARISON_DB
+            and any(m in {"co2", "pm25", "tvoc"} for m in metrics)
+            and any(token in q for token in ("compare", "vs", "versus"))
+        ):
+            is_air_quality_query = True
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
         ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc"]
         if is_comfort_assessment_query
-        else ["ieq", "co2", "pm25", "humidity", "tvoc"]
+        else ["co2", "pm25", "tvoc", "humidity", "ieq"]
     )
     missing_core_metrics = [m for m in required_pack if m not in metrics]
     return metrics + missing_core_metrics
@@ -140,15 +162,15 @@ def _handle_comparison_multi(
     cur: Any,
     question: str,
     intent: IntentType,
-    hinted_metrics: List[str],
+    requested_metrics: List[str],
     window_start: datetime,
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    if not (intent == IntentType.COMPARISON_DB and len(hinted_metrics) >= 2):
+    if not (intent == IntentType.COMPARISON_DB and len(requested_metrics) >= 2):
         return None
-    compare_metrics = hinted_metrics[:4]
+    compare_metrics = requested_metrics[:4]
     metric_columns = [
         (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
         for metric in compare_metrics
@@ -305,7 +327,11 @@ def _handle_point_lookup(
 ) -> Optional[Dict[str, Any]]:
     if intent not in {IntentType.POINT_LOOKUP_DB, IntentType.CURRENT_STATUS_DB}:
         return None
-    is_multi = db_helpers.is_air_quality_query_text(question) or db_helpers.is_comfort_assessment_query_text(question)
+    is_multi = (
+        db_helpers.is_air_quality_query_text(question)
+        or db_helpers.is_comfort_assessment_query_text(question)
+        or db_helpers.is_issue_triage_query_text(question)
+    )
     if is_multi:
         selected_metrics = requested_metrics[:6] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
         metric_columns = [
@@ -528,44 +554,62 @@ def _handle_forecast(
         default_label=window_label,
     )
     sql = f"""
-        SELECT bucket, AVG({metric_column}) AS value
-        FROM lab_ieq_final
-        WHERE bucket >= %s
-          AND bucket < %s
-          AND (%s IS NULL OR lab_space = %s)
-        GROUP BY bucket
+        SELECT bucket, value
+        FROM (
+            SELECT bucket, AVG({metric_column}) AS value
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+              AND (%s IS NULL OR lab_space = %s)
+            GROUP BY bucket
+            ORDER BY bucket DESC
+            LIMIT 1000
+        ) recent
         ORDER BY bucket ASC
-        LIMIT 1000
     """
     cur.execute(sql, (forecast_window_start, forecast_window_end, resolved_lab_name, resolved_lab_name))
-    rows = [dict(row) for row in cur.fetchall()]
-    forecast_data = db_helpers.build_forecast_from_rows(rows, horizon_hours=horizon_hours)
+    model_rows = [dict(row) for row in cur.fetchall()]
+    forecast_data = db_helpers.build_forecast_from_rows(model_rows, horizon_hours=horizon_hours)
+    chart_rows = model_rows
+    if forecast_window_start != window_start or forecast_window_end != window_end:
+        # Keep chart/history display aligned to the requested window, while the model
+        # can still use a broader history window internally.
+        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+        requested_rows = [dict(row) for row in cur.fetchall()]
+        if requested_rows:
+            chart_rows = requested_rows
     effective_horizon_hours = int((forecast_data or {}).get("horizon_hours") or horizon_hours)
     effective_horizon_label = f"next {effective_horizon_hours} hour(s)"
     series_name = resolved_lab_name or "selected_scope"
+    fallback_text = db_helpers.build_forecast_answer(
+        metric_alias=metric_alias,
+        forecast=forecast_data,
+        window_label=window_label,
+        horizon_label=effective_horizon_label,
+    )
+    if forecast_window_label != window_label:
+        fallback_text = (
+            f"{fallback_text} "
+            f"(Model history window: {forecast_window_label}.)"
+        )
     return {
         "operation_type": "prediction",
-        "rows": rows,
-        "fallback_answer": db_helpers.build_forecast_answer(
-            metric_alias=metric_alias,
-            forecast=forecast_data,
-            window_label=forecast_window_label,
-            horizon_label=effective_horizon_label,
-        ),
+        "rows": chart_rows,
+        "fallback_answer": fallback_text,
         "chart_payload": db_charts.build_forecast_chart(
             metric_alias=metric_alias,
             unit=unit,
-            window_label=f"{forecast_window_label} + {effective_horizon_label}",
-            history_rows=rows,
+            window_label=f"{window_label} + {effective_horizon_label}",
+            history_rows=chart_rows,
             forecast=forecast_data,
             series_name=str(series_name),
             lookback_points=max_chart_lookback_points,
         ),
         "forecast_data": forecast_data,
         "metrics_used": [metric_alias],
-        "window_start": forecast_window_start,
-        "window_end": forecast_window_end,
-        "window_label": forecast_window_label,
+        "forecast_history_start": forecast_window_start,
+        "forecast_history_end": forecast_window_end,
+        "forecast_history_label": forecast_window_label,
     }
 
 
@@ -698,7 +742,12 @@ def execute_intent_query(
     result["window_end"] = window_end
     result["compared_spaces"] = list(compared_spaces)
 
-    requested_metrics = _requested_metrics(question, explicit_metrics, hinted_metrics)
+    requested_metrics = _requested_metrics(
+        question,
+        explicit_metrics,
+        hinted_metrics,
+        intent,
+    )
 
     handlers = [
         lambda: _handle_correlation(
@@ -715,7 +764,7 @@ def execute_intent_query(
             cur=cur,
             question=question,
             intent=intent,
-            hinted_metrics=hinted_metrics,
+            requested_metrics=requested_metrics,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,

@@ -25,9 +25,27 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertEqual(signals.get("query_scope_class"), "non_domain")
         self.assertFalse(bool(signals.get("asks_for_db_facts")))
 
+    def test_query_scope_class_non_domain_for_identity_question(self):
+        signals = extract_query_signals("Who are you?", lab_name=None)
+        self.assertEqual(signals.get("query_scope_class"), "non_domain")
+        self.assertTrue(bool(signals.get("is_social_identity_query")))
+        self.assertFalse(bool(signals.get("asks_for_db_facts")))
+
+    def test_query_scope_class_non_domain_for_typo_identity_question(self):
+        signals = extract_query_signals("Who is you?", lab_name=None)
+        self.assertEqual(signals.get("query_scope_class"), "non_domain")
+        self.assertTrue(bool(signals.get("is_general_conversation_question")))
+        self.assertFalse(bool(signals.get("asks_for_db_facts")))
+
     def test_query_scope_class_ambiguous_for_under_scoped_question(self):
         signals = extract_query_signals("How is it?", lab_name=None)
-        self.assertEqual(signals.get("query_scope_class"), "ambiguous")
+        self.assertEqual(signals.get("query_scope_class"), "non_domain")
+
+    def test_issue_triage_query_is_treated_as_domain_assessment(self):
+        signals = extract_query_signals("Is there any issue right now in the smart lab?", lab_name=None)
+        self.assertEqual(signals.get("query_scope_class"), "domain")
+        self.assertTrue(bool(signals.get("is_air_assessment_phrase")))
+        self.assertTrue(bool(signals.get("asks_for_db_facts")))
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_plan_route_accepts_minimal_planner_contract(self, mock_call):

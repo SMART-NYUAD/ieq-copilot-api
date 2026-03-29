@@ -85,8 +85,60 @@ class StreamRouteMetadataTests(unittest.TestCase):
         self.assertIn('"execution_intent": "aggregation_db"', body)
         self.assertIn('"decomposition_template": "trend_interpretation"', body)
 
+    @patch("http_routes.query_routes.prepare_db_query")
+    @patch("http_routes.query_routes.resolve_execution_intent")
     @patch("http_routes.query_routes.get_route_plan")
-    def test_query_stream_non_domain_uses_scope_guardrail_message(self, mock_get_route_plan):
+    def test_query_stream_db_invariant_violation_routes_to_clarify_meta(
+        self,
+        mock_get_route_plan,
+        mock_resolve_execution_intent,
+        mock_prepare_db_query,
+    ):
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(intent=IntentType.AGGREGATION_DB, confidence=0.9, reason="agg"),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={"response_mode": "db"},
+            answer_strategy=AnswerStrategy.DIRECT,
+            secondary_intents=tuple(),
+            decomposition_template=None,
+        )
+        mock_resolve_execution_intent.return_value = IntentType.AGGREGATION_DB
+        mock_prepare_db_query.return_value = {
+            "timescale": "clarify",
+            "resolved_lab_name": None,
+            "time_window": {"label": "last 24 hours", "start": "x", "end": "y"},
+            "sources": [],
+            "forecast": None,
+            "visualization_type": "none",
+            "chart": None,
+            "cards_retrieved": 0,
+            "invariant_violation": {"allowed": False, "violations": ["metric_not_justified"]},
+            "fallback_answer": "Please include metric/time/lab.",
+        }
+        response = self.client.post(
+            "/query/stream",
+            json={"question": "How is it there?", "lab_name": None},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        self.assertIn('"executor": "clarify_gate"', body)
+        self.assertIn('"db_invariant_violation"', body)
+        self.assertIn("Please include metric/time/lab.", body)
+
+    @patch("http_routes.query_routes.stream_answer_env_question")
+    @patch("http_routes.query_routes.fetch_knowledge_stats")
+    @patch("http_routes.query_routes.get_route_plan")
+    def test_query_stream_non_domain_uses_knowledge_stream(
+        self, mock_get_route_plan, mock_fetch_knowledge_stats, mock_stream_answer
+    ):
+        async def _fake_stream(*args, **kwargs):
+            yield "Today is Saturday."
+
         mock_get_route_plan.return_value = RoutePlan(
             decision=RouteDecision(intent=IntentType.DEFINITION_EXPLANATION, confidence=0.9, reason="non_domain"),
             intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
@@ -103,6 +155,11 @@ class StreamRouteMetadataTests(unittest.TestCase):
             secondary_intents=tuple(),
             decomposition_template=None,
         )
+        mock_fetch_knowledge_stats.return_value = {
+            "cards_retrieved": 1,
+            "knowledge_cards_retrieved": 1,
+        }
+        mock_stream_answer.side_effect = _fake_stream
 
         response = self.client.post(
             "/query/stream",
@@ -110,18 +167,66 @@ class StreamRouteMetadataTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         body = response.text
-        self.assertIn('"executor": "scope_guardrail"', body)
+        self.assertIn('"executor": "knowledge_qa"', body)
         self.assertIn('"query_scope_class": "non_domain"', body)
-        self.assertIn("I focus on Indoor Environmental Quality (IEQ) questions.", body)
+        self.assertIn("Today is Saturday.", body)
+
+    @patch("http_routes.query_routes.stream_answer_env_question")
+    @patch("http_routes.query_routes.fetch_knowledge_stats")
+    @patch("http_routes.query_routes.get_route_plan")
+    def test_query_stream_non_domain_identity_uses_knowledge_stream(
+        self, mock_get_route_plan, mock_fetch_knowledge_stats, mock_stream_answer
+    ):
+        async def _fake_stream(*args, **kwargs):
+            yield "I am your assistant for campus IEQ and general guidance."
+
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(intent=IntentType.DEFINITION_EXPLANATION, confidence=0.9, reason="social_identity"),
+            intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "knowledge_only",
+                "query_signals": {
+                    "query_scope_class": "non_domain",
+                    "asks_for_db_facts": False,
+                    "is_social_identity_query": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+            secondary_intents=tuple(),
+            decomposition_template=None,
+        )
+        mock_fetch_knowledge_stats.return_value = {
+            "cards_retrieved": 0,
+            "knowledge_cards_retrieved": 0,
+        }
+        mock_stream_answer.side_effect = _fake_stream
+
+        response = self.client.post(
+            "/query/stream",
+            json={"question": "Who are you?", "lab_name": None},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        self.assertIn('"executor": "knowledge_qa"', body)
+        self.assertIn("I am your assistant for campus IEQ and general guidance.", body)
 
     @patch("http_routes.openai_compat_routes.stream_db_query")
     @patch("http_routes.openai_compat_routes.prepare_db_query")
+    @patch("http_routes.openai_compat_routes.resolve_db_followup_memory")
+    @patch("http_routes.openai_compat_routes.build_query_context")
     @patch("http_routes.openai_compat_routes.resolve_execution_intent")
     @patch("http_routes.openai_compat_routes.get_route_plan")
     def test_openai_stream_includes_router_metadata(
         self,
         mock_get_route_plan,
         mock_resolve_execution_intent,
+        mock_build_query_context,
+        mock_resolve_db_followup_memory,
         mock_prepare_db_query,
         mock_stream_db_query,
     ):
@@ -142,6 +247,23 @@ class StreamRouteMetadataTests(unittest.TestCase):
             decomposition_template=DecompositionTemplate.TREND_INTERPRETATION,
         )
         mock_resolve_execution_intent.return_value = IntentType.COMPARISON_DB
+        mock_build_query_context.return_value = (
+            "What about PM2.5?",
+            "conv-12345678",
+            "Previous conversation context (most recent last):\n"
+            "User: Which metric is driving poor IEQ in shores_office this week?\n"
+            "Assistant: CO2 is primary driver.",
+            True,
+        )
+        mock_resolve_db_followup_memory.return_value = {
+            "effective_question": "What about PM2.5? (this week)",
+            "effective_lab_name": "shores_office",
+            "applied": True,
+            "carried_lab_name": "shores_office",
+            "carried_time_phrase": "this week",
+            "carried_metric": None,
+            "previous_user": "Which metric is driving poor IEQ in shores_office this week?",
+        }
         mock_prepare_db_query.return_value = {
             "sources": [{"source_kind": "db_query"}],
             "visualization_type": "bar",
@@ -165,6 +287,88 @@ class StreamRouteMetadataTests(unittest.TestCase):
         self.assertIn('"execution_intent": "comparison_db"', body)
         self.assertIn('"x_visualization_type": "bar"', body)
         self.assertIn('"decomposition_template": "trend_interpretation"', body)
+        self.assertIn('"memory_carryover_applied": true', body)
+        prepare_args = mock_prepare_db_query.call_args.args
+        self.assertEqual(prepare_args[0], "What about PM2.5? (this week)")
+        self.assertEqual(prepare_args[2], "shores_office")
+        stream_kwargs = mock_stream_db_query.call_args.kwargs
+        self.assertEqual(stream_kwargs.get("question"), "What about PM2.5? (this week)")
+        self.assertEqual(stream_kwargs.get("lab_name"), "shores_office")
+
+    @patch("http_routes.query_routes.stream_db_query")
+    @patch("http_routes.query_routes.prepare_db_query")
+    @patch("http_routes.query_routes.resolve_db_followup_memory")
+    @patch("http_routes.query_routes.build_query_context")
+    @patch("http_routes.query_routes.resolve_execution_intent")
+    @patch("http_routes.query_routes.get_route_plan")
+    def test_query_stream_applies_followup_memory_for_db_path(
+        self,
+        mock_get_route_plan,
+        mock_resolve_execution_intent,
+        mock_build_query_context,
+        mock_resolve_db_followup_memory,
+        mock_prepare_db_query,
+        mock_stream_db_query,
+    ):
+        async def _fake_stream(*args, **kwargs):
+            yield "ok"
+
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(intent=IntentType.CURRENT_STATUS_DB, confidence=0.9, reason="follow_up"),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={"response_mode": "db"},
+            answer_strategy=AnswerStrategy.DIRECT,
+            secondary_intents=tuple(),
+            decomposition_template=None,
+        )
+        mock_resolve_execution_intent.return_value = IntentType.CURRENT_STATUS_DB
+        mock_build_query_context.return_value = (
+            "What about PM2.5?",
+            "conv-87654321",
+            "Previous conversation context (most recent last):\n"
+            "User: Which metric is driving poor IEQ in shores_office this week?\n"
+            "Assistant: CO2 is primary driver.",
+            True,
+        )
+        mock_resolve_db_followup_memory.return_value = {
+            "effective_question": "What about PM2.5? (this week)",
+            "effective_lab_name": "shores_office",
+            "applied": True,
+            "carried_lab_name": "shores_office",
+            "carried_time_phrase": "this week",
+            "carried_metric": None,
+            "previous_user": "Which metric is driving poor IEQ in shores_office this week?",
+        }
+        mock_prepare_db_query.return_value = {
+            "timescale": "1hour",
+            "resolved_lab_name": "shores_office",
+            "time_window": {"label": "this week", "start": "x", "end": "y"},
+            "sources": [],
+            "forecast": None,
+            "visualization_type": "none",
+            "chart": None,
+            "cards_retrieved": 0,
+        }
+        mock_stream_db_query.side_effect = _fake_stream
+
+        response = self.client.post(
+            "/query/stream",
+            json={"question": "What about PM2.5?", "lab_name": None},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        self.assertIn('"memory_carryover_applied": true', body)
+        prepare_args = mock_prepare_db_query.call_args.args
+        self.assertEqual(prepare_args[0], "What about PM2.5? (this week)")
+        self.assertEqual(prepare_args[2], "shores_office")
+        stream_kwargs = mock_stream_db_query.call_args.kwargs
+        self.assertEqual(stream_kwargs.get("question"), "What about PM2.5? (this week)")
+        self.assertEqual(stream_kwargs.get("lab_name"), "shores_office")
 
     @patch("http_routes.query_routes.execute_query")
     def test_query_non_stream_preserves_metadata_shape(self, mock_execute_query):

@@ -84,6 +84,14 @@ DB_INTENTS = {
 
 def _is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
+    issue_hints = ("issue", "issues", "problem", "problems", "anything wrong", "wrong")
+    currentness_hints = ("right now", "now", "current", "currently", "latest", "today", "at this moment")
+    if any(hint in q for hint in issue_hints) and (
+        any(hint in q for hint in currentness_hints)
+        or "_lab" in q
+        or " lab" in q
+    ):
+        return True
     if any(hint in q for hint in ("air quality", "indoor air quality", "ieq")):
         return True
     if "how is the air" in q or "how was the air" in q:

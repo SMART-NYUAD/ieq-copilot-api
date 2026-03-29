@@ -93,11 +93,8 @@ def execute_knowledge_use_case(
     knowledge_result = answer_with_metadata_fn(
         user_question=question, k=max(1, min(k, 8)), space=lab_name
     )
-    scope_class = _query_scope_class(route_plan)
     answer_text = str(knowledge_result.get("answer") or "")
-    if scope_class == "non_domain":
-        if (not answer_text.strip()) or ("i don't know from the available data" in answer_text.lower()):
-            answer_text = scope_guardrail_builder(question)
+    fallback_applied = False
     evidence = normalize_evidence(
         raw=knowledge_result.get("evidence"),
         executor="knowledge_qa",
@@ -107,7 +104,7 @@ def execute_knowledge_use_case(
         **_base_route_metadata(route_plan, decision),
         "clarification_required": False,
         "executor": "knowledge_qa",
-        "scope_guardrail_applied": scope_class == "non_domain",
+        "scope_guardrail_applied": fallback_applied,
         "execution_intent": decision.intent.value,
         "intent_rerouted_to_db": False,
         "k_requested": k,
@@ -149,6 +146,34 @@ def execute_db_use_case(
         lab_name=lab_name,
         planner_hints=route_plan.planner_parameters,
     )
+    if db_result.get("invariant_violation"):
+        invariant = dict(db_result.get("invariant_violation") or {})
+        metadata = {
+            **_base_route_metadata(route_plan, decision),
+            "clarification_required": True,
+            "executor": "clarify_gate",
+            "execution_intent": execution_intent.value,
+            "intent_rerouted_to_db": execution_intent != decision.intent,
+            "k_requested": k,
+            "lab_name": lab_name,
+            "resolved_lab_name": db_result.get("resolved_lab_name"),
+            "llm_used": False,
+            "time_window": db_result.get("time_window"),
+            "sources": [],
+            "visualization_type": "none",
+            "db_invariant_violation": invariant,
+            "evidence": db_result.get("evidence"),
+        }
+        return {
+            "answer": str(db_result.get("answer") or ""),
+            "timescale": "clarify",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "metadata": metadata,
+            "data": None,
+            "visualization_type": "none",
+            "chart": None,
+        }
     evidence = normalize_evidence(
         raw=db_result.get("evidence"),
         executor="db_query",

@@ -63,7 +63,9 @@ METRIC_UNIT_MAP = {
     "ieq": "index",
     "index": "index",
 }
-MAX_CHART_LOOKBACK_POINTS = 72  # 3 days at hourly resolution
+MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
+LLM_PAYLOAD_MAX_RECENT_POINTS = 48
+LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS = 12
 _TARGET_TZ = timezone(timedelta(hours=4))
 
 
@@ -95,7 +97,8 @@ def _serialize_timestamp_value(value: Any) -> Any:
     return value
 DB_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from a structured DB query result.
-- For air-quality assessment queries, include:
+- First, answer the exact user question directly before additional detail.
+- For air-quality assessment/summary queries, include:
   1) overall status,
   2) metric-by-metric interpretation,
   3) explicit analysis window using the provided time bounds ("from ... to ..."),
@@ -103,6 +106,7 @@ You are answering from a structured DB query result.
   5) missing-metric coverage note (especially TVOC, PM2.5, CO2, humidity),
   6) confidence qualifier tied to metric coverage,
   7) 2-4 practical recommendations.
+- For risk-focused questions, lead with the main risk level and concrete risk drivers first.
 - When `display_start` and `display_end` are present in measured room facts, copy those values verbatim
     when mentioning the analysis window. Do not rewrite or infer date/month values.
 - If a metric was requested but not available, explicitly state it as "not available in this window".
@@ -117,11 +121,13 @@ You are answering a point lookup from a structured DB query result.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = """
 You are answering a current air-quality point lookup from a structured DB query result.
+- First, directly answer the exact question asked.
 - Provide an overall current air-quality status in plain language.
 - Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, TVOC, humidity, and IEQ when present).
 - Explain what occupants would likely notice/feel.
 - Add 2-4 practical recommendations (maintenance actions are allowed when conditions are good).
 - If any core metric is missing, call it out clearly and lower confidence in the overall assessment.
+- If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
 - Do not collapse the answer to a single sentence.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = """
@@ -427,6 +433,77 @@ def _build_db_sources(
     )
 
 
+def _to_float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_primary_value_key(rows: List[Dict[str, Any]]) -> Optional[str]:
+    preferred = ("value", "avg_value", "mean_value", "min_value", "max_value")
+    for key in preferred:
+        for row in rows:
+            if _to_float_or_none(row.get(key)) is not None:
+                return key
+    return None
+
+
+def _compact_rows_for_llm(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    has_bucket = any(row.get("bucket") is not None for row in rows)
+    if has_bucket:
+        return rows[-LLM_PAYLOAD_MAX_RECENT_POINTS:]
+    return rows[:LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS]
+
+
+def _build_rows_summary(rows: List[Dict[str, Any]], compact_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "total_rows": len(rows),
+        "rows_in_prompt": len(compact_rows),
+        "rows_trimmed": max(0, len(rows) - len(compact_rows)),
+    }
+    if not rows:
+        return summary
+
+    value_key = _pick_primary_value_key(rows)
+    if value_key:
+        values = [_to_float_or_none(row.get(value_key)) for row in rows]
+        numeric_values = [value for value in values if value is not None]
+        if numeric_values:
+            summary["primary_value_key"] = value_key
+            summary["value_stats"] = {
+                "min": round(min(numeric_values), 4),
+                "max": round(max(numeric_values), 4),
+                "mean": round(sum(numeric_values) / len(numeric_values), 4),
+            }
+
+    buckets = [row.get("bucket") for row in rows if row.get("bucket") is not None]
+    if buckets:
+        summary["bucket_range"] = {
+            "start": _serialize_timestamp_value(buckets[0]),
+            "end": _serialize_timestamp_value(buckets[-1]),
+        }
+
+    labs: List[str] = []
+    for row in rows:
+        token = str(row.get("lab_space") or "").strip()
+        if token and token not in labs:
+            labs.append(token)
+    if labs:
+        summary["lab_spaces"] = labs[:5]
+    return summary
+
+
+def _build_compact_llm_rows_and_summary(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    compact = _compact_rows_for_llm(rows)
+    summary = _build_rows_summary(rows=rows, compact_rows=compact)
+    return compact, summary
+
+
 def prepare_db_query(
     question: str,
     intent: IntentType,
@@ -456,6 +533,46 @@ def prepare_db_query(
     display_start, display_end = db_parsing.format_display_window_bounds(window_start, window_end)
     resolved_lab_name = db_parsing.resolve_lab_alias(lab_name) or db_parsing.extract_space_from_question(query_text)
     compared_spaces = db_parsing.extract_compared_spaces(query_text)
+    invariant = db_parsing.validate_db_execution_invariants(
+        question=query_text,
+        intent=intent,
+        selected_metric=metric_alias,
+        resolved_lab_name=resolved_lab_name,
+        request_lab_name=lab_name,
+        explicit_metrics=explicit_metrics,
+        hinted_metrics=hinted_metrics,
+        planner_hints=planner_hints,
+    )
+    if not bool(invariant.get("allowed")):
+        return {
+            "intent": intent,
+            "metric_alias": metric_alias,
+            "window_label": window_label,
+            "rows": [],
+            "payload": [],
+            "fallback_answer": (
+                "I can run this once scope is clear. Please specify at least one of: "
+                "metric, time window, or lab (for example: "
+                "'average CO2 in smart_lab last 24 hours')."
+            ),
+            "timescale": "clarify",
+            "time_window": {
+                "label": window_label,
+                "start": window_start.isoformat(),
+                "end": window_end.isoformat(),
+                "display_start": display_start,
+                "display_end": display_end,
+            },
+            "resolved_lab_name": resolved_lab_name,
+            "forecast": None,
+            "knowledge_cards": [],
+            "cards_retrieved": 0,
+            "correlation": None,
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "invariant_violation": invariant,
+        }
     with get_cursor(real_dict=True) as cur:
         branch_result = db_handlers.execute_intent_query(
             cur=cur,
@@ -482,17 +599,29 @@ def prepare_db_query(
     correlation_data = branch_result.get("correlation_data")
     metric_alias = str(branch_result.get("metric_alias") or metric_alias)
     metrics_used = list(branch_result.get("metrics_used") or [metric_alias])
+    requested_window_start = window_start
+    requested_window_end = window_end
+    requested_window_label = window_label
     window_start = branch_result.get("window_start") or window_start
     window_end = branch_result.get("window_end") or window_end
     window_label = str(branch_result.get("window_label") or window_label)
+    if operation_type == "prediction":
+        # Forecast handler may use a broader internal model window. Keep external
+        # metadata/source window aligned to the user-requested scope.
+        window_start = requested_window_start
+        window_end = requested_window_end
+        window_label = requested_window_label
     compared_spaces = list(branch_result.get("compared_spaces") or compared_spaces)
 
     knowledge_cards: List[Dict[str, Any]] = []
 
     payload_rows = rows
+    row_summary: Dict[str, Any] = {}
     if operation_type == "prediction" and forecast_data:
         # Keep LLM forecast context focused on future points only.
         payload_rows = []
+    else:
+        payload_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
 
     needs_cards, card_topics, max_cards = db_parsing.planner_card_controls(planner_hints)
     knowledge_cards = (
@@ -515,6 +644,8 @@ def prepare_db_query(
     )
     if operation_type == "prediction" and forecast_data:
         payload["forecast_only_context"] = True
+    if row_summary:
+        payload["row_summary"] = _serialize_timestamp_value(row_summary)
     return {
         "intent": intent,
         "metric_alias": metric_alias,
@@ -582,8 +713,11 @@ def _render_db_answer_with_llm(
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, bool]:
     llm_rows = rows
+    row_summary: Dict[str, Any] = {}
     if intent == IntentType.FORECAST_DB and forecast:
         llm_rows = []
+    else:
+        llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
     payload = _build_db_payload(
         intent,
         metric_alias,
@@ -598,6 +732,8 @@ def _render_db_answer_with_llm(
     )
     if intent == IntentType.FORECAST_DB and forecast:
         payload["forecast_only_context"] = True
+    if row_summary:
+        payload["row_summary"] = _serialize_timestamp_value(row_summary)
     if correlation:
         payload["correlation"] = {
             "metric_x": correlation.get("metric_x"),
@@ -645,6 +781,36 @@ def run_db_query(
         lab_name=lab_name,
         planner_hints=planner_hints,
     )
+    invariant_violation = context.get("invariant_violation")
+    if invariant_violation:
+        return {
+            "answer": str(context.get("fallback_answer") or ""),
+            "data": [],
+            "cards_retrieved": 0,
+            "forecast": None,
+            "correlation": None,
+            "timescale": "clarify",
+            "llm_used": False,
+            "time_window": context.get("time_window"),
+            "resolved_lab_name": context.get("resolved_lab_name"),
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "invariant_violation": invariant_violation,
+            "evidence": validate_tool_evidence(
+                {
+                    "evidence_kind": "clarify_gate",
+                    "intent": intent.value,
+                    "strategy": "clarify",
+                    "metric_aliases": [str(context.get("metric_alias") or "")],
+                    "resolved_scope": context.get("resolved_lab_name"),
+                    "resolved_time_window": context.get("time_window"),
+                    "provenance_sources": [],
+                    "confidence_notes": ["db_invariant_violation"],
+                    "recommendation_allowed": False,
+                }
+            ),
+        }
     answer, llm_used = _render_db_answer_with_llm(
         question=query_text,
         intent=intent,
@@ -729,6 +895,9 @@ async def stream_db_query(
         lab_name=lab_name,
         planner_hints=planner_hints,
     )
+    if context.get("invariant_violation"):
+        yield str(context.get("fallback_answer") or "")
+        return
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
 

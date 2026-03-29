@@ -10,6 +10,11 @@ from enum import Enum
 import logging
 from typing import Any, Dict
 
+try:
+    from query_routing.observability import record_runtime_error
+except ImportError:
+    from .query_routing.observability import record_runtime_error
+
 
 LOGGER = logging.getLogger("rag_api_server")
 
@@ -44,6 +49,7 @@ def classify_error(exc: Exception) -> ErrorCode:
 def log_exception(exc: Exception, *, scope: str, extra: Dict[str, Any] | None = None) -> ErrorCode:
     """Log exception with structured scope context and return classified code."""
     code = classify_error(exc)
+    record_runtime_error(code=code.value, scope=scope)
     LOGGER.exception(
         "runtime_error scope=%s code=%s extra=%s",
         scope,

@@ -84,6 +84,17 @@ This document defines stable API behavior for clients integrating with the RAG A
 - Ends with `data: [DONE]`.
 - Errors include OpenAI-style `error` object with stable `code` where available.
 
+## `GET /health/router` (rollout safety telemetry)
+
+Returns router rollout controls, runtime observability metrics, and SLO gate status.
+
+Key groups:
+
+- `router_rollout`: feature flags and rollout percentages (`policy_rollout_enabled`, `policy_rollout_percent`, `force_legacy`, `shadow_mode_enabled`, `shadow_sample_rate`)
+- `metrics`: planner/critic counters plus shadow diff and sync-stream flip rates
+- `thresholds`: target/max thresholds used for rollout gating
+- `slo`: computed booleans (`*_target_ok`, `*_max_ok`, `rollout_blocked`)
+
 ## Evidence Contract
 
 Evidence is normalized through `evidence/evidence_layer.py` and validated against schema contracts.
