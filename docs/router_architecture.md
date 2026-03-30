@@ -10,7 +10,7 @@ The router decides exactly one execution path per query:
 - analytical/visualization query
 - prediction/forecast
 
-Routing is now LLM-planned by default, with a legacy classifier fallback for resilience.
+Routing is LLM-planned with deterministic policy validation.
 
 ## Intent Taxonomy
 
@@ -74,19 +74,16 @@ Evidence is now treated as an explicit layer:
 - repaired evidence is emitted deterministically when raw payload is invalid
 - response mappers and critic checks consume a single normalized evidence envelope
 
-## Fallback Decision Tree
+## Routing Decision Tree
 
 ```mermaid
 flowchart TD
-  routeStart[RouteStart] --> modeCheck{ROUTER_MODE}
-  modeCheck -->|legacy| legacyPath[LegacyClassifier]
-  modeCheck -->|llm| plannerCall[CallPlanner]
+  routeStart[RouteStart] --> plannerCall[CallPlanner]
   plannerCall --> plannerOk{ValidPlan}
   plannerOk -->|yes| plannerRoute[UsePlannerDecision]
-  plannerOk -->|no| fallbackLegacy[FallbackToLegacyClassifier]
-  legacyPath --> finalize[FinalizeRoute]
-  plannerRoute --> finalize
-  fallbackLegacy --> finalize
+  plannerOk -->|no| fallbackRoute[DeterministicFallbackPlan]
+  plannerRoute --> finalize[FinalizeRoute]
+  fallbackRoute --> finalize
 ```
 
 ## Planner Contract
@@ -109,13 +106,12 @@ Validation rules:
 - category-intent pair must be valid
 - exactly one executable intent per query
 
-If validation fails, router falls back to legacy classifier.
+If validation fails, router falls back to deterministic planner fallback rules.
 
 ## Configuration
 
 Planner settings:
 
-- `ROUTER_MODE` (`llm` or `legacy`, default `llm`)
 - `OLLAMA_ROUTER_BASE_URL` (fallback `OLLAMA_BASE_URL`)
 - `OLLAMA_ROUTER_MODEL` (default `qwen3:30b`)
 - `OLLAMA_ROUTER_TEMPERATURE` (default `0.0`)
@@ -141,7 +137,7 @@ Server/runtime settings (centralized in `core_settings.py`):
 
 Route metadata fields added to responses:
 
-- `route_source` (`llm_planner` or `legacy_classifier`)
+- `route_source` (`llm_planner`, `signal_fastpath`, or `planner_rule_fallback`)
 - `route_type` (executable intent)
 - `intent_category`
 - `route_confidence`
@@ -159,6 +155,14 @@ Where metadata appears:
 - `POST /query/stream` -> initial SSE `meta` event
 - `POST /v1/chat/completions` non-stream -> `x_router`
 - `POST /v1/chat/completions` stream -> first chunk `x_router`
+
+Sync/stream consistency notes:
+
+- Stream metadata is built through shared helpers in `query_use_cases.py`
+  (`build_stream_clarify_metadata`, `build_stream_knowledge_metadata`,
+  `build_stream_db_metadata`).
+- Stream evidence is normalized/repaired through `evidence/evidence_layer.py`
+  the same way as non-stream contracts.
 
 ## Ground-Truth Sources
 

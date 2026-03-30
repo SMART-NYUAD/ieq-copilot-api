@@ -37,6 +37,11 @@ try:
         normalize_lab_name,
         resolve_stream_runtime,
     )
+    from query_routing.query_use_cases import (
+        build_stream_clarify_metadata,
+        build_stream_db_metadata,
+        build_stream_knowledge_metadata,
+    )
     from http_routes.route_helpers import (
         SSE_HEADERS,
         attach_policy_metadata,
@@ -70,6 +75,11 @@ except ImportError:
         normalize_k,
         normalize_lab_name,
         resolve_stream_runtime,
+    )
+    from ..query_routing.query_use_cases import (
+        build_stream_clarify_metadata,
+        build_stream_db_metadata,
+        build_stream_knowledge_metadata,
     )
     from .route_helpers import (
         SSE_HEADERS,
@@ -227,6 +237,8 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         execution_intent = runtime.execution_intent
         active_question = latest_user_question
         active_lab_name = lab_name
+        effective_question = active_question
+        effective_lab_name = active_lab_name
         memory_retry = resolve_db_followup_memory(
             question=latest_user_question,
             conversation_context=conversation_context,
@@ -258,26 +270,16 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         visualization_type = "none"
         chart = None
         db_context = None
-        x_router = {
-            **route_plan_metadata(route_plan),
-            "execution_intent": execution_intent.value,
-            "intent_rerouted_to_db": execution_intent != decision.intent,
-            "clarification_required": should_clarify_response,
-            "k_requested": k,
-            "lab_name": lab_name,
-        }
-        x_router = attach_conversation_metadata(
-            x_router,
-            conversation_id=normalized_conversation_id,
-            conversation_context_applied=context_applied,
-            turn_index=None,
-        )
-        x_router = attach_policy_metadata(x_router, runtime.route_contract)
+        x_router = {}
         try:
             if should_clarify_response:
-                x_router["executor"] = "clarify_gate"
-                x_router["sources"] = []
-                x_router["cards_retrieved"] = 0
+                x_router = build_stream_clarify_metadata(
+                    route_plan=route_plan,
+                    decision=decision,
+                    k=k,
+                    lab_name=lab_name,
+                    resolved_lab_name=active_lab_name,
+                )
                 x_router["memory_carryover_applied"] = bool(memory_retry.get("applied"))
                 x_router["memory_carried_lab_name"] = memory_retry.get("carried_lab_name")
                 x_router["memory_carried_time_phrase"] = memory_retry.get("carried_time_phrase")
@@ -288,13 +290,16 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     k,
                     active_lab_name,
                 )
-                x_router["executor"] = "knowledge_qa"
-                x_router["execution_intent"] = decision.intent.value
-                x_router["intent_rerouted_to_db"] = False
-                x_router["sources"] = []
-                x_router["cards_retrieved"] = int(knowledge_stats.get("cards_retrieved") or 0)
-                x_router["knowledge_cards_retrieved"] = int(
-                    knowledge_stats.get("knowledge_cards_retrieved") or 0
+                x_router = build_stream_knowledge_metadata(
+                    route_plan=route_plan,
+                    decision=decision,
+                    k=k,
+                    lab_name=lab_name,
+                    resolved_lab_name=active_lab_name,
+                    cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
+                    knowledge_cards_retrieved=int(
+                        knowledge_stats.get("knowledge_cards_retrieved") or 0
+                    ),
                 )
             else:
                 memory = resolve_db_followup_memory(
@@ -314,25 +319,55 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 )
                 visualization_type = db_context.get("visualization_type", "none")
                 chart = db_context.get("chart")
-                x_router["sources"] = db_context.get("sources", [])
-                x_router["memory_carryover_applied"] = bool(memory.get("applied"))
-                x_router["memory_carried_lab_name"] = memory.get("carried_lab_name")
-                x_router["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
-                x_router["memory_carried_metric"] = memory.get("carried_metric")
                 if db_context.get("invariant_violation"):
-                    x_router["executor"] = "clarify_gate"
-                    x_router["clarification_required"] = True
-                    x_router["db_invariant_violation"] = db_context.get("invariant_violation")
-                    x_router["sources"] = []
+                    x_router = build_stream_clarify_metadata(
+                        route_plan=route_plan,
+                        decision=decision,
+                        k=k,
+                        lab_name=lab_name,
+                        resolved_lab_name=db_context.get("resolved_lab_name"),
+                        time_window=db_context.get("time_window"),
+                        invariant_violation=db_context.get("invariant_violation"),
+                    )
+                    x_router["execution_intent"] = execution_intent.value
+                    x_router["intent_rerouted_to_db"] = execution_intent != decision.intent
                     x_router["db_clarify_text"] = str(db_context.get("fallback_answer") or "")
                     visualization_type = "none"
                     chart = None
+                else:
+                    x_router = build_stream_db_metadata(
+                        route_plan=route_plan,
+                        decision=decision,
+                        execution_intent=execution_intent,
+                        k=k,
+                        lab_name=lab_name,
+                        db_context=db_context,
+                    )
+                    x_router["memory_carryover_applied"] = bool(memory.get("applied"))
+                    x_router["memory_carried_lab_name"] = memory.get("carried_lab_name")
+                    x_router["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
+                    x_router["memory_carried_metric"] = memory.get("carried_metric")
         except Exception as exc:
             # Keep streaming functional even if context preparation fails.
             log_exception(exc, scope="openai.stream.prep", extra={"lab_name": lab_name, "k": k})
             visualization_type = "none"
             chart = None
-            x_router["sources"] = []
+            x_router = {
+                **route_plan_metadata(route_plan),
+                "execution_intent": execution_intent.value,
+                "intent_rerouted_to_db": execution_intent != decision.intent,
+                "clarification_required": should_clarify_response,
+                "k_requested": k,
+                "lab_name": lab_name,
+                "sources": [],
+            }
+        x_router = attach_conversation_metadata(
+            x_router,
+            conversation_id=normalized_conversation_id,
+            conversation_context_applied=context_applied,
+            turn_index=None,
+        )
+        x_router = attach_policy_metadata(x_router, runtime.route_contract)
         try:
             first_chunk = {
                 "id": completion_id,

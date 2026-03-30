@@ -95,11 +95,6 @@ class AppSettings:
     cors_allow_methods: List[str]
     cors_allow_headers: List[str]
     router_clarify_threshold: float
-    router_policy_rollout_enabled: bool
-    router_policy_rollout_percent: float
-    router_force_legacy: bool
-    router_shadow_mode_enabled: bool
-    router_shadow_sample_rate: float
 
 
 def load_settings() -> AppSettings:
@@ -118,30 +113,6 @@ def load_settings() -> AppSettings:
         cors_allow_headers=_parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_HEADERS", ""), default=["*"]),
         router_clarify_threshold=_parse_float(
             os.getenv("ROUTER_CLARIFY_THRESHOLD", "0.5"), default=0.5, minimum=0.0, maximum=1.0
-        ),
-        router_policy_rollout_enabled=_parse_bool(
-            os.getenv("ROUTER_POLICY_ROLLOUT_ENABLED", "true"),
-            default=True,
-        ),
-        router_policy_rollout_percent=_parse_float(
-            os.getenv("ROUTER_POLICY_ROLLOUT_PERCENT", "100"),
-            default=100.0,
-            minimum=0.0,
-            maximum=100.0,
-        ),
-        router_force_legacy=_parse_bool(
-            os.getenv("ROUTER_FORCE_LEGACY", "false"),
-            default=False,
-        ),
-        router_shadow_mode_enabled=_parse_bool(
-            os.getenv("ROUTER_SHADOW_MODE_ENABLED", "true"),
-            default=True,
-        ),
-        router_shadow_sample_rate=_parse_float(
-            os.getenv("ROUTER_SHADOW_SAMPLE_RATE", "0.25"),
-            default=0.25,
-            minimum=0.0,
-            maximum=1.0,
         ),
     )
 

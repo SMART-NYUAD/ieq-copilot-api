@@ -159,20 +159,6 @@ class LlmRouterPlannerTests(unittest.TestCase):
             ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound"],
         )
 
-    def test_plan_route_legacy_mode(self):
-        old_mode = os.getenv("ROUTER_MODE")
-        os.environ["ROUTER_MODE"] = "legacy"
-        try:
-            plan = plan_route("Why is PM2.5 high today?")
-            self.assertTrue(plan.planner_fallback_used)
-            self.assertEqual(plan.route_source, "legacy_classifier")
-            self.assertEqual(plan.planner_fallback_reason, "router_mode_legacy")
-        finally:
-            if old_mode is None:
-                os.environ.pop("ROUTER_MODE", None)
-            else:
-                os.environ["ROUTER_MODE"] = old_mode
-
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_forces_db_mode_when_deterministic_signals_require_facts(self, mock_call):
         mock_call.return_value = {

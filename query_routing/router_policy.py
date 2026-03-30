@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional, Tuple
 
 try:
     from query_routing.intent_classifier import IntentType, RouteDecision, classify_intent
-    from query_routing.router_settings import legacy_fallback_enabled
     from query_routing.router_types import (
         AnswerStrategy,
         DecompositionTemplate,
@@ -16,7 +15,6 @@ try:
     )
 except ImportError:
     from .intent_classifier import IntentType, RouteDecision, classify_intent
-    from .router_settings import legacy_fallback_enabled
     from .router_types import (
         AnswerStrategy,
         DecompositionTemplate,
@@ -287,29 +285,13 @@ def enforce_non_domain_block(decision: RouteDecision, category: IntentCategory, 
 def fallback_plan(question: str, model: str, fallback_reason: str, query_signals: Optional[Dict[str, Any]] = None) -> RoutePlan:
     decision = classify_intent(question)
     category = CATEGORY_BY_INTENT.get(decision.intent, IntentCategory.SEMANTIC_EXPLANATORY)
-    route_source = "legacy_classifier" if legacy_fallback_enabled() else "planner_rule_fallback"
     return RoutePlan(
         decision=decision,
         intent_category=category,
-        route_source=route_source,
+        route_source="planner_rule_fallback",
         planner_model=model,
         planner_fallback_used=True,
         planner_fallback_reason=fallback_reason,
         planner_raw=None,
         planner_parameters=normalize_planner_parameters(raw_plan={}, question=question, intent=decision.intent, query_signals=query_signals or {}),
-    )
-
-
-def legacy_plan(question: str, model: str, reason: str) -> RoutePlan:
-    decision = classify_intent(question)
-    category = CATEGORY_BY_INTENT.get(decision.intent, IntentCategory.SEMANTIC_EXPLANATORY)
-    return RoutePlan(
-        decision=decision,
-        intent_category=category,
-        route_source="legacy_classifier",
-        planner_model=model,
-        planner_fallback_used=True,
-        planner_fallback_reason=reason,
-        planner_raw=None,
-        planner_parameters={},
     )

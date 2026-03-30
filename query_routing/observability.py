@@ -21,7 +21,6 @@ _COUNTERS = {
     "shadow_total": 0,
     "shadow_diff_total": 0,
     "rollout_policy_total": 0,
-    "rollout_legacy_total": 0,
     "sync_stream_total": 0,
     "sync_stream_flip_total": 0,
 }
@@ -161,7 +160,6 @@ def reset_observability_metrics() -> None:
         _COUNTERS["shadow_total"] = 0
         _COUNTERS["shadow_diff_total"] = 0
         _COUNTERS["rollout_policy_total"] = 0
-        _COUNTERS["rollout_legacy_total"] = 0
         _COUNTERS["sync_stream_total"] = 0
         _COUNTERS["sync_stream_flip_total"] = 0
         _FALLBACK_REASON_COUNTS.clear()
@@ -253,12 +251,8 @@ def record_critic_outcome(status: Optional[str]) -> None:
 
 
 def record_rollout_selection(selected_policy: str) -> None:
-    value = str(selected_policy or "").strip().lower()
     with _LOCK:
-        if value == "legacy":
-            _COUNTERS["rollout_legacy_total"] += 1
-        else:
-            _COUNTERS["rollout_policy_total"] += 1
+        _COUNTERS["rollout_policy_total"] += 1
 
 
 def record_shadow_comparison(
@@ -307,7 +301,6 @@ def get_observability_snapshot() -> Dict[str, Any]:
         shadow_total = int(_COUNTERS["shadow_total"])
         shadow_diff_total = int(_COUNTERS["shadow_diff_total"])
         rollout_policy_total = int(_COUNTERS["rollout_policy_total"])
-        rollout_legacy_total = int(_COUNTERS["rollout_legacy_total"])
         sync_stream_total = int(_COUNTERS["sync_stream_total"])
         sync_stream_flip_total = int(_COUNTERS["sync_stream_flip_total"])
         fallback_distribution = dict(_FALLBACK_REASON_COUNTS)
@@ -317,8 +310,7 @@ def get_observability_snapshot() -> Dict[str, Any]:
     fallback_rate = (planner_fallback_total / planner_total) if planner_total else 0.0
     critic_failure_rate = (critic_failure_total / critic_total) if critic_total else 0.0
     shadow_diff_rate = (shadow_diff_total / shadow_total) if shadow_total else 0.0
-    total_rollout = rollout_policy_total + rollout_legacy_total
-    rollout_policy_rate = (rollout_policy_total / total_rollout) if total_rollout else 0.0
+    rollout_policy_rate = 1.0 if rollout_policy_total else 0.0
     sync_stream_flip_rate = (
         (sync_stream_flip_total / sync_stream_total) if sync_stream_total else 0.0
     )
@@ -337,7 +329,6 @@ def get_observability_snapshot() -> Dict[str, Any]:
         "shadow_diff_rate": shadow_diff_rate,
         "shadow_diff_distribution": shadow_diff_distribution,
         "rollout_policy_total": rollout_policy_total,
-        "rollout_legacy_total": rollout_legacy_total,
         "rollout_policy_rate": rollout_policy_rate,
         "sync_stream_total": sync_stream_total,
         "sync_stream_flip_total": sync_stream_flip_total,

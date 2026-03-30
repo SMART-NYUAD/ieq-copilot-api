@@ -44,7 +44,7 @@ def _sanitize_assistant_text(value: str) -> str:
     if not text:
         return ""
 
-    # Remove legacy forced labels from older prompt variants.
+    # Remove historical forced labels from older prompt variants.
     text = re.sub(
         r"^\s*General explanation\s*\(not site-specific policy\)\s*:\s*",
         "",

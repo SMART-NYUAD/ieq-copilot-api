@@ -14,7 +14,7 @@ if REPO_DIR not in sys.path:
 
 from http_routes.query_runtime import resolve_stream_runtime
 from query_routing.intent_classifier import IntentType, RouteDecision
-from query_routing.observability import get_observability_snapshot, reset_observability_metrics
+from query_routing.observability import reset_observability_metrics
 from query_routing.query_orchestrator import get_route_decision_contract
 from query_routing.route_policy_engine import build_route_decision_contract
 from query_routing.router_types import AnswerStrategy, IntentCategory, RouteExecutor, RoutePlan
@@ -163,21 +163,8 @@ class RoutePolicyEngineTests(unittest.TestCase):
         self.assertEqual(runtime.route_contract.executor, expected.executor)
         self.assertEqual(runtime.route_contract.query_scope_class, expected.query_scope_class)
 
-    @patch("query_routing.query_orchestrator.load_settings")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_force_legacy_rollout_selects_legacy_contract(self, mock_get_route_plan, mock_load_settings):
-        mock_load_settings.return_value = type(
-            "S",
-            (),
-            {
-                "router_clarify_threshold": 0.5,
-                "router_policy_rollout_enabled": True,
-                "router_policy_rollout_percent": 100.0,
-                "router_force_legacy": True,
-                "router_shadow_mode_enabled": False,
-                "router_shadow_sample_rate": 0.0,
-            },
-        )()
+    def test_orchestrator_always_returns_policy_contract(self, mock_get_route_plan):
         plan = _make_route_plan(
             intent=IntentType.DEFINITION_EXPLANATION,
             confidence=0.9,
@@ -186,43 +173,7 @@ class RoutePolicyEngineTests(unittest.TestCase):
         )
         mock_get_route_plan.return_value = plan
         contract = get_route_decision_contract("What is IEQ?", None, True)
-        self.assertEqual(contract.policy_version, "legacy-router-v1")
-        snapshot = get_observability_snapshot()
-        self.assertEqual(snapshot["rollout_legacy_total"], 1)
-
-    @patch("query_routing.query_orchestrator.load_settings")
-    @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_shadow_comparison_records_diff_metrics(self, mock_get_route_plan, mock_load_settings):
-        mock_load_settings.return_value = type(
-            "S",
-            (),
-            {
-                "router_clarify_threshold": 0.5,
-                "router_policy_rollout_enabled": True,
-                "router_policy_rollout_percent": 100.0,
-                "router_force_legacy": False,
-                "router_shadow_mode_enabled": True,
-                "router_shadow_sample_rate": 1.0,
-            },
-        )()
-        plan = _make_route_plan(
-            intent=IntentType.DEFINITION_EXPLANATION,
-            confidence=0.9,
-            response_mode="knowledge_only",
-            query_signals={
-                "query_scope_class": "ambiguous",
-                "asks_for_db_facts": True,
-                "is_general_knowledge_question": True,
-                "has_time_window_hint": False,
-                "has_lab_reference": False,
-            },
-        )
-        mock_get_route_plan.return_value = plan
-        contract = get_route_decision_contract("What does IEQ mean?", None, True)
         self.assertEqual(contract.policy_version, "route-policy-v1")
-        snapshot = get_observability_snapshot()
-        self.assertEqual(snapshot["shadow_total"], 1)
-        self.assertEqual(snapshot["shadow_diff_total"], 1)
 
 
 if __name__ == "__main__":

@@ -5,10 +5,6 @@ from __future__ import annotations
 import os
 
 
-def router_mode() -> str:
-    return (os.getenv("ROUTER_MODE", "llm") or "llm").strip().lower()
-
-
 def router_base_url() -> str:
     return (
         os.getenv("OLLAMA_ROUTER_BASE_URL")
@@ -59,8 +55,3 @@ def router_retry_jitter_ms() -> int:
         return max(0, min(2000, int(raw)))
     except ValueError:
         return 180
-
-
-def legacy_fallback_enabled() -> bool:
-    raw = (os.getenv("OLLAMA_ROUTER_LEGACY_FALLBACK", "false") or "false").strip().lower()
-    return raw in {"1", "true", "yes", "on"}

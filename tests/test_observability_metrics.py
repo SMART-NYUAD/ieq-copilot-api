@@ -61,7 +61,6 @@ class ObservabilityMetricsTests(unittest.TestCase):
         record_critic_outcome("pass")
         record_critic_outcome("warn")
         record_rollout_selection("policy")
-        record_rollout_selection("legacy")
         record_shadow_comparison(sampled=True, active_executor="db_query", shadow_executor="knowledge_qa")
         record_shadow_comparison(sampled=True, active_executor="db_query", shadow_executor="db_query")
         record_endpoint_executor(
@@ -85,7 +84,6 @@ class ObservabilityMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["critic_failure_rate"], 0.5)
         self.assertEqual(snapshot["decomposition_template_usage"].get("trend_interpretation"), 1)
         self.assertEqual(snapshot["rollout_policy_total"], 1)
-        self.assertEqual(snapshot["rollout_legacy_total"], 1)
         self.assertEqual(snapshot["shadow_total"], 2)
         self.assertEqual(snapshot["shadow_diff_total"], 1)
         self.assertAlmostEqual(snapshot["shadow_diff_rate"], 0.5)

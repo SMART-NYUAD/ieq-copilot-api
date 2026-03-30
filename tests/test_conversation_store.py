@@ -12,14 +12,14 @@ from storage.conversation_store import _sanitize_assistant_text
 
 
 class ConversationStoreTests(unittest.TestCase):
-    def test_sanitize_legacy_general_explanation_prefix(self):
+    def test_sanitize_historical_general_explanation_prefix(self):
         raw = (
             "General explanation (not site-specific policy): PM2.5 is tiny particulate matter."
         )
         cleaned = _sanitize_assistant_text(raw)
         self.assertEqual(cleaned, "PM2.5 is tiny particulate matter.")
 
-    def test_sanitize_legacy_general_explanation_suffix_note(self):
+    def test_sanitize_historical_general_explanation_suffix_note(self):
         raw = (
             "PM2.5 refers to fine particles.\n"
             "Note: Without measured data, this is a general educational explanation. "

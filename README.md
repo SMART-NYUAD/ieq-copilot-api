@@ -30,7 +30,7 @@ Main modules:
   - `health_routes.py`
   - `query_routes.py`
 - `query_routing/`: intent routing + orchestration
-  - `intent_classifier.py` (legacy fallback classifier)
+  - `intent_classifier.py` (deterministic classifier utilities)
   - `llm_router_planner.py`
   - `route_policy_engine.py`
   - `query_orchestrator.py`
@@ -74,14 +74,14 @@ manual `export`), and environment variables already set in your shell still win.
 ## Request Flow
 
 1. Client calls `POST /query` (or `POST /query/stream`).
-2. Router plans intent via `llm_router_planner.py` (with legacy fallback to `intent_classifier.py`).
+2. Router plans intent via `llm_router_planner.py` and policy validation via `route_policy_engine.py`.
 3. Orchestrator executes through DB or knowledge executors.
 4. Executor provenance is normalized by `evidence/evidence_layer.py`.
 5. For DB intents, SQL rows are converted to a grounded LLM answer (with deterministic fallback).
 6. Unified response is returned with route and evidence metadata.
 
 For a very detailed step-by-step flow (including clarify-gate behavior,
-follow-up memory carry-over, policy rollout/shadow mode, and streaming internals),
+follow-up memory carry-over, policy execution, and streaming internals),
 see `docs/architecture_deep_dive.md`.
 
 ## Documentation Map

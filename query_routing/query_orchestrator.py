@@ -30,9 +30,7 @@ try:
         get_observability_snapshot,
         record_endpoint_executor,
         record_critic_outcome,
-        record_rollout_selection,
         record_route_plan,
-        record_shadow_comparison,
     )
     from executors.db_support.query_parsing import extract_space_from_question
 except ImportError:
@@ -61,9 +59,7 @@ except ImportError:
         get_observability_snapshot,
         record_endpoint_executor,
         record_critic_outcome,
-        record_rollout_selection,
         record_route_plan,
-        record_shadow_comparison,
     )
     from ..executors.db_support.query_parsing import extract_space_from_question
 
@@ -82,77 +78,11 @@ def get_route_decision_contract(
 ) -> RouteDecisionContract:
     if route_plan is None:
         route_plan = get_route_plan(question=question, lab_name=lab_name)
-    primary_contract = build_route_decision_contract(
+    return build_route_decision_contract(
         latest_user_question=question,
         route_plan=route_plan,
         allow_clarify=allow_clarify,
     )
-    planner_parameters = route_plan.planner_parameters or {}
-    signals = planner_parameters.get("query_signals") or {}
-    scope_class = str(signals.get("query_scope_class") or "").strip().lower()
-    legacy_mode = str(planner_parameters.get("response_mode") or "").strip().lower()
-    legacy_asks_db = bool(signals.get("asks_for_db_facts"))
-    legacy_executor = RouteExecutor.DB_QUERY
-    legacy_trace: list[str] = []
-    if scope_class == "non_domain":
-        legacy_executor = RouteExecutor.KNOWLEDGE_QA
-        legacy_trace.append("legacy_non_domain_knowledge")
-    elif legacy_mode == "knowledge_only" and not legacy_asks_db:
-        legacy_executor = RouteExecutor.KNOWLEDGE_QA
-        legacy_trace.append("legacy_knowledge_mode")
-    else:
-        legacy_executor = RouteExecutor.DB_QUERY
-        legacy_trace.append("legacy_db_default")
-    if should_clarify(route_plan=route_plan, allow_clarify=allow_clarify):
-        legacy_executor = RouteExecutor.CLARIFY_GATE
-        legacy_trace = ["legacy_clarify_gate"]
-    legacy_contract = RouteDecisionContract(
-        latest_user_question=primary_contract.latest_user_question,
-        latest_question_hash=primary_contract.latest_question_hash,
-        policy_version="legacy-router-v1",
-        route_plan=route_plan,
-        needs_measured_data=(legacy_executor == RouteExecutor.DB_QUERY),
-        executor=legacy_executor,
-        execution_intent=route_plan.decision.intent,
-        execution_intent_value=route_plan.decision.intent.value,
-        query_scope_class=scope_class or primary_contract.query_scope_class,
-        rule_trace=tuple(legacy_trace),
-    )
-    settings = load_settings()
-    selected_contract = primary_contract
-    if settings.router_force_legacy or not settings.router_policy_rollout_enabled:
-        selected_contract = legacy_contract
-    else:
-        rollout_percent = float(settings.router_policy_rollout_percent)
-        if rollout_percent <= 0.0:
-            selected_contract = legacy_contract
-        elif rollout_percent < 100.0:
-            bucket = int(primary_contract.latest_question_hash[:6], 16) % 10000
-            ratio = bucket / 100.0
-            selected_contract = primary_contract if ratio < rollout_percent else legacy_contract
-    record_rollout_selection("policy" if selected_contract.policy_version == primary_contract.policy_version else "legacy")
-    shadow_enabled = bool(settings.router_shadow_mode_enabled)
-    sampled = False
-    if shadow_enabled:
-        sample_rate = max(0.0, min(1.0, float(settings.router_shadow_sample_rate)))
-        if sample_rate >= 1.0:
-            sampled = True
-        elif sample_rate > 0.0:
-            sample_bucket = int(primary_contract.latest_question_hash[6:10], 16) / float(0xFFFF)
-            sampled = sample_bucket < sample_rate
-    if sampled:
-        if selected_contract.policy_version == primary_contract.policy_version:
-            active_exec = primary_contract.executor.value
-            shadow_exec = legacy_contract.executor.value
-        else:
-            active_exec = legacy_contract.executor.value
-            shadow_exec = primary_contract.executor.value
-        record_shadow_comparison(
-            sampled=True,
-            active_executor=active_exec,
-            shadow_executor=shadow_exec,
-        )
-    return selected_contract
 
 
 def query_scope_class(route_plan: RoutePlan) -> str:

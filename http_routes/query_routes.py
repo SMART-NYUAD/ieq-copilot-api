@@ -26,6 +26,11 @@ try:
     from executors.env_query_langchain import (
         stream_answer_env_question,
     )
+    from query_routing.query_use_cases import (
+        build_stream_clarify_metadata,
+        build_stream_db_metadata,
+        build_stream_knowledge_metadata,
+    )
     from http_routes.query_runtime import (
         build_query_context,
         execute_non_stream_query,
@@ -62,6 +67,11 @@ except ImportError:
     from ..executors.db_support.response_helpers import serialize_timestamp_value
     from ..executors.env_query_langchain import (
         stream_answer_env_question,
+    )
+    from ..query_routing.query_use_cases import (
+        build_stream_clarify_metadata,
+        build_stream_db_metadata,
+        build_stream_knowledge_metadata,
     )
     from .query_runtime import (
         build_query_context,
@@ -302,30 +312,13 @@ async def query_cards_stream(request: QueryRequest):
     if runtime.should_clarify_response:
         async def clarify_generator():
             clarify_text = build_clarify_prompt(route_plan)
-            meta = {
-                "timescale": "clarify",
-                "cards_retrieved": 0,
-                "recent_card": False,
-                **route_plan_metadata(route_plan),
-                "clarification_required": True,
-                "executor": "clarify_gate",
-                "k_requested": k,
-                "lab_name": lab_name,
-                "resolved_lab_name": lab_name,
-                "memory_carryover_applied": bool(memory_retry.get("applied")),
-                "memory_carried_lab_name": memory_retry.get("carried_lab_name"),
-                "memory_carried_time_phrase": memory_retry.get("carried_time_phrase"),
-                "memory_carried_metric": memory_retry.get("carried_metric"),
-                "llm_used": False,
-                "time_window": None,
-                "sources": [],
-                "forecast_model": None,
-                "forecast_confidence": None,
-                "forecast_confidence_score": None,
-                "forecast_horizon_hours": None,
-                "visualization_type": "none",
-                "chart": None,
-            }
+            meta = build_stream_clarify_metadata(
+                route_plan=route_plan,
+                decision=decision,
+                k=k,
+                lab_name=lab_name,
+                resolved_lab_name=lab_name,
+            )
             meta = attach_conversation_metadata(
                 meta,
                 conversation_id=normalized_conversation_id,
@@ -370,35 +363,19 @@ async def query_cards_stream(request: QueryRequest):
                     k,
                     active_lab_name,
                 )
-                meta = {
-                    "timescale": "knowledge",
-                    "cards_retrieved": int(knowledge_stats.get("cards_retrieved") or 0),
-                    "knowledge_cards_retrieved": int(
-                        knowledge_stats.get("knowledge_cards_retrieved") or 0
-                    ),
-                    "recent_card": False,
-                    **route_plan_metadata(route_plan),
-                    "execution_intent": decision.intent.value,
-                    "intent_rerouted_to_db": False,
-                    "clarification_required": False,
-                    "executor": "knowledge_qa",
-                    "k_requested": k,
-                    "lab_name": lab_name,
-                    "resolved_lab_name": active_lab_name,
-                    "memory_carryover_applied": bool(memory_retry.get("applied")),
-                    "memory_carried_lab_name": memory_retry.get("carried_lab_name"),
-                    "memory_carried_time_phrase": memory_retry.get("carried_time_phrase"),
-                    "memory_carried_metric": memory_retry.get("carried_metric"),
-                    "llm_used": True,
-                    "time_window": None,
-                    "sources": [],
-                    "forecast_model": None,
-                    "forecast_confidence": None,
-                    "forecast_confidence_score": None,
-                    "forecast_horizon_hours": None,
-                    "visualization_type": "none",
-                    "chart": None,
-                }
+                meta = build_stream_knowledge_metadata(
+                    route_plan=route_plan,
+                    decision=decision,
+                    k=k,
+                    lab_name=lab_name,
+                    resolved_lab_name=active_lab_name,
+                    cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
+                    knowledge_cards_retrieved=int(knowledge_stats.get("knowledge_cards_retrieved") or 0),
+                )
+                meta["memory_carryover_applied"] = bool(memory_retry.get("applied"))
+                meta["memory_carried_lab_name"] = memory_retry.get("carried_lab_name")
+                meta["memory_carried_time_phrase"] = memory_retry.get("carried_time_phrase")
+                meta["memory_carried_metric"] = memory_retry.get("carried_metric")
                 meta = attach_conversation_metadata(
                     meta,
                     conversation_id=normalized_conversation_id,
@@ -450,29 +427,21 @@ async def query_cards_stream(request: QueryRequest):
                 prepare_db_query_fn=prepare_db_query,
             )
             if db_context.get("invariant_violation"):
-                meta = {
-                    "timescale": "clarify",
-                    "cards_retrieved": 0,
-                    "recent_card": False,
-                    **route_plan_metadata(route_plan),
-                    "execution_intent": execution_intent.value,
-                    "intent_rerouted_to_db": execution_intent != decision.intent,
-                    "clarification_required": True,
-                    "executor": "clarify_gate",
-                    "k_requested": k,
-                    "lab_name": lab_name,
-                    "resolved_lab_name": db_context.get("resolved_lab_name"),
-                    "memory_carryover_applied": bool(memory.get("applied")),
-                    "memory_carried_lab_name": memory.get("carried_lab_name"),
-                    "memory_carried_time_phrase": memory.get("carried_time_phrase"),
-                    "memory_carried_metric": memory.get("carried_metric"),
-                    "llm_used": False,
-                    "time_window": db_context.get("time_window"),
-                    "sources": [],
-                    "db_invariant_violation": db_context.get("invariant_violation"),
-                    "visualization_type": "none",
-                    "chart": None,
-                }
+                meta = build_stream_clarify_metadata(
+                    route_plan=route_plan,
+                    decision=decision,
+                    k=k,
+                    lab_name=lab_name,
+                    resolved_lab_name=db_context.get("resolved_lab_name"),
+                    time_window=db_context.get("time_window"),
+                    invariant_violation=db_context.get("invariant_violation"),
+                )
+                meta["execution_intent"] = execution_intent.value
+                meta["intent_rerouted_to_db"] = execution_intent != decision.intent
+                meta["memory_carryover_applied"] = bool(memory.get("applied"))
+                meta["memory_carried_lab_name"] = memory.get("carried_lab_name")
+                meta["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
+                meta["memory_carried_metric"] = memory.get("carried_metric")
                 meta = attach_conversation_metadata(
                     meta,
                     conversation_id=normalized_conversation_id,
@@ -497,32 +466,18 @@ async def query_cards_stream(request: QueryRequest):
                     )
                 yield "event: done\ndata: [DONE]\n\n"
                 return
-            meta = {
-                "timescale": db_context["timescale"],
-                    "cards_retrieved": int(db_context.get("cards_retrieved") or 0),
-                "recent_card": False,
-                **route_plan_metadata(route_plan),
-                "execution_intent": execution_intent.value,
-                "intent_rerouted_to_db": execution_intent != decision.intent,
-                "clarification_required": False,
-                "executor": "db_query",
-                "k_requested": k,
-                "lab_name": lab_name,
-                "resolved_lab_name": db_context.get("resolved_lab_name"),
-                "memory_carryover_applied": bool(memory.get("applied")),
-                "memory_carried_lab_name": memory.get("carried_lab_name"),
-                "memory_carried_time_phrase": memory.get("carried_time_phrase"),
-                "memory_carried_metric": memory.get("carried_metric"),
-                "llm_used": True,
-                "time_window": db_context.get("time_window"),
-                "sources": db_context.get("sources", []),
-                "forecast_model": (db_context.get("forecast") or {}).get("model"),
-                "forecast_confidence": (db_context.get("forecast") or {}).get("confidence"),
-                "forecast_confidence_score": (db_context.get("forecast") or {}).get("confidence_score"),
-                "forecast_horizon_hours": (db_context.get("forecast") or {}).get("horizon_hours"),
-                "visualization_type": db_context.get("visualization_type", "none"),
-                "chart": db_context.get("chart"),
-            }
+            meta = build_stream_db_metadata(
+                route_plan=route_plan,
+                decision=decision,
+                execution_intent=execution_intent,
+                k=k,
+                lab_name=lab_name,
+                db_context=db_context,
+            )
+            meta["memory_carryover_applied"] = bool(memory.get("applied"))
+            meta["memory_carried_lab_name"] = memory.get("carried_lab_name")
+            meta["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
+            meta["memory_carried_metric"] = memory.get("carried_metric")
             meta = attach_conversation_metadata(
                 meta,
                 conversation_id=normalized_conversation_id,

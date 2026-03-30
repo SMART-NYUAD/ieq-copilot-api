@@ -4,7 +4,6 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 try:
-    from core_settings import load_settings
     from query_routing.observability import (
         evaluate_rollout_slo,
         get_error_observability_snapshot,
@@ -13,7 +12,6 @@ try:
         get_observability_snapshot,
     )
 except ImportError:
-    from ..core_settings import load_settings
     from ..query_routing.observability import (
         evaluate_rollout_slo,
         get_error_observability_snapshot,
@@ -36,7 +34,7 @@ async def root():
             "query_stream": "POST /query/stream - Routed streaming query",
             "query_route": "POST /query/route - Intent router preview",
             "health": "GET /health - Health check",
-            "router_health": "GET /health/router - Router rollout safety metrics",
+            "router_health": "GET /health/router - Router safety metrics",
             "observability": "GET /observability - Live observability dashboard",
             "observability_json": "GET /observability/kpis - Full KPI snapshot",
         },
@@ -50,7 +48,6 @@ async def health():
 
 @router.get("/health/router")
 async def router_health():
-    settings = load_settings()
     snapshot = get_observability_snapshot()
     slo = evaluate_rollout_slo(snapshot)
     thresholds = {
@@ -65,12 +62,8 @@ async def router_health():
     }
     return {
         "status": "healthy",
-        "router_rollout": {
-            "policy_rollout_enabled": settings.router_policy_rollout_enabled,
-            "policy_rollout_percent": settings.router_policy_rollout_percent,
-            "force_legacy": settings.router_force_legacy,
-            "shadow_mode_enabled": settings.router_shadow_mode_enabled,
-            "shadow_sample_rate": settings.router_shadow_sample_rate,
+        "router_mode": {
+            "strategy": "policy_engine_only",
         },
         "metrics": snapshot,
         "thresholds": thresholds,

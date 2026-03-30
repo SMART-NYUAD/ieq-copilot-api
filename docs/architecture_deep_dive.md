@@ -44,14 +44,14 @@ flowchart LR
 | DB executor | `executors/db_query_executor.py` + `executors/db_support/*` | Parses query scope, runs SQL branch handlers, optional forecast, LLM rendering/fallback |
 | Knowledge executor | `executors/env_query_langchain.py` | Semantic card retrieval + grounded LLM answer/streaming |
 | Evidence layer | `evidence/evidence_layer.py` | Validates and repairs provenance/evidence envelopes |
-| Observability | `query_routing/observability.py` | In-process KPIs, rollout metrics, latency/error counters |
+| Observability | `query_routing/observability.py` | In-process KPIs, latency, and error counters |
 
 ## 3) Endpoints (External "Tools" Exposed By The Service)
 
 ### Native API
 - `GET /` : service info and endpoint registry
 - `GET /health` : health status
-- `GET /health/router` : rollout and router safety status
+- `GET /health/router` : router safety status
 - `GET /observability/metrics` : router/http/error snapshots
 - `GET /observability/kpis` : KPI summary + SLO evaluation
 - `GET /observability` : live HTML dashboard
@@ -85,14 +85,13 @@ flowchart LR
 2. Planner behavior:
    - **Fastpath** for clear non-domain/general-knowledge requests.
    - **LLM planner** (JSON-constrained) for normal routing.
-   - **Legacy route mode** if configured.
    - **Fallback plan** on planner failure.
 3. `query_routing/route_policy_engine.py::build_route_decision_contract` enforces deterministic policy:
    - should this be clarify gate?
    - does it need measured DB facts?
    - executor choice (`knowledge_qa`, `db_query`, `clarify_gate`)
    - semantic-to-DB intent remap when needed
-4. `query_orchestrator.get_route_decision_contract` may select between policy vs legacy contracts using rollout sampling and shadow-mode tracking.
+4. `query_orchestrator.get_route_decision_contract` builds one deterministic policy contract for execution.
 
 ### Step 3: Branch execution
 
@@ -129,13 +128,22 @@ flowchart LR
    - time-window consistency
    - date consistency mismatch blocking
    - evidence-answer alignment
-3. Observability snapshot and rollout SLO info are attached to metadata.
+3. Observability snapshot and SLO info are attached to metadata.
 
 ### Step 5: Response assembly and persistence
 1. Route metadata fields are attached (`route_type`, confidence, reason, executor, etc.).
 2. Conversation metadata is attached (`conversation_id`, `turn_index`, context flags).
 3. Turn is persisted.
 4. Final payload is returned (sync JSON or SSE stream).
+
+### Step 6: Sync/stream metadata parity
+1. Stream metadata now uses shared builders in `query_use_cases.py`:
+   - `build_stream_clarify_metadata`
+   - `build_stream_knowledge_metadata`
+   - `build_stream_db_metadata`
+2. These builders normalize evidence through `evidence/evidence_layer.py`.
+3. Result: `POST /query`, `POST /query/stream`, and OpenAI stream `x_router`
+   now share the same normalization rules and metadata contract semantics.
 
 ## 5) Non-Stream Sequence (`POST /query`)
 
@@ -181,6 +189,8 @@ sequenceDiagram
     participant Q as query_routes.py
     participant R as query_runtime.py
     participant O as query_orchestrator.py
+    participant U as query_use_cases.py
+    participant V as evidence_layer.py
     participant D as db_query_executor.py
     participant K as env_query_langchain.py
 
@@ -190,7 +200,9 @@ sequenceDiagram
     O-->>R: StreamRouteRuntime
     R-->>Q: runtime (executor + intent)
 
-    Q-->>C: event: meta
+    Q->>U: build_stream_*_metadata(...)
+    U->>V: normalize_evidence(...) / build_repaired_evidence(...)
+    Q-->>C: event: meta (normalized)
     alt knowledge_qa
       Q->>K: stream_answer_env_question(...)
       loop token chunks
@@ -217,10 +229,7 @@ flowchart TD
     Start[Incoming Question] --> Signals[Extract Query Signals]
     Signals --> Fastpath{Non-domain or general knowledge fastpath?}
     Fastpath -->|Yes| KnowledgeFastpath[RoutePlan: semantic_explanatory + knowledge_only]
-    Fastpath -->|No| PlannerMode{ROUTER_MODE == legacy?}
-
-    PlannerMode -->|Yes| LegacyPlan[Legacy route plan]
-    PlannerMode -->|No| PlannerTry[Call LLM planner JSON]
+    Fastpath -->|No| PlannerTry[Call LLM planner JSON]
     PlannerTry --> PlannerOK{Planner output valid?}
     PlannerOK -->|Yes| NormalizedPlan[Normalize + enforce policy]
     PlannerOK -->|No| RepairTry[Repair prompt + retry]
@@ -229,7 +238,6 @@ flowchart TD
     RepairOK -->|No| FallbackPlan[Deterministic fallback plan]
 
     KnowledgeFastpath --> Contract[Build route decision contract]
-    LegacyPlan --> Contract
     NormalizedPlan --> Contract
     FallbackPlan --> Contract
 
@@ -270,7 +278,7 @@ Evidence guarantees:
 ## 10) Debugging And Verification Checklist
 
 1. `GET /health` for process health.
-2. `GET /health/router` to verify rollout/shadow/slo status.
+2. `GET /health/router` to verify router/slo status.
 3. `POST /query/route` to inspect route decision before full execution.
 4. `POST /query/db-proof` to inspect DB SQL preview/bindings and row sample.
 5. `GET /observability/kpis` for fallback rates, latency, and error trends.

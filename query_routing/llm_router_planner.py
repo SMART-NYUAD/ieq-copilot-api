@@ -17,14 +17,12 @@ try:
         ALLOWED_PLANNER_METRICS,
         enforce_non_domain_block,
         fallback_plan,
-        legacy_plan,
         normalize_plan,
         normalize_planner_parameters,
     )
     from query_routing.router_settings import (
         router_base_url,
         router_max_retries,
-        router_mode,
         router_model,
         router_retry_jitter_ms,
         router_temperature,
@@ -46,14 +44,12 @@ except ImportError:
         ALLOWED_PLANNER_METRICS,
         enforce_non_domain_block,
         fallback_plan,
-        legacy_plan,
         normalize_plan,
         normalize_planner_parameters,
     )
     from .router_settings import (
         router_base_url,
         router_max_retries,
-        router_mode,
         router_model,
         router_retry_jitter_ms,
         router_temperature,
@@ -322,9 +318,6 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
             question=question,
             query_signals=query_signals,
         )
-    if router_mode() == "legacy":
-        return legacy_plan(question=question, model=model, reason="router_mode_legacy")
-
     last_error: Optional[Exception] = None
     for _ in range(router_max_retries()):
         try:

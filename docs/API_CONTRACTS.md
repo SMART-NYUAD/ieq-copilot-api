@@ -58,6 +58,12 @@ This document defines stable API behavior for clients integrating with the RAG A
 - `done`: completion marker
 - `error`: error payload
 
+`meta` contract note:
+
+- Stream `meta` is produced by shared builders in `query_use_cases.py` and
+  evidence-normalized through `evidence/evidence_layer.py`, matching non-stream
+  contract semantics.
+
 ### `error` payload
 
 ```json
@@ -83,16 +89,18 @@ This document defines stable API behavior for clients integrating with the RAG A
 - Returns OpenAI-like `chat.completion.chunk` events.
 - Ends with `data: [DONE]`.
 - Errors include OpenAI-style `error` object with stable `code` where available.
+- First chunk `x_router` uses the same shared stream metadata/evidence
+  normalization path as native `POST /query/stream`.
 
-## `GET /health/router` (rollout safety telemetry)
+## `GET /health/router` (router safety telemetry)
 
-Returns router rollout controls, runtime observability metrics, and SLO gate status.
+Returns active router mode, runtime observability metrics, and SLO gate status.
 
 Key groups:
 
-- `router_rollout`: feature flags and rollout percentages (`policy_rollout_enabled`, `policy_rollout_percent`, `force_legacy`, `shadow_mode_enabled`, `shadow_sample_rate`)
-- `metrics`: planner/critic counters plus shadow diff and sync-stream flip rates
-- `thresholds`: target/max thresholds used for rollout gating
+- `router_mode`: active strategy (`policy_engine_only`)
+- `metrics`: planner/critic counters and sync/stream parity rates
+- `thresholds`: target/max thresholds used for router safety gating
 - `slo`: computed booleans (`*_target_ok`, `*_max_ok`, `rollout_blocked`)
 
 ## Evidence Contract
