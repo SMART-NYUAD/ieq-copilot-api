@@ -1,5 +1,7 @@
 # Router Architecture
 
+For full end-to-end request flow (not only routing), see `docs/architecture_deep_dive.md`.
+
 ## Purpose
 
 The router decides exactly one execution path per query:

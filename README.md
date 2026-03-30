@@ -30,10 +30,13 @@ Main modules:
   - `health_routes.py`
   - `query_routes.py`
 - `query_routing/`: intent routing + orchestration
-  - `intent_classifier.py`
+  - `intent_classifier.py` (legacy fallback classifier)
   - `llm_router_planner.py`
+  - `route_policy_engine.py`
   - `query_orchestrator.py`
   - `query_use_cases.py` (branch-specific application use cases)
+- `http_routes/query_runtime.py`: shared runtime adapters used by both native and OpenAI-compatible routes
+- `http_routes/route_helpers.py`: route metadata helpers + conversation persistence hooks
 - `executors/`: execution engines
   - `db_query_executor.py` (SQL + LLM answer rendering)
 - `executors/env_query_langchain.py`: knowledge-card retrieval + shared LLM chain utilities
@@ -42,6 +45,8 @@ Main modules:
 - `storage/postgres_client.py`: shared DB cursor/connection helper
 
 Detailed router design is documented in `docs/router_architecture.md`.
+End-to-end request lifecycle (with sequence/state graphs) is documented in
+`docs/architecture_deep_dive.md`.
 
 ## Local Setup
 
@@ -74,6 +79,17 @@ manual `export`), and environment variables already set in your shell still win.
 4. Executor provenance is normalized by `evidence/evidence_layer.py`.
 5. For DB intents, SQL rows are converted to a grounded LLM answer (with deterministic fallback).
 6. Unified response is returned with route and evidence metadata.
+
+For a very detailed step-by-step flow (including clarify-gate behavior,
+follow-up memory carry-over, policy rollout/shadow mode, and streaming internals),
+see `docs/architecture_deep_dive.md`.
+
+## Documentation Map
+
+- `docs/architecture_deep_dive.md`: full architecture walkthrough with Mermaid graphs
+- `docs/router_architecture.md`: routing policy, planner contract, and metadata details
+- `docs/API_CONTRACTS.md`: request/response contracts and compatibility payloads
+- `docs/BLUEPRINT_GUIDE.md`: implementation and blueprint guidance
 
 ## Intent Types
 
