@@ -47,16 +47,22 @@ Category-to-intent constraints:
 ## Request Flow
 
 ```mermaid
-flowchart TD
-  clientReq[ClientRequest] --> planner[LLMPlanner]
-  planner --> plannerJson[PlannerJSON]
-  plannerJson --> validate[ValidateCategoryIntent]
-  validate --> routeDecision[RouteDecision]
-  routeDecision --> execute[ExecuteQueryUseCase]
-  execute --> executor[DBOrKnowledgeExecutor]
-  executor --> evidenceLayer[EvidenceLayerNormalizeValidate]
-  evidenceLayer --> responseMeta[ResponseMetadataAndSources]
-  responseMeta --> apiResp[APIResponse]
+flowchart LR
+    Q[Incoming query] --> S[Signal extraction]
+    S --> P[LLM planner]
+    P --> V[Plan validation]
+    V --> D[Route decision]
+
+    D --> C{Execution path}
+    C -->|Clarify| G[Clarify gate]
+    C -->|Knowledge| K[Knowledge executor]
+    C -->|DB / analysis / forecast| B[DB executor]
+
+    G --> E[Evidence + metadata]
+    K --> E
+    B --> E
+
+    E --> R[API response]
 ```
 
 ## Progressive Contracts + Evidence Layer
@@ -78,12 +84,23 @@ Evidence is now treated as an explicit layer:
 
 ```mermaid
 flowchart TD
-  routeStart[RouteStart] --> plannerCall[CallPlanner]
-  plannerCall --> plannerOk{ValidPlan}
-  plannerOk -->|yes| plannerRoute[UsePlannerDecision]
-  plannerOk -->|no| fallbackRoute[DeterministicFallbackPlan]
-  plannerRoute --> finalize[FinalizeRoute]
-  fallbackRoute --> finalize
+    A[Start] --> B{Fastpath match?}
+    B -->|Yes| C[Route to knowledge path]
+    B -->|No| D[Call planner]
+
+    D --> E{Planner output valid?}
+    E -->|No| F[Use deterministic fallback]
+    E -->|Yes| G[Normalize category + intent]
+
+    C --> H[Apply policy engine]
+    F --> H
+    G --> H
+
+    H --> I{Clarification needed?}
+    I -->|Yes| J[clarify_gate]
+    I -->|No| K{Needs measured data?}
+    K -->|Yes| L[db_query]
+    K -->|No| M[knowledge_qa]
 ```
 
 ## Planner Contract

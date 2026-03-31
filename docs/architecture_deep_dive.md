@@ -7,26 +7,24 @@ which modules participate, and what each major component/tool is responsible for
 
 ```mermaid
 flowchart LR
-    Client[Client App / SDK / curl] --> FastAPI[FastAPI App]
-    FastAPI --> NativeRoutes["Native Routes (/query, /query/stream, /query/route, /query/db-proof)"]
-    FastAPI --> OpenAICompat["OpenAI-Compatible Routes (/v1/models, /v1/chat/completions)"]
+    Client[Client / SDK / UI] --> API[FastAPI API layer]
 
-    NativeRoutes --> RuntimeAdapters[query_runtime helpers]
-    OpenAICompat --> RuntimeAdapters
+    API --> Routes[Native + OpenAI-compatible routes]
+    Routes --> Runtime[Runtime adapters]
 
-    RuntimeAdapters --> Router["Router Stack (planner + policy)"]
-    Router --> Orchestrator[query_orchestrator]
-    Orchestrator --> UseCases[query_use_cases]
-    UseCases --> DBExec[db_query_executor]
-    UseCases --> CardExec[env_query_langchain]
+    Runtime --> Router[Router + policy engine]
+    Router --> UseCases[Use-case layer]
 
-    DBExec --> Postgres[(PostgreSQL / lab_ieq_final)]
-    CardExec --> Cards[(PostgreSQL / env_knowledge_cards + pgvector)]
-    DBExec --> Ollama[(Ollama LLM)]
-    CardExec --> Ollama
+    UseCases --> DBExec[DB executor]
+    UseCases --> KnowledgeExec[Knowledge executor]
 
-    UseCases --> Evidence[evidence_layer]
-    Evidence --> Response[Unified Response Metadata + Evidence]
+    DBExec --> DB[(Postgres IEQ data)]
+    KnowledgeExec --> Cards[(Knowledge cards + vectors)]
+    DBExec --> LLM[(Ollama)]
+    KnowledgeExec --> LLM
+
+    UseCases --> Evidence[Evidence normalization]
+    Evidence --> Response[Metadata + response assembly]
     Response --> Client
 ```
 
@@ -150,35 +148,23 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant Q as query_routes.py
-    participant R as query_runtime.py
-    participant O as query_orchestrator.py
-    participant P as llm_router_planner.py
-    participant E as route_policy_engine.py
-    participant U as query_use_cases.py
-    participant D as db_query_executor.py
-    participant K as env_query_langchain.py
-    participant V as evidence_layer.py
+    participant API as HTTP route
+    participant RT as Runtime layer
+    participant RO as Router
+    participant UC as Use-case layer
+    participant EX as Executor
+    participant EV as Evidence layer
 
-    C->>Q: POST /query
-    Q->>R: normalize + build_query_context
-    R->>O: execute_query(...)
-    O->>P: plan_route(...)
-    O->>E: build_route_decision_contract(...)
-    E-->>O: executor + execution_intent
-    alt clarify_gate
-      O->>U: build_clarify_result(...)
-    else knowledge_qa
-      O->>U: execute_knowledge_use_case(...)
-      U->>K: answer_env_question_with_metadata(...)
-    else db_query
-      O->>U: execute_db_use_case(...)
-      U->>D: run_db_query(...)
-    end
-    U->>V: normalize_evidence(...)
-    O-->>R: result + metadata
-    R-->>Q: attach conversation metadata + persist turn
-    Q-->>C: QueryResponse
+    C->>API: POST /query
+    API->>RT: validate + normalize
+    RT->>RO: build route decision
+    RO-->>RT: executor + intent
+    RT->>UC: execute selected use case
+    UC->>EX: run executor
+    EX-->>UC: result + provenance
+    UC->>EV: normalize evidence
+    EV-->>API: stable payload + metadata
+    API-->>C: JSON response
 ```
 
 ## 6) Streaming Sequence (`POST /query/stream`)
@@ -186,43 +172,29 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant Q as query_routes.py
-    participant R as query_runtime.py
-    participant O as query_orchestrator.py
-    participant U as query_use_cases.py
-    participant V as evidence_layer.py
-    participant D as db_query_executor.py
-    participant K as env_query_langchain.py
+    participant API as Stream route
+    participant RO as Router
+    participant UC as Use-case layer
+    participant EV as Evidence layer
+    participant EX as Streaming executor
 
-    C->>Q: POST /query/stream
-    Q->>R: resolve_stream_runtime(...)
-    R->>O: get_route_decision_contract(...)
-    O-->>R: StreamRouteRuntime
-    R-->>Q: runtime (executor + intent)
+    C->>API: POST /query/stream
+    API->>RO: resolve route
+    RO-->>API: executor + intent
+    API->>UC: build stream metadata
+    UC->>EV: normalize evidence
+    EV-->>C: meta event
 
-    Q->>U: build_stream_*_metadata(...)
-    U->>V: normalize_evidence(...) / build_repaired_evidence(...)
-    Q-->>C: event: meta (normalized)
-    alt knowledge_qa
-      Q->>K: stream_answer_env_question(...)
-      loop token chunks
-        K-->>Q: text chunk
-        Q-->>C: event: token
-      end
-    else db_query
-      Q->>D: stream_db_query(...)
-      loop token chunks
-        D-->>Q: text chunk
-        Q-->>C: event: token
-      end
-    else clarify_gate
-      Q-->>C: event: token (clarify prompt)
+    API->>EX: start streaming answer
+    loop token stream
+        EX-->>C: token event
     end
-    Q-->>C: event: conversation (if persisted)
-    Q-->>C: event: done
+
+    API-->>C: conversation event
+    API-->>C: done event
 ```
 
-## 7) Route Decision State Machine
+## 7) End-To-End Runtime Flow
 
 ```mermaid
 flowchart TD
