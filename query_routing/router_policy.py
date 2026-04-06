@@ -226,6 +226,10 @@ def normalize_planner_parameters(raw_plan: Dict[str, Any], question: str, intent
     response_mode = raw_response_mode if raw_response_mode in {"db", "knowledge_only"} else default_response_mode
     if scope_class == QueryScopeClass.NON_DOMAIN.value:
         response_mode = "knowledge_only"
+    elif bool(signals.get("is_hypothetical_conditional")) and not bool(
+        signals.get("requests_current_measured_data")
+    ):
+        response_mode = "knowledge_only"
     elif bool(signals.get("asks_for_db_facts")):
         response_mode = "db"
 

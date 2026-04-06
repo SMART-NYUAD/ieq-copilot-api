@@ -545,7 +545,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_critic_blocks_on_date_consistency_mismatch(self, mock_route_plan, mock_run_db):
+    def test_critic_warns_on_date_consistency_mismatch(self, mock_route_plan, mock_run_db):
         mock_route_plan.return_value = RoutePlan(
             decision=RouteDecision(
                 intent=IntentType.AGGREGATION_DB,
@@ -595,10 +595,10 @@ class GeneralQaRoutingTests(unittest.TestCase):
             lab_name="smart_lab",
         )
 
-        self.assertEqual(result["metadata"]["critic_status"], "block")
-        self.assertTrue(result["metadata"]["critic_blocked"])
+        self.assertEqual(result["metadata"]["critic_status"], "warn")
+        self.assertFalse(result["metadata"]["critic_blocked"])
         self.assertIn("date_consistency_mismatch", result["metadata"]["critic_issues"])
-        self.assertIn("Verified window: Mar 27, 2026, 2:15 PM GMT+4 to Mar 28, 2026, 2:15 PM GMT+4.", result["answer"])
+        self.assertTrue(result["answer"].startswith("Note:"))
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
@@ -788,6 +788,206 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertTrue(bool(result["metadata"].get("memory_carryover_applied")))
         self.assertEqual(result["metadata"].get("memory_carried_lab_name"), "shores_office")
         self.assertEqual(result["metadata"].get("memory_carried_time_phrase"), "this week")
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_db_follow_up_inherits_scope_for_data_backed_clarification_selection(
+        self, mock_route_plan, mock_run_db
+    ):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.CURRENT_STATUS_DB,
+                confidence=0.9,
+                reason="clarification_selection",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "has_lab_reference": False,
+                    "has_time_window_hint": False,
+                    "has_metric_reference": False,
+                    "asks_for_db_facts": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "Using prior scope in smart_lab for last week.",
+            "timescale": "1hour",
+            "llm_used": True,
+            "time_window": {"label": "last week", "start": "x", "end": "y"},
+            "resolved_lab_name": "smart_lab",
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["ieq"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+
+        result = execute_query(
+            question="a data-backed answer with exact values from the database",
+            k=4,
+            lab_name=None,
+            conversation_context=(
+                "Previous conversation context (most recent last):\n"
+                "User: What is the air quality in the smart lab for the last week?\n"
+                "Assistant: It was good.\n"
+                "User: Would you say it's good the air quality there?\n"
+                "Assistant: Quick clarification: do you want (1) a data-backed answer with exact values from the database, "
+                "or (2) a high-level conceptual explanation?"
+            ),
+        )
+
+        kwargs = mock_run_db.call_args.kwargs
+        self.assertEqual(kwargs.get("lab_name"), "smart_lab")
+        self.assertIn("last week", str(kwargs.get("question") or "").lower())
+        self.assertTrue(bool(result["metadata"].get("memory_carryover_applied")))
+        self.assertEqual(result["metadata"].get("memory_carried_lab_name"), "smart_lab")
+        self.assertEqual(result["metadata"].get("memory_carried_time_phrase"), "last week")
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_db_metric_only_followup_inherits_lab_and_time(self, mock_route_plan, mock_run_db):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.CURRENT_STATUS_DB,
+                confidence=0.9,
+                reason="metric_only_followup",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "has_lab_reference": False,
+                    "has_time_window_hint": False,
+                    "has_metric_reference": True,
+                    "asks_for_db_facts": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "PM2.5 stayed low this week in shores_office.",
+            "timescale": "1hour",
+            "llm_used": True,
+            "time_window": {"label": "this week", "start": "x", "end": "y"},
+            "resolved_lab_name": "shores_office",
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["pm25"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+
+        result = execute_query(
+            question="How is PM2.5?",
+            k=4,
+            lab_name=None,
+            conversation_context=(
+                "Previous conversation context (most recent last):\n"
+                "User: What is the air quality in shores_office this week?\n"
+                "Assistant: Air quality has been stable."
+            ),
+        )
+
+        kwargs = mock_run_db.call_args.kwargs
+        self.assertEqual(kwargs.get("lab_name"), "shores_office")
+        self.assertIn("this week", str(kwargs.get("question") or "").lower())
+        self.assertTrue(bool(result["metadata"].get("memory_carryover_applied")))
+        self.assertEqual(result["metadata"].get("memory_carried_lab_name"), "shores_office")
+        self.assertEqual(result["metadata"].get("memory_carried_time_phrase"), "this week")
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_db_lab_only_clarification_reply_inherits_previous_scope(self, mock_route_plan, mock_run_db):
+        mock_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.CURRENT_STATUS_DB,
+                confidence=0.9,
+                reason="lab_only_clarification_reply",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "has_lab_reference": True,
+                    "has_time_window_hint": False,
+                    "has_metric_reference": False,
+                    "asks_for_db_facts": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "Air quality was good in smart_lab last week.",
+            "timescale": "1hour",
+            "llm_used": True,
+            "time_window": {"label": "last week", "start": "x", "end": "y"},
+            "resolved_lab_name": "smart_lab",
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["ieq"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+
+        result = execute_query(
+            question="smart_lab",
+            k=4,
+            lab_name=None,
+            conversation_context=(
+                "Previous conversation context (most recent last):\n"
+                "User: What is the air quality there for the last week?\n"
+                "Assistant: I can answer this with measured data, but I need the lab first. "
+                "Which lab should I use (for example: smart_lab, concrete_lab, or eco_lab)?"
+            ),
+        )
+
+        kwargs = mock_run_db.call_args.kwargs
+        self.assertEqual(kwargs.get("lab_name"), "smart_lab")
+        self.assertIn("last week", str(kwargs.get("question") or "").lower())
+        self.assertTrue(bool(result["metadata"].get("memory_carryover_applied")))
+        self.assertEqual(result["metadata"].get("memory_carried_time_phrase"), "last week")
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")

@@ -1,0 +1,97 @@
+{
+  "generated_at_epoch": 1775244679,
+  "duration_seconds": 8.97,
+  "dsn_hint": "DATABASE_URL env or default campus_iot DSN",
+  "fixture": {
+    "metric_id": 1,
+    "lab_name": "smart_lab",
+    "smart_lab_device_count": 8,
+    "concrete_lab_device_count": 1
+  },
+  "results": [
+    {
+      "name": "metric_only_latest",
+      "execution_time_ms": 18.138,
+      "sample_output": [
+        {
+          "ts": "2026-04-03 23:30:32+00:00",
+          "state": 54.0
+        }
+      ]
+    },
+    {
+      "name": "lab_metric_latest_join",
+      "execution_time_ms": 18.272,
+      "sample_output": [
+        {
+          "ts": "2026-04-03 23:30:32+00:00",
+          "state": 54.0
+        }
+      ]
+    },
+    {
+      "name": "lab_metric_latest_device_filter",
+      "execution_time_ms": 20.087,
+      "sample_output": [
+        {
+          "ts": "2026-04-03 23:30:32+00:00",
+          "state": 54.0
+        }
+      ]
+    },
+    {
+      "name": "lab_metric_7d_agg_join",
+      "execution_time_ms": 33.254,
+      "sample_output": [
+        {
+          "h": "2026-04-03 23:00:00+00:00",
+          "v": 54.0
+        },
+        {
+          "h": "2026-04-03 22:00:00+00:00",
+          "v": 54.0
+        },
+        {
+          "h": "2026-04-03 21:00:00+00:00",
+          "v": 54.0
+        },
+        {
+          "h": "2026-04-03 20:00:00+00:00",
+          "v": 54.0
+        },
+        {
+          "h": "2026-04-03 19:00:00+00:00",
+          "v": 54.0
+        }
+      ]
+    },
+    {
+      "name": "smart_vs_concrete_24h_compare",
+      "execution_time_ms": 2.417,
+      "sample_output": [
+        {
+          "space": "smart_lab",
+          "avg_state": 54.0
+        }
+      ]
+    },
+    {
+      "name": "concrete_count_join",
+      "execution_time_ms": 2922.691,
+      "sample_output": [
+        {
+          "count": 3338097
+        }
+      ]
+    },
+    {
+      "name": "concrete_count_device_filter",
+      "execution_time_ms": 304.465,
+      "sample_output": [
+        {
+          "count": 3338097
+        }
+      ]
+    }
+  ]
+}

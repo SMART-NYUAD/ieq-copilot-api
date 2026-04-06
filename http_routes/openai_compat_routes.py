@@ -235,6 +235,10 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         scope_class = runtime.scope_class
         use_knowledge_executor = runtime.use_knowledge_executor
         execution_intent = runtime.execution_intent
+        stream_signals = (route_plan.planner_parameters or {}).get("query_signals") or {}
+        suppress_live_scope = bool(stream_signals.get("is_hypothetical_conditional")) and not bool(
+            stream_signals.get("requests_current_measured_data")
+        )
         active_question = latest_user_question
         active_lab_name = lab_name
         effective_question = active_question
@@ -285,17 +289,21 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 x_router["memory_carried_time_phrase"] = memory_retry.get("carried_time_phrase")
                 x_router["memory_carried_metric"] = memory_retry.get("carried_metric")
             elif use_knowledge_executor:
+                knowledge_question = active_question if suppress_live_scope else (
+                    f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+                )
+                knowledge_lab_name = None if suppress_live_scope else active_lab_name
                 knowledge_stats = await fetch_knowledge_stats(
-                    active_question,
+                    knowledge_question,
                     k,
-                    active_lab_name,
+                    knowledge_lab_name,
                 )
                 x_router = build_stream_knowledge_metadata(
                     route_plan=route_plan,
                     decision=decision,
                     k=k,
                     lab_name=lab_name,
-                    resolved_lab_name=active_lab_name,
+                    resolved_lab_name=knowledge_lab_name,
                     cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
                     knowledge_cards_retrieved=int(
                         knowledge_stats.get("knowledge_cards_retrieved") or 0
@@ -410,14 +418,14 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 )
                 x_router["turn_index"] = turn_index
             elif use_knowledge_executor:
+                knowledge_question = active_question if suppress_live_scope else (
+                    f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+                )
+                knowledge_lab_name = None if suppress_live_scope else active_lab_name
                 chunk_stream = stream_answer_env_question(
-                    user_question=(
-                        f"{active_question}\n\n{conversation_context}"
-                        if conversation_context
-                        else active_question
-                    ),
+                    user_question=knowledge_question,
                     k=max(1, min(k, 8)),
-                    space=active_lab_name,
+                    space=knowledge_lab_name,
                     think=request.think,
                 )
             else:

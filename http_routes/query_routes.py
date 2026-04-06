@@ -350,25 +350,33 @@ async def query_cards_stream(request: QueryRequest):
 
     use_knowledge_executor = runtime.use_knowledge_executor
     execution_intent = runtime.execution_intent
+    stream_signals = (route_plan.planner_parameters or {}).get("query_signals") or {}
+    suppress_live_scope = bool(stream_signals.get("is_hypothetical_conditional")) and not bool(
+        stream_signals.get("requests_current_measured_data")
+    )
     active_question = (
         str(memory_retry.get("effective_question") or latest_user_question) if retry_applied else latest_user_question
     )
     active_lab_name = (memory_retry.get("effective_lab_name") if retry_applied else lab_name)
+    knowledge_question = active_question if suppress_live_scope else (
+        f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+    )
+    knowledge_lab_name = None if suppress_live_scope else active_lab_name
 
     async def event_generator():
         try:
             if use_knowledge_executor:
                 knowledge_stats = await fetch_knowledge_stats(
-                    active_question,
+                    knowledge_question,
                     k,
-                    active_lab_name,
+                    knowledge_lab_name,
                 )
                 meta = build_stream_knowledge_metadata(
                     route_plan=route_plan,
                     decision=decision,
                     k=k,
                     lab_name=lab_name,
-                    resolved_lab_name=active_lab_name,
+                    resolved_lab_name=knowledge_lab_name,
                     cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
                     knowledge_cards_retrieved=int(knowledge_stats.get("knowledge_cards_retrieved") or 0),
                 )
@@ -386,13 +394,9 @@ async def query_cards_stream(request: QueryRequest):
                 yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
                 assembled_answer = ""
                 async for chunk in stream_answer_env_question(
-                    user_question=(
-                        f"{active_question}\n\n{conversation_context}"
-                        if conversation_context
-                        else active_question
-                    ),
+                    user_question=knowledge_question,
                     k=max(1, min(k, 8)),
-                    space=active_lab_name,
+                    space=knowledge_lab_name,
                 ):
                     assembled_answer += chunk or ""
                     lines = (chunk or "").splitlines() or [""]

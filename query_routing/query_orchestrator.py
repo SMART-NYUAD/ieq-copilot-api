@@ -185,6 +185,11 @@ _FOLLOW_UP_HINTS = (
     "what else",
     "that one",
     "the same",
+    "there",
+    "that room",
+    "same room",
+    "same lab",
+    "same space",
 )
 _CLARIFICATION_SELECTION_HINTS = {
     "current_status_db",
@@ -195,6 +200,26 @@ _CLARIFICATION_SELECTION_HINTS = {
     "forecast_db",
     "definition_explanation",
 }
+_CLARIFICATION_DB_SELECTION_HINTS = (
+    "1",
+    "option 1",
+    "data-backed",
+    "data backed",
+    "exact values",
+    "from the database",
+    "database answer",
+    "db answer",
+    "measured data",
+)
+_CLARIFICATION_CONCEPT_SELECTION_HINTS = (
+    "2",
+    "option 2",
+    "high-level conceptual explanation",
+    "high level conceptual explanation",
+    "conceptual explanation",
+    "high-level explanation",
+    "high level explanation",
+)
 
 _MONTH_TOKEN_TO_NUMBER = {
     "january": 1,
@@ -260,6 +285,14 @@ def _context_user_lines(conversation_context: str) -> list[str]:
     return lines
 
 
+def _context_assistant_lines(conversation_context: str) -> list[str]:
+    lines: list[str] = []
+    for line in str(conversation_context or "").splitlines():
+        if line.strip().lower().startswith("assistant:"):
+            lines.append(line.split(":", 1)[1].strip())
+    return lines
+
+
 def _latest_value_from_user_lines(user_lines: list[str], extractor) -> Any:
     for candidate in reversed(user_lines):
         value = extractor(candidate)
@@ -277,7 +310,41 @@ def _is_follow_up_question(question: str) -> bool:
 
 def _is_clarification_selection(question: str) -> bool:
     q = str(question or "").strip().lower()
-    return q in _CLARIFICATION_SELECTION_HINTS
+    if q in _CLARIFICATION_SELECTION_HINTS:
+        return True
+    if q in _CLARIFICATION_DB_SELECTION_HINTS:
+        return True
+    if q in _CLARIFICATION_CONCEPT_SELECTION_HINTS:
+        return True
+    if any(hint in q for hint in _CLARIFICATION_DB_SELECTION_HINTS if len(hint) > 2):
+        return True
+    if any(hint in q for hint in _CLARIFICATION_CONCEPT_SELECTION_HINTS if len(hint) > 2):
+        return True
+    return False
+
+
+def _looks_like_recent_clarify_prompt(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    return (
+        "quick clarification" in t
+        or "please specify" in t
+        or "which lab" in t
+        or "scope is clear" in t
+    )
+
+
+def _is_scope_only_reply(question: str, planner_signals: Dict[str, Any]) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    token_count = len([token for token in re.split(r"\s+", q) if token])
+    has_lab = bool(planner_signals.get("has_lab_reference"))
+    has_time = bool(planner_signals.get("has_time_window_hint"))
+    has_metric = bool(planner_signals.get("has_metric_reference"))
+    # Typical clarification replies like "smart_lab", "this week", "co2".
+    return token_count <= 5 and (has_lab or has_time or has_metric) and not (has_lab and has_time and has_metric)
 
 
 def _apply_followup_memory(
@@ -299,12 +366,22 @@ def _apply_followup_memory(
     if lab_name and has_lab_reference and has_time_window_hint:
         return base_question, lab_name, {"applied": False}
 
-    if not (_is_follow_up_question(base_question) or _is_clarification_selection(base_question)):
+    user_lines = _context_user_lines(conversation_context)
+    assistant_lines = _context_assistant_lines(conversation_context)
+    previous_user = user_lines[-1] if user_lines else ""
+    previous_assistant = assistant_lines[-1] if assistant_lines else ""
+    if not previous_user:
         return base_question, lab_name, {"applied": False}
 
-    user_lines = _context_user_lines(conversation_context)
-    previous_user = user_lines[-1] if user_lines else ""
-    if not previous_user:
+    metric_only_follow_up = has_metric_reference and not has_lab_reference and not has_time_window_hint
+    scope_only_reply = _is_scope_only_reply(base_question, planner_signals)
+    clarify_follow_up = _looks_like_recent_clarify_prompt(previous_assistant)
+    if not (
+        _is_follow_up_question(base_question)
+        or _is_clarification_selection(base_question)
+        or metric_only_follow_up
+        or (scope_only_reply and clarify_follow_up)
+    ):
         return base_question, lab_name, {"applied": False}
 
     previous_lab = _latest_value_from_user_lines(user_lines, extract_space_from_question)
@@ -319,6 +396,12 @@ def _apply_followup_memory(
     carried_lab = None
     carried_time = None
     carried_metric = None
+
+    if not effective_lab and has_lab_reference:
+        explicit_current_lab = extract_space_from_question(base_question)
+        if explicit_current_lab:
+            effective_lab = explicit_current_lab
+            carried_lab = explicit_current_lab
 
     if not effective_lab and not has_lab_reference and previous_lab:
         effective_lab = previous_lab
@@ -373,6 +456,13 @@ def _question_needs_recommendation(question: str) -> bool:
 def _question_needs_explanation(question: str) -> bool:
     q = (question or "").lower()
     return any(token in q for token in ("why", "explain", "reason", "how come"))
+
+
+def _suppress_live_scope_for_hypothetical(route_plan: RoutePlan) -> bool:
+    signals = (route_plan.planner_parameters or {}).get("query_signals") or {}
+    return bool(signals.get("is_hypothetical_conditional")) and not bool(
+        signals.get("requests_current_measured_data")
+    )
 
 
 def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
@@ -485,7 +575,7 @@ def _run_answer_critic(question: str, answer: str, metadata: Dict[str, Any]) -> 
 
     status = "pass" if not issues else "warn"
     blocked = False
-    if "evidence_answer_mismatch" in issues or "date_consistency_mismatch" in issues:
+    if "evidence_answer_mismatch" in issues:
         status = "block"
         blocked = True
     return {
@@ -502,23 +592,10 @@ def _apply_critic(result: Dict[str, Any], question: str) -> Dict[str, Any]:
     record_critic_outcome(str(critic.get("critic_status") or ""))
     metadata.update(critic)
     if critic.get("critic_blocked"):
-        issues = set(critic.get("critic_issues") or [])
-        if "date_consistency_mismatch" in issues:
-            time_window = metadata.get("time_window") or {}
-            display_start = str(time_window.get("display_start") or time_window.get("start") or "").strip()
-            display_end = str(time_window.get("display_end") or time_window.get("end") or "").strip()
-            if display_start and display_end:
-                answer = (
-                    "I detected a date formatting mismatch and blocked this draft for safety. "
-                    f"Verified window: {display_start} to {display_end}."
-                )
-            else:
-                answer = "I detected a date formatting mismatch and blocked this draft for safety."
-        else:
-            answer = (
-                "I need to re-check evidence alignment before giving a definitive answer. "
-                "Please rephrase with explicit metric and time scope."
-            )
+        answer = (
+            "I need to re-check evidence alignment before giving a definitive answer. "
+            "Please rephrase with explicit metric and time scope."
+        )
     elif critic.get("critic_issues"):
         issue_list = ", ".join(critic.get("critic_issues") or [])
         answer = f"Note: This answer may be incomplete ({issue_list}).\n\n{answer}"
@@ -832,10 +909,12 @@ def execute_query(
         return _attach_observability_snapshot(_apply_critic(result=decomposed, question=question))
 
     if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
+        suppress_live_scope = _suppress_live_scope_for_hypothetical(route_plan)
+        knowledge_question = question if suppress_live_scope else generation_question
         knowledge_result = execute_knowledge_use_case(
-            question=generation_question,
+            question=knowledge_question,
             k=k,
-            lab_name=lab_name,
+            lab_name=None if suppress_live_scope else lab_name,
             route_plan=route_plan,
             decision=decision,
             scope_guardrail_builder=build_non_domain_scope_message,
@@ -889,8 +968,11 @@ async def stream_query(
         executor=route_contract.executor.value,
     )
     if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
+        suppress_live_scope = _suppress_live_scope_for_hypothetical(route_plan)
         async for chunk in stream_answer_env_question(
-            user_question=generation_question, k=max(1, min(k, 8)), space=lab_name
+            user_question=(question if suppress_live_scope else generation_question),
+            k=max(1, min(k, 8)),
+            space=(None if suppress_live_scope else lab_name),
         ):
             yield chunk
         return

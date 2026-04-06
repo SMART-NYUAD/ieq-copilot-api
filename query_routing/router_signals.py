@@ -83,6 +83,38 @@ _COMFORT_ASSESSMENT_HINTS = (
     "dry",
     "humid",
 )
+_HYPOTHETICAL_CONDITIONAL_HINTS = (
+    "what if",
+    " if ",
+    "what risk",
+    "should be flagged",
+    "in case of",
+    "what happens when",
+    "what happens if",
+    "would happen if",
+)
+_BASELINE_REFERENCE_HINTS = (
+    "baseline",
+    "normal",
+    "usual",
+    "typical",
+    "expected",
+    "reference",
+    "deviation",
+)
+_CURRENT_MEASURED_DATA_HINTS = (
+    "current",
+    "right now",
+    "latest",
+    "now",
+    "at this moment",
+    "live",
+    "real-time",
+    "real time",
+    "current data",
+    "current reading",
+    "current readings",
+)
 _DB_SCOPE_HINTS = (
     "average",
     "avg",
@@ -187,6 +219,23 @@ def _extract_lab_candidates(question: str, lab_name: Optional[str]) -> list[str]
     return candidates[:8]
 
 
+def _extract_explicit_labs_from_question(question: str) -> list[str]:
+    q = _latest_user_question(question).lower()
+    explicit: list[str] = []
+
+    def _push(token: str) -> None:
+        normalized = str(token or "").strip().lower()
+        normalized = re.sub(r"[^a-z0-9_]", "", normalized)
+        if normalized and normalized not in explicit:
+            explicit.append(normalized)
+
+    for match in _EXPLICIT_LAB_TOKEN_RE.finditer(q):
+        _push(match.group(1))
+    for match in _NATURAL_LAB_TOKEN_RE.finditer(q):
+        _push(f"{match.group(1)}_lab")
+    return explicit
+
+
 def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict[str, Any]:
     latest_question = _latest_user_question(question)
     q = latest_question.lower()
@@ -197,6 +246,18 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     has_time_window_hint = bool(_TIME_WINDOW_HINT_RE.search(q))
     has_metric_reference = bool(_METRIC_TOKEN_RE.search(q))
     has_general_qa_phrase = any(hint in q for hint in _GENERAL_QA_HINTS)
+    is_hypothetical_conditional = any(hint in q for hint in _HYPOTHETICAL_CONDITIONAL_HINTS) or (
+        q.startswith("if ") or re.search(r"\bif\b.+\b(what|should|would|risk|happen)\b", q) is not None
+    )
+    is_baseline_reference_query = any(hint in q for hint in _BASELINE_REFERENCE_HINTS)
+    explicit_labs = _extract_explicit_labs_from_question(latest_question)
+    explicit_lab_count = len(explicit_labs)
+    has_explicit_second_space = explicit_lab_count >= 2
+    single_explicit_lab_with_baseline_reference = (
+        is_baseline_reference_query and explicit_lab_count == 1
+    )
+    has_current_data_phrase = any(hint in q for hint in _CURRENT_MEASURED_DATA_HINTS)
+    requests_current_measured_data = has_current_data_phrase and (has_lab_reference or has_time_window_hint)
     is_social_identity_query = _is_social_identity_query(latest_question)
     has_conceptual_ieq_term = any(hint in q for hint in _IEQ_CONCEPTUAL_HINTS)
     has_knowledge_domain = any(hint in q for hint in _KNOWLEDGE_DOMAIN_HINTS) or (
@@ -221,7 +282,9 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     is_general_conversation_question = (
         not has_domain_anchor and bool(_GENERAL_CONVERSATION_QUESTION_RE.search(q))
     )
-    if not has_domain_anchor:
+    if is_hypothetical_conditional and not requests_current_measured_data:
+        query_scope_class = QueryScopeClass.AMBIGUOUS.value
+    elif not has_domain_anchor:
         if (
             has_time_window_hint
             or has_general_qa_phrase
@@ -253,6 +316,10 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     )
     if query_scope_class == QueryScopeClass.AMBIGUOUS.value and explicit_scope_intent and has_domain_anchor:
         asks_for_db_facts = True
+    if is_hypothetical_conditional and not requests_current_measured_data:
+        asks_for_db_facts = False
+    if single_explicit_lab_with_baseline_reference:
+        asks_for_db_facts = True
     return {
         "has_lab_reference": has_lab_reference,
         "has_time_window_hint": has_time_window_hint,
@@ -263,6 +330,12 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         "is_social_identity_query": is_social_identity_query,
         "is_general_conversation_question": is_general_conversation_question,
         "is_comfort_assessment_phrase": is_comfort_assessment_phrase,
+        "is_hypothetical_conditional": is_hypothetical_conditional,
+        "requests_current_measured_data": requests_current_measured_data,
+        "is_baseline_reference_query": is_baseline_reference_query,
+        "single_explicit_lab_with_baseline_reference": single_explicit_lab_with_baseline_reference,
+        "explicit_lab_count": explicit_lab_count,
+        "has_explicit_second_space": has_explicit_second_space,
         "asks_for_db_facts": asks_for_db_facts,
         "query_scope_class": query_scope_class,
         "has_domain_anchor": has_domain_anchor,

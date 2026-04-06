@@ -1,0 +1,392 @@
+{
+  "generated_at": "2026-04-03T20:07:28.996065+00:00",
+  "duration_seconds": 7.859,
+  "lab_name": "smart_lab",
+  "devices_count": 8,
+  "co2_metrics_count": 1,
+  "pm25_metrics_count": 3,
+  "devices": [
+    {
+      "device_id": 2,
+      "device_name": "all_sensor_02",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 21,
+      "device_name": "all_sensor_65",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 22,
+      "device_name": "all_sensor_66",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 23,
+      "device_name": "all_sensor_67",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 24,
+      "device_name": "all_sensor_68",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 25,
+      "device_name": "all_sensor_69",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 27,
+      "device_name": "all_sensor_71",
+      "space": "smart_lab"
+    },
+    {
+      "device_id": 29,
+      "device_name": "all_sensor_73",
+      "space": "smart_lab"
+    }
+  ],
+  "co2_metrics": [
+    {
+      "metric_id": 215,
+      "metric_name": "all_sensor_73_co2",
+      "domain": "co2",
+      "device_id": 29
+    }
+  ],
+  "pm25_metrics": [
+    {
+      "metric_id": 6,
+      "metric_name": "all_sensor_02_pm_2_5",
+      "domain": "pm2_5",
+      "device_id": 2
+    },
+    {
+      "metric_id": 196,
+      "metric_name": "all_sensor_71_pm_2_5",
+      "domain": "pm2_5",
+      "device_id": 27
+    },
+    {
+      "metric_id": 211,
+      "metric_name": "all_sensor_73_pm_2_5",
+      "domain": "pm2_5",
+      "device_id": 29
+    }
+  ],
+  "results": [
+    {
+      "query_name": "co2_latest",
+      "window": "latest",
+      "time_ms": 15.71,
+      "rows": [
+        {
+          "ts": "2026-04-04 00:07:13+00:00",
+          "state": 414.0,
+          "metric_id": 215,
+          "metric_name": "all_sensor_73_co2",
+          "device_id": 29,
+          "device_name": "all_sensor_73"
+        }
+      ],
+      "sql": "SELECT sr.ts, sr.state, m.metric_id, m.metric_name, d.device_id, d.device_name FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' ORDER BY sr.ts DESC LIMIT 1"
+    },
+    {
+      "query_name": "pm25_latest",
+      "window": "latest",
+      "time_ms": 13.88,
+      "rows": [
+        {
+          "ts": "2026-04-04 00:07:13+00:00",
+          "state": 3.8,
+          "metric_id": 211,
+          "metric_name": "all_sensor_73_pm_2_5",
+          "device_id": 29,
+          "device_name": "all_sensor_73"
+        }
+      ],
+      "sql": "SELECT sr.ts, sr.state, m.metric_id, m.metric_name, d.device_id, d.device_name FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' ORDER BY sr.ts DESC LIMIT 1"
+    },
+    {
+      "query_name": "co2_window",
+      "window": "last_hour",
+      "interval": "1 hour",
+      "time_ms": 4.069,
+      "rows": [
+        {
+          "window_start": "2026-04-03 19:08:13+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 300,
+          "avg_value": 416.22,
+          "min_value": 405.0,
+          "max_value": 426.0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "pm25_window",
+      "window": "last_hour",
+      "interval": "1 hour",
+      "time_ms": 3.383,
+      "rows": [
+        {
+          "window_start": "2026-04-03 19:07:31+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 900,
+          "avg_value": 4.592888888888892,
+          "min_value": 2.9,
+          "max_value": 6.3
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "multimetric_window",
+      "window": "last_hour",
+      "interval": "1 hour",
+      "time_ms": 20.104,
+      "rows": [
+        {
+          "window_start": "2026-04-03 19:07:30+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 5696,
+          "co2_avg": 416.22,
+          "pm25_avg": 4.592888888888894,
+          "temperature_avg": 24.453579941922627,
+          "humidity_avg": 45.30787486373744,
+          "voc_avg": 0.0501333333333336,
+          "tvoc_avg": null,
+          "voc_index_avg": 107.88777777777777,
+          "voc_index_outlier_points": 0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) FILTER (WHERE m.domain = 'co2') AS co2_avg, AVG(sr.state) FILTER (WHERE m.domain = 'pm2_5') AS pm25_avg, AVG(sr.state) FILTER (WHERE m.domain = 'temperature') AS temperature_avg, AVG(sr.state) FILTER (WHERE m.domain = 'humidity') AS humidity_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS voc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'tvoc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS tvoc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc_index' AND sr.state IS NOT NULL AND sr.state >= 0 AND sr.state < 1000000 ) AS voc_index_avg, COUNT(*) FILTER ( WHERE m.domain = 'voc_index' AND sr.state >= 1000000 ) AS voc_index_outlier_points FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain IN ('co2','pm2_5','temperature','humidity','voc','tvoc','voc_index') AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "co2_window",
+      "window": "last_12h",
+      "interval": "12 hours",
+      "time_ms": 11.108,
+      "rows": [
+        {
+          "window_start": "2026-04-03 08:08:13+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 960,
+          "avg_value": 415.4791666666667,
+          "min_value": 403.0,
+          "max_value": 426.0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "pm25_window",
+      "window": "last_12h",
+      "interval": "12 hours",
+      "time_ms": 11.778,
+      "rows": [
+        {
+          "window_start": "2026-04-03 08:07:31+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 2863,
+          "avg_value": 4.117219699615782,
+          "min_value": 1.5,
+          "max_value": 8.8
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "multimetric_window",
+      "window": "last_12h",
+      "interval": "12 hours",
+      "time_ms": 38.827,
+      "rows": [
+        {
+          "window_start": "2026-04-03 08:07:31+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 18175,
+          "co2_avg": 415.4791666666667,
+          "pm25_avg": 4.117219699615782,
+          "temperature_avg": 24.416307229851498,
+          "humidity_avg": 45.168885268955904,
+          "voc_avg": 0.049500000000000315,
+          "tvoc_avg": null,
+          "voc_index_avg": 89.09221096751659,
+          "voc_index_outlier_points": 15
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) FILTER (WHERE m.domain = 'co2') AS co2_avg, AVG(sr.state) FILTER (WHERE m.domain = 'pm2_5') AS pm25_avg, AVG(sr.state) FILTER (WHERE m.domain = 'temperature') AS temperature_avg, AVG(sr.state) FILTER (WHERE m.domain = 'humidity') AS humidity_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS voc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'tvoc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS tvoc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc_index' AND sr.state IS NOT NULL AND sr.state >= 0 AND sr.state < 1000000 ) AS voc_index_avg, COUNT(*) FILTER ( WHERE m.domain = 'voc_index' AND sr.state >= 1000000 ) AS voc_index_outlier_points FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain IN ('co2','pm2_5','temperature','humidity','voc','tvoc','voc_index') AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "co2_window",
+      "window": "last_7d",
+      "interval": "7 days",
+      "time_ms": 167.392,
+      "rows": [
+        {
+          "window_start": "2026-03-27 20:07:52+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 10321,
+          "avg_value": 416.29551400058136,
+          "min_value": 398.0,
+          "max_value": 438.0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "pm25_window",
+      "window": "last_7d",
+      "interval": "7 days",
+      "time_ms": 157.648,
+      "rows": [
+        {
+          "window_start": "2026-03-27 20:07:36+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 29239,
+          "avg_value": 2.1705154075036237,
+          "min_value": 0.3,
+          "max_value": 8.8
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "multimetric_window",
+      "window": "last_7d",
+      "interval": "7 days",
+      "time_ms": 239.893,
+      "rows": [
+        {
+          "window_start": "2026-03-27 20:07:36+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 189147,
+          "co2_avg": 416.29551400058136,
+          "pm25_avg": 2.1705154075036783,
+          "temperature_avg": 24.46829920640141,
+          "humidity_avg": 44.17092017364697,
+          "voc_avg": 0.045220424377483165,
+          "tvoc_avg": null,
+          "voc_index_avg": 80.91388214371217,
+          "voc_index_outlier_points": 104
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) FILTER (WHERE m.domain = 'co2') AS co2_avg, AVG(sr.state) FILTER (WHERE m.domain = 'pm2_5') AS pm25_avg, AVG(sr.state) FILTER (WHERE m.domain = 'temperature') AS temperature_avg, AVG(sr.state) FILTER (WHERE m.domain = 'humidity') AS humidity_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS voc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'tvoc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS tvoc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc_index' AND sr.state IS NOT NULL AND sr.state >= 0 AND sr.state < 1000000 ) AS voc_index_avg, COUNT(*) FILTER ( WHERE m.domain = 'voc_index' AND sr.state >= 1000000 ) AS voc_index_outlier_points FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain IN ('co2','pm2_5','temperature','humidity','voc','tvoc','voc_index') AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "co2_window",
+      "window": "last_14d",
+      "interval": "14 days",
+      "time_ms": 314.032,
+      "rows": [
+        {
+          "window_start": "2026-03-20 20:07:25+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 18804,
+          "avg_value": 419.67092108062116,
+          "min_value": 398.0,
+          "max_value": 458.0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "pm25_window",
+      "window": "last_14d",
+      "interval": "14 days",
+      "time_ms": 322.986,
+      "rows": [
+        {
+          "window_start": "2026-03-20 20:07:25+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 54609,
+          "avg_value": 2.1174989470600014,
+          "min_value": 0.2,
+          "max_value": 8.8
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "multimetric_window",
+      "window": "last_14d",
+      "interval": "14 days",
+      "time_ms": 365.115,
+      "rows": [
+        {
+          "window_start": "2026-03-20 20:07:44+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 349694,
+          "co2_avg": 419.6706908472052,
+          "pm25_avg": 2.117455317902136,
+          "temperature_avg": 24.583976512842412,
+          "humidity_avg": 45.68685217135668,
+          "voc_avg": 0.04494229644205824,
+          "tvoc_avg": null,
+          "voc_index_avg": 80.92814239671843,
+          "voc_index_outlier_points": 149
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) FILTER (WHERE m.domain = 'co2') AS co2_avg, AVG(sr.state) FILTER (WHERE m.domain = 'pm2_5') AS pm25_avg, AVG(sr.state) FILTER (WHERE m.domain = 'temperature') AS temperature_avg, AVG(sr.state) FILTER (WHERE m.domain = 'humidity') AS humidity_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS voc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'tvoc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS tvoc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc_index' AND sr.state IS NOT NULL AND sr.state >= 0 AND sr.state < 1000000 ) AS voc_index_avg, COUNT(*) FILTER ( WHERE m.domain = 'voc_index' AND sr.state >= 1000000 ) AS voc_index_outlier_points FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain IN ('co2','pm2_5','temperature','humidity','voc','tvoc','voc_index') AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "co2_window",
+      "window": "last_1month",
+      "interval": "1 month",
+      "time_ms": 612.595,
+      "rows": [
+        {
+          "window_start": "2026-03-03 20:07:58+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 43285,
+          "avg_value": 418.7506526510338,
+          "min_value": 393.0,
+          "max_value": 458.0
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'co2' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "pm25_window",
+      "window": "last_1month",
+      "interval": "1 month",
+      "time_ms": 614.631,
+      "rows": [
+        {
+          "window_start": "2026-03-03 20:07:48+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 126582,
+          "avg_value": 4.424779984334305,
+          "min_value": 0.2,
+          "max_value": 44.599998
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) AS avg_value, MIN(sr.state) AS min_value, MAX(sr.state) AS max_value FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain = 'pm2_5' AND sr.ts >= now() - interval %s"
+    },
+    {
+      "query_name": "multimetric_window",
+      "window": "last_1month",
+      "interval": "1 month",
+      "time_ms": 797.122,
+      "rows": [
+        {
+          "window_start": "2026-03-03 20:07:42+00:00",
+          "window_end": "2026-04-04 00:07:13+00:00",
+          "points": 800842,
+          "co2_avg": 418.7506526510338,
+          "pm25_avg": 4.424779984334279,
+          "temperature_avg": 24.7179666197103,
+          "humidity_avg": 45.55166631861977,
+          "voc_avg": 0.04455007508375311,
+          "tvoc_avg": null,
+          "voc_index_avg": 81.92871024316254,
+          "voc_index_outlier_points": 363
+        }
+      ],
+      "sql": "SELECT MIN(sr.ts) AS window_start, MAX(sr.ts) AS window_end, COUNT(*) AS points, AVG(sr.state) FILTER (WHERE m.domain = 'co2') AS co2_avg, AVG(sr.state) FILTER (WHERE m.domain = 'pm2_5') AS pm25_avg, AVG(sr.state) FILTER (WHERE m.domain = 'temperature') AS temperature_avg, AVG(sr.state) FILTER (WHERE m.domain = 'humidity') AS humidity_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS voc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'tvoc' AND sr.state IS NOT NULL AND sr.state >= 0 ) AS tvoc_avg, AVG(sr.state) FILTER ( WHERE m.domain = 'voc_index' AND sr.state IS NOT NULL AND sr.state >= 0 AND sr.state < 1000000 ) AS voc_index_avg, COUNT(*) FILTER ( WHERE m.domain = 'voc_index' AND sr.state >= 1000000 ) AS voc_index_outlier_points FROM public.sensor_readings sr JOIN public.metric m ON m.metric_id = sr.metric_id JOIN public.device d ON d.device_id = sr.device_id WHERE d.space = %s AND m.domain IN ('co2','pm2_5','temperature','humidity','voc','tvoc','voc_index') AND sr.ts >= now() - interval %s"
+    }
+  ]
+}

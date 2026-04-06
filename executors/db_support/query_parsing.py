@@ -60,6 +60,24 @@ _CORRELATION_HINTS = (
     "association",
     "related",
 )
+_BASELINE_REFERENCE_HINTS = (
+    "baseline",
+    "normal",
+    "usual",
+    "typical",
+    "expected",
+    "reference",
+    "deviation",
+)
+_DEICTIC_SCOPE_HINTS = (
+    " there",
+    " over there",
+    " that room",
+    " this room",
+    " same room",
+    " same lab",
+    " same space",
+)
 
 _TARGET_TZ = timezone(timedelta(hours=4))
 _TARGET_TZ_LABEL = "GMT+4"
@@ -282,6 +300,13 @@ def extract_metric_aliases(question: str) -> List[str]:
     return ordered
 
 
+def is_baseline_reference_query(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    return any(token in q for token in _BASELINE_REFERENCE_HINTS)
+
+
 def is_generic_air_quality_scope_query(question: str) -> bool:
     """Detect broad IEQ/air-quality asks where metric/time defaults are acceptable."""
     q = str(question or "").strip().lower()
@@ -343,6 +368,10 @@ def validate_db_execution_invariants(
     has_lab_hint = bool(signals.get("has_lab_reference")) or bool(request_lab_name)
     has_db_scope = bool(signals.get("asks_for_db_facts")) or bool(signals.get("has_db_scope_phrase"))
     has_metric_hint = bool(signals.get("has_metric_reference")) or (selected in explicit_metrics)
+    has_deictic_scope_hint = any(token in f" {q} " for token in _DEICTIC_SCOPE_HINTS)
+    is_baseline_query = bool(signals.get("is_baseline_reference_query")) or is_baseline_reference_query(q)
+    compared_spaces = extract_compared_spaces(q)
+    has_explicit_second_space = len(compared_spaces) >= 2
     metric_explicit_in_planner = selected in hinted_metrics
     analytical_intent = intent in {
         IntentType.AGGREGATION_DB,
@@ -385,6 +414,17 @@ def validate_db_execution_invariants(
         or has_prepositional_lab_scope
         or (generic_air_quality_query and resolved_lab_name is not None)
     )
+    if has_deictic_scope_hint and resolved_lab_name is None and not request_lab_name:
+        # Pronoun-style scope ("there"/"same room") should not fan out globally.
+        lab_justified = False
+    if (
+        intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
+        and resolved_lab_name is None
+        and not has_lab_hint
+        and not request_lab_name
+    ):
+        # For current/point asks, avoid silently selecting an arbitrary latest lab.
+        lab_justified = False
     if not has_db_scope and generic_air_quality_query:
         has_db_scope = True
     db_scope_justified = has_db_scope or has_time_hint or has_lab_hint or has_metric_hint or generic_air_quality_query
@@ -398,6 +438,18 @@ def validate_db_execution_invariants(
         violations.append("lab_scope_not_justified")
     if not db_scope_justified:
         violations.append("db_scope_not_justified")
+    single_lab_metric_comparison = (
+        intent == IntentType.COMPARISON_DB
+        and len(explicit_metrics) >= 2
+        and (resolved_lab_name is not None or has_lab_hint or bool(request_lab_name))
+    )
+    if (
+        intent == IntentType.COMPARISON_DB
+        and not is_baseline_query
+        and not has_explicit_second_space
+        and not single_lab_metric_comparison
+    ):
+        violations.append("comparison_second_space_not_justified")
 
     allowed = len(violations) == 0
     return {
@@ -412,6 +464,8 @@ def validate_db_execution_invariants(
             "has_metric_hint": has_metric_hint,
             "metric_explicit_in_planner": metric_explicit_in_planner,
             "has_db_scope": has_db_scope,
+            "is_baseline_reference_query": is_baseline_query,
+            "has_explicit_second_space": has_explicit_second_space,
         },
     }
 

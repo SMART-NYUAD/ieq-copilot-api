@@ -504,6 +504,40 @@ def _build_compact_llm_rows_and_summary(rows: List[Dict[str, Any]]) -> Tuple[Lis
     return compact, summary
 
 
+def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
+    violations = list(invariant.get("violations") or [])
+    if "lab_scope_not_justified" in violations:
+        return (
+            "I can answer this with measured data, but I need the lab first. "
+            "Which lab should I use (for example: smart_lab, concrete_lab, or eco_lab)?"
+        )
+    if "comparison_second_space_not_justified" in violations:
+        return (
+            "I can run cross-space comparison once both spaces are explicit. "
+            "Please name two labs (for example: smart_lab vs concrete_lab)."
+        )
+    if "metric_not_justified" in violations and "time_window_not_justified" in violations:
+        return (
+            "I can run this once scope is explicit. "
+            "Please provide metric and time window (for example: 'average CO2 in smart_lab last 24 hours')."
+        )
+    if "metric_not_justified" in violations:
+        return (
+            "I can run this once the metric is explicit. "
+            "Which metric should I use (for example: CO2, PM2.5, TVOC, humidity, temperature, light, or IEQ)?"
+        )
+    if "time_window_not_justified" in violations:
+        return (
+            "I can run this once the time window is explicit. "
+            "Please specify a window (for example: last hour, last 24 hours, this week, or last week)."
+        )
+    return (
+        "I can run this once scope is clear. Please specify at least one of: "
+        "metric, time window, or lab (for example: "
+        "'average CO2 in smart_lab last 24 hours')."
+    )
+
+
 def prepare_db_query(
     question: str,
     intent: IntentType,
@@ -550,11 +584,7 @@ def prepare_db_query(
             "window_label": window_label,
             "rows": [],
             "payload": [],
-            "fallback_answer": (
-                "I can run this once scope is clear. Please specify at least one of: "
-                "metric, time window, or lab (for example: "
-                "'average CO2 in smart_lab last 24 hours')."
-            ),
+            "fallback_answer": _clarify_text_for_invariant_violation(invariant),
             "timescale": "clarify",
             "time_window": {
                 "label": window_label,

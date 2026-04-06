@@ -256,6 +256,10 @@ def _should_fastpath_knowledge_route(query_signals: Dict[str, Any]) -> bool:
     scope_class = str(query_signals.get("query_scope_class") or "").strip().lower()
     if scope_class == QueryScopeClass.NON_DOMAIN.value:
         return True
+    if bool(query_signals.get("is_hypothetical_conditional")) and not bool(
+        query_signals.get("requests_current_measured_data")
+    ):
+        return True
     # Conceptual/general-knowledge asks without DB-facts requirement do not need
     # an extra planner LLM round-trip.
     if bool(query_signals.get("is_general_knowledge_question")) and not bool(query_signals.get("asks_for_db_facts")):

@@ -157,6 +157,7 @@ _TIME_WINDOW_RE = re.compile(
 _DUAL_SPACE_TOKEN_RE = re.compile(
     r"\b([a-z0-9]+(?:_[a-z0-9]+)+)\b.*\b(?:and|vs|versus|with|against)\b.*\b([a-z0-9]+(?:_[a-z0-9]+)+)\b"
 )
+_LAB_REFERENCE_RE = re.compile(r"\b([a-z0-9]+_lab|[a-z0-9]+\s+lab)\b")
 
 
 def classify_intent(question: str) -> RouteDecision:
@@ -173,6 +174,7 @@ def classify_intent(question: str) -> RouteDecision:
     has_forecast = any(hint in text for hint in _FORECAST_HINTS)
     has_metric = bool(_METRIC_HINT_RE.search(text))
     has_time_window = bool(_TIME_WINDOW_RE.search(text))
+    has_lab_reference = bool(_LAB_REFERENCE_RE.search(text))
     asks_for_values = any(hint in text for hint in _VALUE_LIST_HINTS)
     has_dual_space_tokens = bool(_DUAL_SPACE_TOKEN_RE.search(text))
     has_comfort = any(hint in text for hint in _COMFORT_HINTS)
@@ -218,6 +220,9 @@ def classify_intent(question: str) -> RouteDecision:
 
     if any(hint in text for hint in _POINT_LOOKUP_HINTS) and (has_metric or has_air_quality_phrase):
         return RouteDecision(IntentType.CURRENT_STATUS_DB, 0.8, "point_lookup_phrase_with_metric")
+
+    if has_metric and has_lab_reference and re.search(r"\bhow\s+(?:is|was)\b", text):
+        return RouteDecision(IntentType.CURRENT_STATUS_DB, 0.82, "how_is_metric_in_lab")
 
     if has_metric and re.search(r"\b(now|latest|current)\b", text):
         return RouteDecision(IntentType.CURRENT_STATUS_DB, 0.72, "metric_with_recentness_word")

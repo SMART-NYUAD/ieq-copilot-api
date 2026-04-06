@@ -20,6 +20,25 @@ from query_routing.llm_router_planner import (
 
 
 class LlmRouterPlannerTests(unittest.TestCase):
+    def test_hypothetical_conditional_signal_prefers_knowledge_without_live_data(self):
+        signals = extract_query_signals(
+            "If humidity is persistently above 70%, what risk should be flagged?",
+            lab_name=None,
+        )
+        self.assertTrue(bool(signals.get("is_hypothetical_conditional")))
+        self.assertFalse(bool(signals.get("requests_current_measured_data")))
+        self.assertFalse(bool(signals.get("asks_for_db_facts")))
+
+    def test_baseline_single_lab_signal_marks_db_need_without_second_space(self):
+        signals = extract_query_signals(
+            "Compare humidity in concrete_lab against its baseline for this morning",
+            lab_name=None,
+        )
+        self.assertTrue(bool(signals.get("is_baseline_reference_query")))
+        self.assertTrue(bool(signals.get("single_explicit_lab_with_baseline_reference")))
+        self.assertFalse(bool(signals.get("has_explicit_second_space")))
+        self.assertTrue(bool(signals.get("asks_for_db_facts")))
+
     def test_query_scope_class_non_domain_for_general_time_question(self):
         signals = extract_query_signals("What day is today?", lab_name=None)
         self.assertEqual(signals.get("query_scope_class"), "non_domain")

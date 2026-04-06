@@ -145,6 +145,115 @@ class RegressionReplayQueriesTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["decomposition_template"], "trend_interpretation")
         self.assertIn("Interpretation:", result["answer"])
 
+    @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_replay_hypothetical_routes_to_knowledge_without_live_scope(
+        self, mock_get_route_plan, mock_run_db, mock_answer
+    ):
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.AGGREGATION_DB,
+                confidence=0.9,
+                reason="hypothetical_risk",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "is_hypothetical_conditional": True,
+                    "requests_current_measured_data": False,
+                    "asks_for_db_facts": False,
+                    "query_scope_class": "ambiguous",
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_answer.return_value = {
+            "answer": "Persistent high humidity can increase mold and condensation risk.",
+            "cards_retrieved": 2,
+            "knowledge_cards_retrieved": 2,
+            "evidence": {
+                "evidence_kind": "knowledge_qa",
+                "metric_aliases": [],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+        result = execute_query(
+            "If humidity is persistently above 70%, what risk should be flagged?",
+            4,
+            "smart_lab",
+        )
+        self.assertEqual(result["metadata"]["executor"], "knowledge_qa")
+        self.assertIsNone(result["metadata"].get("resolved_lab_name"))
+        mock_run_db.assert_not_called()
+        self.assertIsNone(mock_answer.call_args.kwargs.get("space"))
+
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_replay_single_lab_baseline_routes_to_db_without_cross_lab_substitution(
+        self, mock_get_route_plan, mock_run_db
+    ):
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.COMPARISON_DB,
+                confidence=0.92,
+                reason="baseline_reference",
+            ),
+            intent_category=IntentCategory.ANALYTICAL_VISUALIZATION,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "is_baseline_reference_query": True,
+                    "single_explicit_lab_with_baseline_reference": True,
+                    "has_explicit_second_space": False,
+                    "asks_for_db_facts": True,
+                    "query_scope_class": "domain",
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_run_db.return_value = {
+            "answer": "Humidity is 6.2% above baseline for concrete_lab this morning.",
+            "timescale": "1hour",
+            "llm_used": True,
+            "time_window": {"label": "this morning", "start": "x", "end": "y"},
+            "resolved_lab_name": "concrete_lab",
+            "sources": [{"source_kind": "db_query", "operation_type": "baseline_reference_comparison"}],
+            "visualization_type": "bar",
+            "chart": {"type": "bar"},
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["humidity"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+        result = execute_query(
+            "Compare humidity in concrete_lab against its baseline for this morning",
+            4,
+            None,
+        )
+        self.assertEqual(result["metadata"]["executor"], "db_query")
+        self.assertEqual(result["metadata"]["execution_intent"], "comparison_db")
+        mock_run_db.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

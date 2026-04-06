@@ -93,8 +93,13 @@ def execute_knowledge_use_case(
     answer_with_metadata_fn: Callable[..., Dict[str, Any]] = answer_env_question_with_metadata,
 ) -> Dict[str, Any]:
     """Execute knowledge-answer path and return standard response payload."""
+    query_signals = route_plan.planner_parameters.get("query_signals", {})
+    suppress_live_scope = bool(query_signals.get("is_hypothetical_conditional")) and not bool(
+        query_signals.get("requests_current_measured_data")
+    )
+    effective_lab_scope = None if suppress_live_scope else lab_name
     knowledge_result = answer_with_metadata_fn(
-        user_question=question, k=max(1, min(k, 8)), space=lab_name
+        user_question=question, k=max(1, min(k, 8)), space=effective_lab_scope
     )
     answer_text = str(knowledge_result.get("answer") or "")
     fallback_applied = False
@@ -112,7 +117,7 @@ def execute_knowledge_use_case(
         "intent_rerouted_to_db": False,
         "k_requested": k,
         "lab_name": lab_name,
-        "resolved_lab_name": lab_name,
+        "resolved_lab_name": effective_lab_scope,
         "llm_used": True,
         "time_window": None,
         "sources": [],

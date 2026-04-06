@@ -13,7 +13,7 @@ if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
 from query_routing.intent_classifier import IntentType
-from executors.db_query_executor import _build_db_payload, _default_window_hours_for_intent
+from executors.db_query_executor import _build_db_payload, _default_window_hours_for_intent, prepare_db_query
 from executors.db_support.charts import build_forecast_chart
 from executors.db_support.query_handlers import execute_intent_query
 from executors.db_support.query_parsing import (
@@ -88,13 +88,13 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual(metric_alias, "ieq")
         self.assertEqual(extract_metric_aliases(cleaned), [])
 
-    def test_invariants_allow_comparison_without_explicit_metric_or_time(self):
+    def test_invariants_block_comparison_without_explicit_second_space(self):
         result = validate_db_execution_invariants(
-            question="Compare smart_lab vs concrete_lab",
+            question="Compare humidity in smart_lab this morning",
             intent=IntentType.COMPARISON_DB,
             selected_metric="ieq",
-            resolved_lab_name=None,
-            request_lab_name=None,
+            resolved_lab_name="smart_lab",
+            request_lab_name="smart_lab",
             explicit_metrics=[],
             hinted_metrics=[],
             planner_hints={
@@ -103,7 +103,31 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "has_db_scope_phrase": True,
                     "has_metric_reference": False,
                     "has_time_window_hint": False,
-                    "has_lab_reference": False,
+                    "has_lab_reference": True,
+                    "is_baseline_reference_query": False,
+                }
+            },
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("comparison_second_space_not_justified", result["violations"])
+
+    def test_invariants_allow_single_lab_baseline_reference_comparison(self):
+        result = validate_db_execution_invariants(
+            question="Compare humidity in concrete_lab against its baseline for this morning",
+            intent=IntentType.COMPARISON_DB,
+            selected_metric="humidity",
+            resolved_lab_name="concrete_lab",
+            request_lab_name=None,
+            explicit_metrics=["humidity"],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": True,
+                    "has_time_window_hint": True,
+                    "has_lab_reference": True,
+                    "is_baseline_reference_query": True,
                 }
             },
         )
@@ -129,6 +153,69 @@ class DbDefaultWindowTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["allowed"])
+
+    def test_invariants_allow_single_lab_metric_vs_metric_comparison(self):
+        result = validate_db_execution_invariants(
+            question="Is PM2.5 or CO2 the bigger issue in smart_lab this month?",
+            intent=IntentType.COMPARISON_DB,
+            selected_metric="pm25",
+            resolved_lab_name="smart_lab",
+            request_lab_name=None,
+            explicit_metrics=["pm25", "co2"],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": True,
+                    "has_time_window_hint": True,
+                    "has_lab_reference": True,
+                    "is_baseline_reference_query": False,
+                }
+            },
+        )
+        self.assertTrue(result["allowed"])
+        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
+
+    def test_invariants_block_current_status_without_lab_scope(self):
+        result = validate_db_execution_invariants(
+            question="Would you say it's good the air quality there?",
+            intent=IntentType.CURRENT_STATUS_DB,
+            selected_metric="ieq",
+            resolved_lab_name=None,
+            request_lab_name=None,
+            explicit_metrics=[],
+            hinted_metrics=[],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": False,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": False,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("lab_scope_not_justified", result["violations"])
+
+    def test_prepare_db_query_returns_lab_first_clarification_when_lab_missing(self):
+        result = prepare_db_query(
+            question="Would you say it's good the air quality there?",
+            intent=IntentType.CURRENT_STATUS_DB,
+            lab_name=None,
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": False,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": False,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertEqual(result.get("timescale"), "clarify")
+        self.assertIn("need the lab first", str(result.get("fallback_answer") or "").lower())
 
     def test_invariants_allow_prepositional_scope_for_non_lab_suffix_names(self):
         result = validate_db_execution_invariants(
@@ -328,6 +415,106 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
         self.assertIn("tvoc", metrics_used)
+
+    def test_comparison_handler_never_falls_back_to_global_two_labs(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return None
+
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="Compare humidity in smart_lab this morning",
+            intent=IntentType.COMPARISON_DB,
+            metric_alias="humidity",
+            metric_column="humidity_avg",
+            unit="%",
+            window_start=datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc),
+            window_label="this morning",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["humidity"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())
+
+    def test_baseline_reference_comparison_runs_single_lab_path(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "current_avg": 51.2,
+                    "baseline_avg": 45.0,
+                    "baseline_stddev": 2.1,
+                    "current_count": 12,
+                    "baseline_count": 12,
+                }
+
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="Compare humidity in concrete_lab against its baseline for this morning",
+            intent=IntentType.COMPARISON_DB,
+            metric_alias="humidity",
+            metric_column="humidity_avg",
+            unit="%",
+            window_start=datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc),
+            window_label="this morning",
+            resolved_lab_name="concrete_lab",
+            compared_spaces=[],
+            explicit_metrics=["humidity"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "baseline_reference_comparison")
+        self.assertEqual((result.get("rows") or [{}])[0].get("lab_space"), "concrete_lab")
+
+    def test_comparison_multi_uses_single_lab_path_for_metric_vs_metric_questions(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": "smart_lab",
+                    "co2": 430.0,
+                    "pm25": 3.2,
+                }
+
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="Is PM2.5 or CO2 the bigger issue in smart_lab this month?",
+            intent=IntentType.COMPARISON_DB,
+            metric_alias="pm25",
+            metric_column="pm25_avg",
+            unit="ug/m3",
+            window_start=datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 31, 0, 0, tzinfo=timezone.utc),
+            window_label="this month",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["pm25", "co2"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "comparison_multi_metric")
+        self.assertNotIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())
+        self.assertEqual((result.get("rows") or [{}])[0].get("lab_space"), "smart_lab")
 
 
 if __name__ == "__main__":

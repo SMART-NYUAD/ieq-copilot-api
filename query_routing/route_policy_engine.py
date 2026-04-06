@@ -54,7 +54,16 @@ def _clarify_threshold() -> float:
 def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool) -> bool:
     if not allow_clarify:
         return False
+    signals = _query_signals(route_plan)
+    explicit_measured_scope = bool(signals.get("has_metric_reference")) and (
+        bool(signals.get("has_lab_reference"))
+        or bool(signals.get("has_time_window_hint"))
+        or bool(signals.get("has_db_scope_phrase"))
+    )
     if route_plan.answer_strategy == AnswerStrategy.CLARIFY:
+        # Avoid unnecessary clarification when measured DB scope is already explicit.
+        if explicit_measured_scope:
+            return False
         return True
     confidence = float(route_plan.decision.confidence)
     threshold = _clarify_threshold()
@@ -65,10 +74,17 @@ def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool
 
 def _needs_measured_data(route_plan: RoutePlan, scope_class: str) -> bool:
     signals = _query_signals(route_plan)
+    is_hypothetical = bool(signals.get("is_hypothetical_conditional"))
+    requests_live_data = bool(signals.get("requests_current_measured_data"))
+    is_single_lab_baseline = bool(signals.get("single_explicit_lab_with_baseline_reference"))
     is_semantic_intent = route_plan.decision.intent in SEMANTIC_INTENTS
     has_time_scope = bool(signals.get("has_time_window_hint"))
     has_lab_scope = bool(signals.get("has_lab_reference"))
     has_db_phrase = bool(signals.get("has_db_scope_phrase"))
+    if is_hypothetical and not requests_live_data:
+        return False
+    if is_single_lab_baseline:
+        return True
     if scope_class == QueryScopeClass.NON_DOMAIN.value:
         return False
     if (
@@ -104,11 +120,22 @@ def _choose_executor(
 ) -> Tuple[RouteExecutor, bool, Tuple[str, ...]]:
     signals = _query_signals(route_plan)
     decision_intent = route_plan.decision.intent
+    is_hypothetical = bool(signals.get("is_hypothetical_conditional"))
+    requests_live_data = bool(signals.get("requests_current_measured_data"))
+    is_single_lab_baseline = bool(signals.get("single_explicit_lab_with_baseline_reference"))
     trace = []
 
     if scope_class == QueryScopeClass.NON_DOMAIN.value:
         trace.append("non_domain_scope_forces_knowledge")
         return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+
+    if is_hypothetical and not requests_live_data:
+        trace.append("hypothetical_without_live_scope_forces_knowledge")
+        return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+
+    if is_single_lab_baseline:
+        trace.append("single_lab_baseline_forces_db")
+        return RouteExecutor.DB_QUERY, True, tuple(trace)
 
     if _should_clarify(route_plan=route_plan, scope_class=scope_class, allow_clarify=allow_clarify):
         trace.append("clarify_gate_confidence_or_strategy")

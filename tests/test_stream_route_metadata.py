@@ -215,6 +215,57 @@ class StreamRouteMetadataTests(unittest.TestCase):
         self.assertIn('"executor": "knowledge_qa"', body)
         self.assertIn("I am your assistant for campus IEQ and general guidance.", body)
 
+    @patch("http_routes.query_routes.stream_answer_env_question")
+    @patch("http_routes.query_routes.fetch_knowledge_stats")
+    @patch("http_routes.query_routes.get_route_plan")
+    def test_query_stream_hypothetical_suppresses_live_scope_context(
+        self, mock_get_route_plan, mock_fetch_knowledge_stats, mock_stream_answer
+    ):
+        async def _fake_stream(*args, **kwargs):
+            yield "High humidity can increase mold risk."
+
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(intent=IntentType.AGGREGATION_DB, confidence=0.9, reason="hypothetical"),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "query_scope_class": "ambiguous",
+                    "is_hypothetical_conditional": True,
+                    "requests_current_measured_data": False,
+                    "asks_for_db_facts": False,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+            secondary_intents=tuple(),
+            decomposition_template=None,
+        )
+        mock_fetch_knowledge_stats.return_value = {
+            "cards_retrieved": 1,
+            "knowledge_cards_retrieved": 1,
+        }
+        mock_stream_answer.side_effect = _fake_stream
+
+        response = self.client.post(
+            "/query/stream",
+            json={
+                "question": "If humidity is persistently above 70%, what risk should be flagged?",
+                "lab_name": "smart_lab",
+                "conversation_id": "conv-hypo",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(mock_stream_answer.call_args.kwargs.get("space"))
+        self.assertNotIn(
+            "Previous conversation context",
+            str(mock_stream_answer.call_args.kwargs.get("user_question") or ""),
+        )
+
     @patch("http_routes.openai_compat_routes.stream_db_query")
     @patch("http_routes.openai_compat_routes.prepare_db_query")
     @patch("http_routes.openai_compat_routes.resolve_db_followup_memory")

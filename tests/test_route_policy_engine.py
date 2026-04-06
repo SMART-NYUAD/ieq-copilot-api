@@ -94,6 +94,50 @@ class RoutePolicyEngineTests(unittest.TestCase):
         self.assertEqual(contract.executor, RouteExecutor.DB_QUERY)
         self.assertTrue(contract.needs_measured_data)
 
+    def test_hypothetical_without_live_scope_forces_knowledge(self):
+        plan = _make_route_plan(
+            intent=IntentType.AGGREGATION_DB,
+            confidence=0.91,
+            response_mode="db",
+            query_signals={
+                "query_scope_class": "ambiguous",
+                "is_hypothetical_conditional": True,
+                "requests_current_measured_data": False,
+                "asks_for_db_facts": True,
+                "has_metric_reference": True,
+            },
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="If humidity is persistently above 70%, what risk should be flagged?",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.KNOWLEDGE_QA)
+        self.assertFalse(contract.needs_measured_data)
+        self.assertIn("hypothetical_without_live_scope_forces_knowledge", contract.rule_trace)
+
+    def test_single_lab_baseline_forces_db_without_second_space(self):
+        plan = _make_route_plan(
+            intent=IntentType.COMPARISON_DB,
+            confidence=0.9,
+            response_mode="db",
+            query_signals={
+                "query_scope_class": "domain",
+                "is_baseline_reference_query": True,
+                "single_explicit_lab_with_baseline_reference": True,
+                "has_explicit_second_space": False,
+                "asks_for_db_facts": True,
+            },
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="Compare humidity in concrete_lab against its baseline for this morning",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.DB_QUERY)
+        self.assertTrue(contract.needs_measured_data)
+        self.assertIn("single_lab_baseline_forces_db", contract.rule_trace)
+
     @patch("query_routing.route_policy_engine.load_settings")
     def test_ambiguous_low_confidence_routes_to_clarify(self, mock_load_settings):
         mock_load_settings.return_value.router_clarify_threshold = 0.7
@@ -113,6 +157,30 @@ class RoutePolicyEngineTests(unittest.TestCase):
             allow_clarify=True,
         )
         self.assertEqual(contract.executor, RouteExecutor.CLARIFY_GATE)
+
+    def test_explicit_measured_scope_ignores_clarify_strategy(self):
+        plan = _make_route_plan(
+            intent=IntentType.DEFINITION_EXPLANATION,
+            confidence=0.95,
+            response_mode="db",
+            query_signals={
+                "query_scope_class": "domain",
+                "asks_for_db_facts": True,
+                "has_metric_reference": True,
+                "has_lab_reference": True,
+                "has_time_window_hint": False,
+                "has_db_scope_phrase": False,
+            },
+            answer_strategy=AnswerStrategy.CLARIFY,
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="How is the light in the smart lab?",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.DB_QUERY)
+        self.assertTrue(contract.needs_measured_data)
+        self.assertIn("measured_scope_forces_db", contract.rule_trace)
 
     def test_non_domain_scope_routes_to_knowledge(self):
         plan = _make_route_plan(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -170,6 +170,8 @@ def _handle_comparison_multi(
 ) -> Optional[Dict[str, Any]]:
     if not (intent == IntentType.COMPARISON_DB and len(requested_metrics) >= 2):
         return None
+    if db_parsing.is_baseline_reference_query(question):
+        return None
     compare_metrics = requested_metrics[:4]
     metric_columns = [
         (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
@@ -188,6 +190,51 @@ def _handle_comparison_multi(
     if not compared_spaces and resolved_lab_name:
         compared_spaces = [resolved_lab_name]
     select_metrics_sql = ", ".join([f"AVG({column}) AS {metric}" for metric, column in metric_columns])
+    metric_names = [m for m, _ in metric_columns]
+    if len(compared_spaces) < 2:
+        if resolved_lab_name:
+            sql = f"""
+                SELECT lab_space, {select_metrics_sql}
+                FROM lab_ieq_final
+                WHERE lab_space = %s
+                  AND bucket >= %s
+                  AND bucket < %s
+                GROUP BY lab_space
+                LIMIT 1
+            """
+            cur.execute(sql, (resolved_lab_name, window_start, window_end))
+            row = cur.fetchone()
+            rows = [dict(row)] if row else []
+            return {
+                "operation_type": "comparison_multi_metric",
+                "rows": rows,
+                "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
+                    metric_aliases=metric_names,
+                    row=rows[0] if rows else {},
+                    window_label=window_label,
+                ),
+                "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
+                    metric_aliases=metric_names,
+                    unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
+                    window_label=window_label,
+                    row=rows[0] if rows else {},
+                ),
+                "metric_alias": metric_names[0],
+                "metrics_used": metric_names,
+                "compared_spaces": [resolved_lab_name],
+            }
+        return {
+            "operation_type": "comparison_multi_metric",
+            "rows": [],
+            "fallback_answer": (
+                "I need two explicit spaces for cross-space comparison (for example: "
+                "'smart_lab vs concrete_lab')."
+            ),
+            "chart_payload": db_charts.empty_chart(),
+            "metric_alias": metric_names[0],
+            "metrics_used": metric_names,
+            "compared_spaces": compared_spaces,
+        }
     if len(compared_spaces) >= 2:
         sql = f"""
             SELECT lab_space, {select_metrics_sql}
@@ -200,19 +247,7 @@ def _handle_comparison_multi(
             LIMIT 2
         """
         cur.execute(sql, (compared_spaces, window_start, window_end))
-    else:
-        sql = f"""
-            SELECT lab_space, {select_metrics_sql}
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-            GROUP BY lab_space
-            ORDER BY lab_space ASC
-            LIMIT 2
-        """
-        cur.execute(sql, (window_start, window_end))
     rows = [dict(row) for row in cur.fetchall()]
-    metric_names = [m for m, _ in metric_columns]
     return {
         "operation_type": "comparison_multi_metric",
         "rows": rows,
@@ -230,6 +265,130 @@ def _handle_comparison_multi(
         "metric_alias": metric_names[0],
         "metrics_used": metric_names,
         "compared_spaces": compared_spaces,
+    }
+
+
+def _handle_baseline_reference_comparison(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    metric_column: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if intent != IntentType.COMPARISON_DB:
+        return None
+    if not db_parsing.is_baseline_reference_query(question):
+        return None
+    if not resolved_lab_name:
+        return {
+            "operation_type": "baseline_reference_comparison",
+            "rows": [],
+            "fallback_answer": "Please specify one lab to compare against its baseline/reference.",
+            "chart_payload": db_charts.empty_chart(),
+            "metrics_used": [metric_alias],
+            "compared_spaces": [],
+        }
+
+    window_seconds = max(3600, int((window_end - window_start).total_seconds()))
+    baseline_start = window_start - timedelta(seconds=window_seconds)
+    baseline_end = window_start
+    sql = f"""
+        SELECT
+            AVG(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS current_avg,
+            AVG(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS baseline_avg,
+            STDDEV_POP(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS baseline_stddev,
+            COUNT(CASE WHEN bucket >= %s AND bucket < %s THEN 1 END) AS current_count,
+            COUNT(CASE WHEN bucket >= %s AND bucket < %s THEN 1 END) AS baseline_count
+        FROM lab_ieq_final
+        WHERE lab_space = %s
+          AND bucket >= %s
+          AND bucket < %s
+          AND {metric_column} IS NOT NULL
+    """
+    cur.execute(
+        sql,
+        (
+            window_start,
+            window_end,
+            baseline_start,
+            baseline_end,
+            baseline_start,
+            baseline_end,
+            window_start,
+            window_end,
+            baseline_start,
+            baseline_end,
+            resolved_lab_name,
+            baseline_start,
+            window_end,
+        ),
+    )
+    row = dict(cur.fetchone() or {})
+    current_avg = row.get("current_avg")
+    baseline_avg = row.get("baseline_avg")
+    if current_avg is None or baseline_avg is None:
+        return {
+            "operation_type": "baseline_reference_comparison",
+            "rows": [],
+            "fallback_answer": (
+                f"I couldn't compute a baseline comparison for {metric_alias} in {resolved_lab_name} "
+                f"for {window_label}."
+            ),
+            "chart_payload": db_charts.empty_chart(),
+            "metrics_used": [metric_alias],
+            "compared_spaces": [resolved_lab_name],
+        }
+    current_value = float(current_avg)
+    baseline_value = float(baseline_avg)
+    delta = current_value - baseline_value
+    pct = (delta / baseline_value * 100.0) if baseline_value != 0 else None
+    rows = [
+        {
+            "lab_space": resolved_lab_name,
+            "current_avg": current_value,
+            "baseline_avg": baseline_value,
+            "delta_value": delta,
+            "delta_percent": pct,
+            "baseline_stddev": row.get("baseline_stddev"),
+            "current_count": int(row.get("current_count") or 0),
+            "baseline_count": int(row.get("baseline_count") or 0),
+        }
+    ]
+    pct_text = f"{pct:+.1f}%" if pct is not None else "n/a"
+    direction = "higher" if delta >= 0 else "lower"
+    return {
+        "operation_type": "baseline_reference_comparison",
+        "rows": rows,
+        "fallback_answer": (
+            f"In {window_label}, {resolved_lab_name} has average {metric_alias} {abs(delta):.2f} {unit} "
+            f"({pct_text}) {direction} than its baseline/reference window."
+        ),
+        "chart_payload": {
+            "visualization_type": "bar",
+            "chart": {
+                "title": f"{metric_alias} vs baseline ({window_label})",
+                "x_label": "reference",
+                "y_label": f"{metric_alias} ({unit})",
+                "series": [
+                    {
+                        "name": resolved_lab_name,
+                        "points": [
+                            {"x": "baseline", "y": baseline_value},
+                            {"x": "current", "y": current_value},
+                        ],
+                    }
+                ],
+            },
+        },
+        "metric_alias": metric_alias,
+        "metrics_used": [metric_alias],
+        "compared_spaces": [resolved_lab_name],
     }
 
 
@@ -486,9 +645,21 @@ def _handle_comparison(
 ) -> Optional[Dict[str, Any]]:
     if intent != IntentType.COMPARISON_DB:
         return None
+    if db_parsing.is_baseline_reference_query(question):
+        return None
     compared_spaces = db_parsing.extract_compared_spaces(question)
-    if not compared_spaces and resolved_lab_name:
-        compared_spaces = [resolved_lab_name]
+    if len(compared_spaces) < 2:
+        return {
+            "operation_type": "comparison",
+            "rows": [],
+            "fallback_answer": (
+                "I need two explicit spaces for cross-space comparison (for example: "
+                "'smart_lab vs concrete_lab')."
+            ),
+            "chart_payload": db_charts.empty_chart(),
+            "metrics_used": [metric_alias],
+            "compared_spaces": compared_spaces,
+        }
     if len(compared_spaces) >= 2:
         sql = f"""
             SELECT lab_space, AVG({metric_column}) AS avg_value
@@ -501,17 +672,6 @@ def _handle_comparison(
             LIMIT 2
         """
         cur.execute(sql, (compared_spaces, window_start, window_end))
-    else:
-        sql = f"""
-            SELECT lab_space, AVG({metric_column}) AS avg_value
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-            GROUP BY lab_space
-            ORDER BY avg_value DESC
-            LIMIT 2
-        """
-        cur.execute(sql, (window_start, window_end))
     rows = [dict(row) for row in cur.fetchall()]
     return {
         "operation_type": "comparison",
@@ -765,6 +925,18 @@ def execute_intent_query(
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+        ),
+        lambda: _handle_baseline_reference_comparison(
+            cur=cur,
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            metric_column=metric_column,
+            unit=unit,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
