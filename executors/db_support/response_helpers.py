@@ -8,6 +8,10 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+try:
+    from executors.db_support import charts as db_charts
+except ImportError:
+    from . import charts as db_charts
 
 try:
     from prophet import Prophet
@@ -91,6 +95,19 @@ You are answering an anomaly analysis from a structured DB query result.
 - If no anomalies are detected, say so explicitly.
 - Provide troubleshooting/monitoring actions when the user asks for next steps or anomalies are material.
 """.strip()
+DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = """
+You are answering a root-cause diagnostic question about IEQ.
+- Lead with the specific metric(s) most likely driving the IEQ drop, with evidence.
+- State the Pearson correlation in plain language
+  (e.g. "CO2 rises strongly when IEQ drops, r=-0.74").
+- Describe WHEN the dips occurred and what values the culprit metric had then.
+- Rank multiple culprits by correlation strength if present.
+- If correlation is weak for all metrics (abs(r) < 0.3), say so and note
+  possible data gaps or external factors.
+- Do NOT say data is unavailable if correlation_analysis is present in context.
+- Do NOT say "I cannot identify" if rows were returned - analyze what is there.
+- End with 2-3 targeted actions specific to the identified driver(s).
+""".strip()
 
 
 def to_target_timezone(dt: datetime) -> datetime:
@@ -167,7 +184,43 @@ def is_comfort_assessment_query_text(question: str) -> bool:
     return any(hint in q for hint in comfort_hints)
 
 
+def is_diagnostic_query_text(question: str) -> bool:
+    q = (question or "").lower()
+    diagnostic_hints = (
+        "driving",
+        "causing",
+        "cause of",
+        "responsible for",
+        "behind",
+        "reason for",
+        "why is",
+        "why was",
+        "what is affecting",
+        "what affected",
+        "contributing to",
+        "root cause",
+        "which metric",
+        "what metric",
+        "which factor",
+        "what factor",
+        "poor ieq",
+        "low ieq",
+        "bad ieq",
+        "dropped",
+        "decline",
+        "dip in ieq",
+        "drop in ieq",
+        "drop in index",
+        "what caused",
+        "what's causing",
+        "whats causing",
+    )
+    return any(hint in q for hint in diagnostic_hints)
+
+
 def db_response_directive(intent: Any, question: str = "") -> str:
+    if is_diagnostic_query_text(question):
+        return DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC
     intent_value = getattr(intent, "value", str(intent))
     if intent_value in {"point_lookup_db", "current_status_db"}:
         if (
@@ -184,6 +237,175 @@ def db_response_directive(intent: Any, question: str = "") -> str:
     if intent_value == "anomaly_analysis_db":
         return DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY
     return DB_TOOL_RESPONSE_DIRECTIVE
+
+
+def correlate_metrics_with_ieq(
+    rows: List[Dict[str, Any]],
+    metrics: List[str],
+) -> Dict[str, Any]:
+    """
+    Compute Pearson correlation between each metric and ieq column.
+    """
+    if not rows:
+        return {
+            "correlations": {},
+            "top_culprits": [],
+            "top_culprit_scores": {},
+            "dip_count": 0,
+            "ieq_threshold_used": 0.0,
+            "dip_periods": [],
+        }
+    df = pd.DataFrame(rows).copy()
+    if "ieq" not in df.columns:
+        return {
+            "correlations": {},
+            "top_culprits": [],
+            "top_culprit_scores": {},
+            "dip_count": 0,
+            "ieq_threshold_used": 0.0,
+            "dip_periods": [],
+        }
+    df["ieq"] = pd.to_numeric(df["ieq"], errors="coerce")
+    df = df.dropna(subset=["ieq"])
+    correlations: Dict[str, Optional[float]] = {}
+    metric_scores: List[Tuple[str, float]] = []
+    for metric in metrics:
+        if metric == "ieq" or metric not in df.columns:
+            continue
+        metric_df = df[["ieq", metric]].copy()
+        metric_df[metric] = pd.to_numeric(metric_df[metric], errors="coerce")
+        metric_df = metric_df.dropna(subset=["ieq", metric])
+        if len(metric_df) < 8:
+            correlations[metric] = None
+            continue
+        corr_value = metric_df["ieq"].corr(metric_df[metric])
+        if corr_value is None or pd.isna(corr_value):
+            correlations[metric] = None
+            continue
+        rounded = round(float(corr_value), 3)
+        correlations[metric] = rounded
+        metric_scores.append((metric, rounded))
+    metric_scores.sort(key=lambda item: item[1])
+    top_culprits = [metric for metric, _ in metric_scores]
+    top_culprit_scores = {metric: score for metric, score in metric_scores}
+
+    ieq_min = float(df["ieq"].min())
+    ieq_max = float(df["ieq"].max())
+    ieq_mean = float(df["ieq"].mean())
+    ieq_threshold = ieq_mean - 0.25 * (ieq_max - ieq_min)
+    dip_df = df[df["ieq"] < ieq_threshold].copy()
+    dip_count = int(len(dip_df))
+    dip_periods: List[Dict[str, Any]] = []
+    if dip_count > 0:
+        columns = ["bucket", "ieq"] + [m for m in metrics if m != "ieq" and m in dip_df.columns]
+        for _, row in dip_df.head(10)[columns].iterrows():
+            period: Dict[str, Any] = {}
+            for column in columns:
+                value = row.get(column)
+                if column == "bucket":
+                    period[column] = db_charts._serialize_timestamp_value(value)
+                else:
+                    period[column] = None if pd.isna(value) else float(value)
+            dip_periods.append(period)
+    return {
+        "correlations": correlations,
+        "top_culprits": top_culprits,
+        "top_culprit_scores": top_culprit_scores,
+        "dip_count": dip_count,
+        "ieq_threshold_used": round(float(ieq_threshold), 3),
+        "dip_periods": dip_periods,
+    }
+
+
+def build_diagnostic_answer(
+    rows: List[Dict[str, Any]],
+    correlation_analysis: Dict[str, Any],
+    window_label: str,
+    lab_name: Optional[str],
+) -> str:
+    """
+    Build deterministic fallback answer for diagnostic queries.
+    Must include: scope, reading count, dip count, top culprit metric,
+    correlation value, correlation strength label, direction label,
+    secondary culprits if present.
+    """
+    scope = lab_name or (rows[0].get("lab_space") if rows else "selected scope")
+    reading_count = len(rows)
+    dip_count = int(correlation_analysis.get("dip_count") or 0)
+    top_culprits = list(correlation_analysis.get("top_culprits") or [])
+    scores = dict(correlation_analysis.get("top_culprit_scores") or {})
+    if not rows:
+        return f"I couldn't find IEQ and related metric readings for {scope} in {window_label}."
+    if not top_culprits:
+        return (
+            f"Diagnostic scan for {scope} in {window_label} used {reading_count} readings with {dip_count} IEQ dips, "
+            "but there were not enough paired datapoints to compute reliable metric correlations."
+        )
+    top_metric = top_culprits[0]
+    top_score = scores.get(top_metric)
+    abs_corr = abs(float(top_score or 0.0))
+    if abs_corr >= 0.8:
+        strength = "strong"
+    elif abs_corr >= 0.5:
+        strength = "moderate"
+    elif abs_corr >= 0.3:
+        strength = "weak"
+    else:
+        strength = "very weak"
+    direction = "inverse" if float(top_score or 0.0) < 0 else "positive"
+    secondary = [m for m in top_culprits[1:3] if m in scores]
+    secondary_text = ""
+    if secondary:
+        secondary_text = " Secondary contributors: " + ", ".join(
+            f"{metric} (r={float(scores.get(metric) or 0.0):.3f})" for metric in secondary
+        ) + "."
+    return (
+        f"Diagnostic analysis for {scope} in {window_label} used {reading_count} readings and found {dip_count} IEQ dips. "
+        f"Top likely driver is {top_metric} with r={float(top_score or 0.0):.3f} "
+        f"({strength} {direction} relationship with IEQ).{secondary_text}"
+    )
+
+
+def build_diagnostic_chart(
+    rows: List[Dict[str, Any]],
+    culprit_metrics: List[str],
+    window_label: str,
+    lab_name: Optional[str],
+    max_lookback: int,
+) -> Dict[str, Any]:
+    """
+    Multi-series line chart: IEQ index + top culprit metrics.
+    """
+    recent_rows = db_charts._clip_rows(rows, max_lookback)
+    series: List[Dict[str, Any]] = []
+    ieq_points = [
+        {"x": db_charts._serialize_timestamp_value(row.get("bucket")), "y": float(row.get("ieq") or 0.0)}
+        for row in recent_rows
+        if row.get("bucket") is not None and row.get("ieq") is not None
+    ]
+    series.append({"name": "IEQ Index", "points": ieq_points})
+    for metric in culprit_metrics:
+        if metric == "ieq":
+            continue
+        points = [
+            {"x": db_charts._serialize_timestamp_value(row.get("bucket")), "y": float(row.get(metric) or 0.0)}
+            for row in recent_rows
+            if row.get("bucket") is not None and row.get(metric) is not None
+        ]
+        if not points:
+            continue
+        series.append({"name": metric.upper(), "points": points})
+    title_scope = lab_name or "selected scope"
+    return {
+        "visualization_type": "line",
+        "chart": {
+            "title": f"IEQ diagnostic drivers ({title_scope}, {window_label})",
+            "x_label": "time",
+            "y_label": "value",
+            "series": series,
+            "note": "IEQ and correlated metrics overlaid to identify drivers",
+        },
+    }
 
 
 def build_point_lookup_answer(metric_alias: str, row: Dict, window_label: str) -> str:

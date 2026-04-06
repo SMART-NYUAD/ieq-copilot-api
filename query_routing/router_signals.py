@@ -7,8 +7,13 @@ from typing import Any, Dict, Optional
 
 try:
     from query_routing.router_types import QueryScopeClass
+    from executors.db_support.response_helpers import is_diagnostic_query_text
 except ImportError:
     from .router_types import QueryScopeClass
+    try:
+        from executors.db_support.response_helpers import is_diagnostic_query_text
+    except ImportError:
+        from ..executors.db_support.response_helpers import is_diagnostic_query_text
 
 
 _METRIC_TOKEN_RE = re.compile(
@@ -268,6 +273,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         has_knowledge_domain and has_general_qa_phrase and not has_time_window_hint
     )
     is_comfort_assessment_phrase = any(hint in q for hint in _COMFORT_ASSESSMENT_HINTS)
+    is_diagnostic_phrase = is_diagnostic_query_text(latest_question)
     has_db_scope_phrase = any(hint in q for hint in _DB_SCOPE_HINTS) or any(
         hint in q for hint in _COMPARISON_HINTS
     )
@@ -278,6 +284,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         or has_conceptual_ieq_term
         or is_air_assessment_phrase
         or is_comfort_assessment_phrase
+        or is_diagnostic_phrase
     )
     is_general_conversation_question = (
         not has_domain_anchor and bool(_GENERAL_CONVERSATION_QUESTION_RE.search(q))
@@ -320,6 +327,8 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         asks_for_db_facts = False
     if single_explicit_lab_with_baseline_reference:
         asks_for_db_facts = True
+    if is_diagnostic_phrase:
+        asks_for_db_facts = True
     return {
         "has_lab_reference": has_lab_reference,
         "has_time_window_hint": has_time_window_hint,
@@ -330,6 +339,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         "is_social_identity_query": is_social_identity_query,
         "is_general_conversation_question": is_general_conversation_question,
         "is_comfort_assessment_phrase": is_comfort_assessment_phrase,
+        "is_diagnostic_phrase": is_diagnostic_phrase,
         "is_hypothetical_conditional": is_hypothetical_conditional,
         "requests_current_measured_data": requests_current_measured_data,
         "is_baseline_reference_query": is_baseline_reference_query,

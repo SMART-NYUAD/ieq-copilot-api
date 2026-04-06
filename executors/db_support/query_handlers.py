@@ -16,10 +16,12 @@ try:
     from executors.db_support import charts as db_charts
     from executors.db_support import query_parsing as db_parsing
     from executors.db_support import response_helpers as db_helpers
+    from executors.db_support.response_helpers import is_diagnostic_query_text
 except ImportError:
     from . import charts as db_charts
     from . import query_parsing as db_parsing
     from . import response_helpers as db_helpers
+    from .response_helpers import is_diagnostic_query_text
 
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
@@ -52,11 +54,18 @@ def _requested_metrics(
         q = str(question or "").lower()
         explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
         if not (
+            is_diagnostic_query_text(question)
+            or (
             intent == IntentType.COMPARISON_DB
             and explicit_air_metric
             and any(token in q for token in ("compare", "vs", "versus"))
+            )
         ):
             return metrics
+    if is_diagnostic_query_text(question):
+        required_pack = ["co2", "pm25", "tvoc", "humidity", "temperature", "ieq", "sound", "light"]
+        missing = [m for m in required_pack if m not in metrics]
+        return metrics + missing
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
     is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
     if not is_air_quality_query:
@@ -76,6 +85,100 @@ def _requested_metrics(
     )
     missing_core_metrics = [m for m in required_pack if m not in metrics]
     return metrics + missing_core_metrics
+
+
+def _handle_diagnostic(
+    *,
+    cur: Any,
+    question: str,
+    intent: IntentType,
+    requested_metrics: List[str],
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    max_chart_lookback_points: int,
+) -> Optional[Dict[str, Any]]:
+    if not is_diagnostic_query_text(question):
+        return None
+    core_metrics = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"]
+    metric_columns = [
+        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
+        for metric in core_metrics
+        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+    ]
+    if not metric_columns:
+        return {
+            "operation_type": "diagnostic",
+            "rows": [],
+            "fallback_answer": f"I couldn't map diagnostic metrics for {window_label}.",
+            "chart_payload": db_charts.empty_chart(),
+            "forecast_data": None,
+            "correlation_data": None,
+            "metric_alias": "ieq",
+            "metrics_used": [],
+            "window_start": window_start,
+            "window_end": window_end,
+            "window_label": window_label,
+            "compared_spaces": [],
+        }
+    select_metrics_sql = ", ".join([f"AVG({column}) AS {metric}" for metric, column in metric_columns])
+    sql = f"""
+        SELECT bucket, {select_metrics_sql}
+        FROM lab_ieq_final
+        WHERE bucket >= %s
+          AND bucket < %s
+          AND (%s IS NULL OR lab_space = %s)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        LIMIT 2000
+    """
+    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+    rows = [dict(row) for row in cur.fetchall()]
+    if not rows:
+        return {
+            "operation_type": "diagnostic",
+            "rows": [],
+            "fallback_answer": f"I couldn't find IEQ diagnostic readings for {window_label}.",
+            "chart_payload": db_charts.empty_chart(),
+            "forecast_data": None,
+            "correlation_data": None,
+            "metric_alias": "ieq",
+            "metrics_used": [m for m, _ in metric_columns],
+            "window_start": window_start,
+            "window_end": window_end,
+            "window_label": window_label,
+            "compared_spaces": [],
+        }
+    correlation_analysis = db_helpers.correlate_metrics_with_ieq(rows=rows, metrics=core_metrics)
+    top_culprits = list(correlation_analysis.get("top_culprits") or [])
+    chart = db_helpers.build_diagnostic_chart(
+        rows=rows,
+        culprit_metrics=top_culprits[:3],
+        window_label=window_label,
+        lab_name=resolved_lab_name,
+        max_lookback=max_chart_lookback_points,
+    )
+    fallback = db_helpers.build_diagnostic_answer(
+        rows=rows,
+        correlation_analysis=correlation_analysis,
+        window_label=window_label,
+        lab_name=resolved_lab_name,
+    )
+    return {
+        "operation_type": "diagnostic",
+        "rows": rows,
+        "fallback_answer": fallback,
+        "chart_payload": chart,
+        "forecast_data": None,
+        "correlation_data": correlation_analysis,
+        "metric_alias": "ieq",
+        "metrics_used": [m for m, _ in metric_columns],
+        "window_start": window_start,
+        "window_end": window_end,
+        "window_label": window_label,
+        "compared_spaces": [],
+    }
 
 
 def _handle_correlation(
@@ -910,6 +1013,17 @@ def execute_intent_query(
     )
 
     handlers = [
+        lambda: _handle_diagnostic(
+            cur=cur,
+            question=question,
+            intent=intent,
+            requested_metrics=requested_metrics,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            max_chart_lookback_points=max_chart_lookback_points,
+        ),
         lambda: _handle_correlation(
             cur=cur,
             question=question,

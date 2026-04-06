@@ -672,10 +672,27 @@ def prepare_db_query(
         forecast=forecast_data,
         knowledge_cards=knowledge_cards,
     )
+    if isinstance(correlation_data, dict) and "correlations" in correlation_data:
+        payload["correlation_analysis"] = _serialize_timestamp_value(correlation_data)
     if operation_type == "prediction" and forecast_data:
         payload["forecast_only_context"] = True
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
+    metric_pair = None
+    correlation_value = None
+    if isinstance(correlation_data, dict):
+        metric_x = correlation_data.get("metric_x")
+        metric_y = correlation_data.get("metric_y")
+        if metric_x and metric_y:
+            metric_pair = [str(metric_x), str(metric_y)]
+            correlation_value = correlation_data.get("correlation")
+        elif "top_culprits" in correlation_data:
+            top_culprits = list(correlation_data.get("top_culprits") or [])
+            top_scores = dict(correlation_data.get("top_culprit_scores") or {})
+            if top_culprits:
+                top_metric = str(top_culprits[0])
+                metric_pair = ["ieq", top_metric]
+                correlation_value = top_scores.get(top_metric)
     return {
         "intent": intent,
         "metric_alias": metric_alias,
@@ -706,12 +723,8 @@ def prepare_db_query(
             compared_spaces=compared_spaces,
             rows=rows,
             forecast=forecast_data,
-            metric_pair=(
-                [correlation_data["metric_x"], correlation_data["metric_y"]]
-                if correlation_data
-                else None
-            ),
-            correlation=correlation_data.get("correlation") if correlation_data else None,
+            metric_pair=metric_pair,
+            correlation=correlation_value,
             metrics_used=metrics_used,
         )
         + [
@@ -765,12 +778,15 @@ def _render_db_answer_with_llm(
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     if correlation:
-        payload["correlation"] = {
-            "metric_x": correlation.get("metric_x"),
-            "metric_y": correlation.get("metric_y"),
-            "correlation": correlation.get("correlation"),
-            "row_count": correlation.get("row_count"),
-        }
+        if isinstance(correlation, dict) and "correlations" in correlation:
+            payload["correlation_analysis"] = _serialize_timestamp_value(correlation)
+        else:
+            payload["correlation"] = {
+                "metric_x": correlation.get("metric_x"),
+                "metric_y": correlation.get("metric_y"),
+                "correlation": correlation.get("correlation"),
+                "row_count": correlation.get("row_count"),
+            }
     interpretation_cards, guardrails = _split_knowledge_cards(knowledge_cards)
     context_data = build_grounded_context_sections(
         measured_room_facts=payload,

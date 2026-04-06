@@ -14,6 +14,7 @@ try:
         QueryScopeClass,
         RoutePlan,
     )
+    from executors.db_support.response_helpers import is_diagnostic_query_text
 except ImportError:
     from .intent_classifier import IntentType, RouteDecision, classify_intent
     from .router_types import (
@@ -24,6 +25,10 @@ except ImportError:
         QueryScopeClass,
         RoutePlan,
     )
+    try:
+        from executors.db_support.response_helpers import is_diagnostic_query_text
+    except ImportError:
+        from ..executors.db_support.response_helpers import is_diagnostic_query_text
 
 
 ALLOWED_PLANNER_METRICS = {
@@ -210,6 +215,15 @@ def normalize_planner_parameters(raw_plan: Dict[str, Any], question: str, intent
     required_air_pack: list[str] = []
     if _is_comfort_assessment_query_text(question) and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB, IntentType.COMPARISON_DB, IntentType.AGGREGATION_DB, *rerouted_semantic_intents}:
         required_air_pack = ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound"]
+    elif is_diagnostic_query_text(question) and intent in {
+        IntentType.CURRENT_STATUS_DB,
+        IntentType.POINT_LOOKUP_DB,
+        IntentType.AGGREGATION_DB,
+        IntentType.COMPARISON_DB,
+        IntentType.ANOMALY_ANALYSIS_DB,
+        *rerouted_semantic_intents,
+    }:
+        required_air_pack = ["co2", "pm25", "tvoc", "humidity", "temperature", "ieq", "sound", "light"]
     elif _is_air_quality_query_text(question) and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB, IntentType.COMPARISON_DB, IntentType.AGGREGATION_DB, *rerouted_semantic_intents}:
         required_air_pack = ["ieq", "co2", "pm25", "humidity", "tvoc"]
 
