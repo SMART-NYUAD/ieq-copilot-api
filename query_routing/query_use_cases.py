@@ -44,6 +44,9 @@ def _base_route_metadata(route_plan: Any, decision: Any) -> Dict[str, Any]:
         "decomposition_template": (
             route_plan.decomposition_template.value if route_plan.decomposition_template else None
         ),
+        "agent_action": str(getattr(getattr(route_plan, "agent_action", None), "value", "finalize")),
+        "tool_name": getattr(route_plan, "tool_name", None),
+        "expected_observation": getattr(route_plan, "expected_observation", None),
         "query_signals": route_plan.planner_parameters.get("query_signals", {}),
         "query_scope_class": _query_scope_class(route_plan),
     }

@@ -365,13 +365,17 @@ def validate_db_execution_invariants(
 
     has_time_hint = bool(signals.get("has_time_window_hint")) or _TIME_HINT_RE.search(q) is not None
     has_currentness_hint = any(token in q for token in ("current", "now", "latest", "right now", "at this moment"))
-    has_lab_hint = bool(signals.get("has_lab_reference")) or bool(request_lab_name)
+    extracted_lab_scope = extract_space_from_question(q)
+    has_explicit_lab_scope = bool(extracted_lab_scope)
     has_db_scope = bool(signals.get("asks_for_db_facts")) or bool(signals.get("has_db_scope_phrase"))
     has_metric_hint = bool(signals.get("has_metric_reference")) or (selected in explicit_metrics)
     has_deictic_scope_hint = any(token in f" {q} " for token in _DEICTIC_SCOPE_HINTS)
     is_baseline_query = bool(signals.get("is_baseline_reference_query")) or is_baseline_reference_query(q)
     compared_spaces = extract_compared_spaces(q)
     has_explicit_second_space = len(compared_spaces) >= 2
+    if has_explicit_second_space:
+        has_explicit_lab_scope = True
+    has_lab_hint = bool(signals.get("has_lab_reference")) or bool(request_lab_name) or has_explicit_lab_scope
     metric_explicit_in_planner = selected in hinted_metrics
     analytical_intent = intent in {
         IntentType.AGGREGATION_DB,
@@ -412,6 +416,7 @@ def validate_db_execution_invariants(
         or bool(has_lab_hint)
         or bool(request_lab_name)
         or has_prepositional_lab_scope
+        or has_explicit_second_space
         or (generic_air_quality_query and resolved_lab_name is not None)
     )
     if has_deictic_scope_hint and resolved_lab_name is None and not request_lab_name:
@@ -512,8 +517,8 @@ def strip_conversation_context(question: str) -> str:
 
 
 def _latest_user_question(question: str) -> str:
-    """Strip appended conversation transcript from effective question text."""
-    return strip_conversation_context(question)
+    """Return the current turn question text only."""
+    return str(question or "").strip()
 
 
 def _cap_window_end_at_now(start: datetime, end: datetime, now: datetime) -> datetime:

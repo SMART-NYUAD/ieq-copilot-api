@@ -76,6 +76,9 @@ def route_plan_metadata(
         "answer_strategy": route_plan.answer_strategy.value,
         "secondary_intents": [item.value for item in route_plan.secondary_intents],
         "query_scope_class": query_scope_class,
+        "agent_action": str(getattr(getattr(route_plan, "agent_action", None), "value", "finalize")),
+        "tool_name": getattr(route_plan, "tool_name", None),
+        "expected_observation": getattr(route_plan, "expected_observation", None),
     }
     if include_decomposition_template:
         meta["decomposition_template"] = (

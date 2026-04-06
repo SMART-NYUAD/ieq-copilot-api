@@ -57,14 +57,8 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual(label, "last 1 hour")
         self.assertAlmostEqual((end - start).total_seconds(), 3600.0, delta=2.0)
 
-    def test_extract_time_window_ignores_appended_conversation_context(self):
-        question = (
-            "pm2.5 in smart lab for the last hour\n\n"
-            "Previous conversation context (most recent last):\n"
-            "User: show March 28 report\n"
-            "Assistant: done"
-        )
-        start, end, label = extract_time_window(question, default_hours=24)
+    def test_extract_time_window_uses_current_question_scope(self):
+        start, end, label = extract_time_window("pm2.5 in smart lab for the last hour", default_hours=24)
         self.assertEqual(label, "last 1 hour")
         self.assertAlmostEqual((end - start).total_seconds(), 3600.0, delta=2.0)
 
@@ -76,17 +70,11 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertLessEqual(end, datetime.now(target_tz) + timedelta(seconds=1))
         self.assertLess(end, start + timedelta(days=1))
 
-    def test_metric_parsing_ignores_appended_conversation_context(self):
-        question = (
-            "find anomalies in smart lab last week\n\n"
-            "Previous conversation context (most recent last):\n"
-            "User: show PM2.5 in shores_office for last 24 hours\n"
-            "Assistant: PM2.5 was low"
-        )
-        cleaned = strip_conversation_context(question)
-        metric_alias, _ = pick_metric(cleaned)
+    def test_metric_parsing_uses_current_question_scope(self):
+        question = "find anomalies in smart lab last week"
+        metric_alias, _ = pick_metric(question)
         self.assertEqual(metric_alias, "ieq")
-        self.assertEqual(extract_metric_aliases(cleaned), [])
+        self.assertEqual(extract_metric_aliases(question), [])
 
     def test_invariants_block_comparison_without_explicit_second_space(self):
         result = validate_db_execution_invariants(
@@ -175,6 +163,24 @@ class DbDefaultWindowTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["allowed"])
+        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
+
+    def test_invariants_allow_two_explicit_labs_without_planner_signals(self):
+        result = validate_db_execution_invariants(
+            question=(
+                "Compare smart_lab and concrete_lab for CO2, PM2.5, TVOC, "
+                "temperature, and humidity for the last 7 days."
+            ),
+            intent=IntentType.COMPARISON_DB,
+            selected_metric="co2",
+            resolved_lab_name="smart_lab",
+            request_lab_name=None,
+            explicit_metrics=["co2", "pm25", "tvoc", "temperature", "humidity"],
+            hinted_metrics=[],
+            planner_hints={"query_signals": {}},
+        )
+        self.assertTrue(result["allowed"])
+        self.assertNotIn("lab_scope_not_justified", result["violations"])
         self.assertNotIn("comparison_second_space_not_justified", result["violations"])
 
     def test_invariants_block_current_status_without_lab_scope(self):

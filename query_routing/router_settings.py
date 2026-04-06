@@ -5,6 +5,17 @@ from __future__ import annotations
 import os
 
 
+def _parse_bool(value: str, default: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def router_base_url() -> str:
     return (
         os.getenv("OLLAMA_ROUTER_BASE_URL")
@@ -55,3 +66,7 @@ def router_retry_jitter_ms() -> int:
         return max(0, min(2000, int(raw)))
     except ValueError:
         return 180
+
+
+def agent_routing_strict_enabled() -> bool:
+    return _parse_bool(os.getenv("AGENT_ROUTING_STRICT", "false"), default=False)

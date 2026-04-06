@@ -9,6 +9,7 @@ try:
     from core_settings import load_settings
     from query_routing.intent_classifier import IntentType
     from query_routing.router_types import (
+        AgentAction,
         AnswerStrategy,
         QueryScopeClass,
         RouteDecisionContract,
@@ -19,6 +20,7 @@ except ImportError:
     from ..core_settings import load_settings
     from .intent_classifier import IntentType
     from .router_types import (
+        AgentAction,
         AnswerStrategy,
         QueryScopeClass,
         RouteDecisionContract,
@@ -51,9 +53,22 @@ def _clarify_threshold() -> float:
     return float(load_settings().router_clarify_threshold)
 
 
+def _strict_mode_enabled() -> bool:
+    raw = getattr(load_settings(), "agent_routing_strict", False)
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
 def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool) -> bool:
     if not allow_clarify:
         return False
+    if _strict_mode_enabled():
+        return (
+            route_plan.answer_strategy == AnswerStrategy.CLARIFY
+            or getattr(route_plan, "agent_action", AgentAction.FINALIZE) == AgentAction.CLARIFY
+        )
     signals = _query_signals(route_plan)
     explicit_measured_scope = bool(signals.get("has_metric_reference")) and (
         bool(signals.get("has_lab_reference"))
@@ -73,6 +88,10 @@ def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool
 
 
 def _needs_measured_data(route_plan: RoutePlan, scope_class: str) -> bool:
+    if _strict_mode_enabled():
+        if scope_class == QueryScopeClass.NON_DOMAIN.value:
+            return False
+        return route_plan.decision.intent not in SEMANTIC_INTENTS
     signals = _query_signals(route_plan)
     is_hypothetical = bool(signals.get("is_hypothetical_conditional"))
     requests_live_data = bool(signals.get("requests_current_measured_data"))
@@ -118,6 +137,7 @@ def _choose_executor(
     scope_class: str,
     allow_clarify: bool,
 ) -> Tuple[RouteExecutor, bool, Tuple[str, ...]]:
+    strict_mode = _strict_mode_enabled()
     signals = _query_signals(route_plan)
     decision_intent = route_plan.decision.intent
     is_hypothetical = bool(signals.get("is_hypothetical_conditional"))
@@ -128,6 +148,16 @@ def _choose_executor(
     if scope_class == QueryScopeClass.NON_DOMAIN.value:
         trace.append("non_domain_scope_forces_knowledge")
         return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+
+    if strict_mode:
+        if _should_clarify(route_plan=route_plan, scope_class=scope_class, allow_clarify=allow_clarify):
+            trace.append("strict_mode_planner_clarify")
+            return RouteExecutor.CLARIFY_GATE, False, tuple(trace)
+        if decision_intent in SEMANTIC_INTENTS:
+            trace.append("strict_mode_semantic_intent_knowledge")
+            return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+        trace.append("strict_mode_non_semantic_db")
+        return RouteExecutor.DB_QUERY, True, tuple(trace)
 
     if is_hypothetical and not requests_live_data:
         trace.append("hypothetical_without_live_scope_forces_knowledge")

@@ -8,6 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 try:
+    from core_settings import load_settings
     from http_schemas import QueryRequest, QueryResponse
     from query_routing.query_orchestrator import (
         build_clarify_prompt,
@@ -16,11 +17,12 @@ try:
         get_route_decision_contract,
         get_route_plan,
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,
+        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
+    from query_routing.synthesizer import build_synthesis_context
     from executors.db_query_executor import prepare_db_query, stream_db_query
     from executors.db_support.response_helpers import serialize_timestamp_value
     from executors.env_query_langchain import (
@@ -39,6 +41,7 @@ try:
         normalize_allow_clarify,
         normalize_k,
         normalize_lab_name,
+        resolve_agent_stream_runtime,
         resolve_stream_runtime,
     )
     from http_routes.route_helpers import (
@@ -50,6 +53,7 @@ try:
     )
     from runtime_errors import log_exception, stream_error_payload
 except ImportError:
+    from ..core_settings import load_settings
     from ..http_schemas import QueryRequest, QueryResponse
     from ..query_routing.query_orchestrator import (
         build_clarify_prompt,
@@ -58,11 +62,12 @@ except ImportError:
         get_route_decision_contract,
         get_route_plan,
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,
+        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
+    from ..query_routing.synthesizer import build_synthesis_context
     from ..executors.db_query_executor import prepare_db_query, stream_db_query
     from ..executors.db_support.response_helpers import serialize_timestamp_value
     from ..executors.env_query_langchain import (
@@ -81,6 +86,7 @@ except ImportError:
         normalize_allow_clarify,
         normalize_k,
         normalize_lab_name,
+        resolve_agent_stream_runtime,
         resolve_stream_runtime,
     )
     from .route_helpers import (
@@ -96,6 +102,16 @@ except ImportError:
 router = APIRouter()
 # Compatibility re-exports used by tests that patch route-layer symbols directly.
 _ROUTE_TEST_COMPAT = (query_scope_class, resolve_execution_intent, should_clarify, should_use_knowledge_executor)
+
+
+def _attach_agent_stream_metadata(meta: Dict, route_plan) -> Dict:
+    merged = dict(meta or {})
+    settings = load_settings()
+    merged["agent_mode"] = "enabled" if settings.agentic_mode else "disabled"
+    merged["agent_action"] = str(getattr(getattr(route_plan, "agent_action", None), "value", "finalize"))
+    merged["tool_name"] = getattr(route_plan, "tool_name", None)
+    merged["agent_stream_step_events"] = bool(settings.agent_stream_step_events)
+    return merged
 
 
 def _build_sql_preview_and_bindings(source: Dict, time_window: Dict, resolved_lab_name: str | None) -> Dict:
@@ -271,10 +287,12 @@ async def query_cards_stream(request: QueryRequest):
         question=question,
         conversation_id=request.conversation_id,
     )
-    runtime = await resolve_stream_runtime(
+    agent_resolution = await resolve_agent_stream_runtime(
         latest_user_question=latest_user_question,
+        k=k,
         lab_name=lab_name,
         allow_clarify=normalize_allow_clarify(request.allow_clarify),
+        conversation_context=conversation_context,
         endpoint_key="query_stream",
         get_route_plan_fn=get_route_plan,
         query_scope_class_fn=query_scope_class,
@@ -282,32 +300,19 @@ async def query_cards_stream(request: QueryRequest):
         should_use_knowledge_executor_fn=should_use_knowledge_executor,
         resolve_execution_intent_fn=resolve_execution_intent,
     )
+    runtime = agent_resolution.runtime
+    state = agent_resolution.state
+    agent_step_trace = list(agent_resolution.agent_step_trace or [])
+    tools_called = list(agent_resolution.tools_called or [])
+    agent_finish_reason = str(agent_resolution.finish_reason or "unknown")
     route_plan = runtime.route_plan
     decision = runtime.decision
-    memory_retry = resolve_db_followup_memory(
-        question=latest_user_question,
-        conversation_context=conversation_context,
-        lab_name=lab_name,
-        route_plan=route_plan,
-    )
-    retry_applied = False
-    if runtime.should_clarify_response and bool(memory_retry.get("applied")):
-        retry_runtime = await resolve_stream_runtime(
-            latest_user_question=str(memory_retry.get("effective_question") or latest_user_question),
-            lab_name=memory_retry.get("effective_lab_name"),
-            allow_clarify=normalize_allow_clarify(request.allow_clarify),
-            endpoint_key="query_stream",
-            get_route_plan_fn=get_route_plan,
-            query_scope_class_fn=query_scope_class,
-            should_clarify_fn=should_clarify,
-            should_use_knowledge_executor_fn=should_use_knowledge_executor,
-            resolve_execution_intent_fn=resolve_execution_intent,
-        )
-        if not retry_runtime.should_clarify_response:
-            runtime = retry_runtime
-            route_plan = runtime.route_plan
-            decision = runtime.decision
-            retry_applied = True
+    memory_meta = {
+        "applied": bool(state.effective_question != state.original_question or state.effective_lab != lab_name),
+        "carried_lab_name": state.routing_memory.lab_name if state.effective_lab and not lab_name else None,
+        "carried_time_phrase": state.routing_memory.time_phrase if state.effective_question != state.original_question else None,
+        "carried_metric": state.routing_memory.metric if state.effective_question != state.original_question else None,
+    }
 
     if runtime.should_clarify_response:
         async def clarify_generator():
@@ -326,7 +331,15 @@ async def query_cards_stream(request: QueryRequest):
                 turn_index=None,
             )
             meta = attach_policy_metadata(meta, runtime.route_contract)
+            meta = _attach_agent_stream_metadata(meta, route_plan)
+            meta["agent_step_trace"] = agent_step_trace
+            meta["tools_called"] = tools_called
+            meta["agent_steps"] = int(len(agent_step_trace))
+            meta["agent_finish_reason"] = agent_finish_reason
             yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+            if bool(meta.get("agent_stream_step_events")):
+                for step_payload in agent_step_trace:
+                    yield f"event: agent_step\ndata: {json.dumps(step_payload)}\n\n"
             lines = clarify_text.splitlines() or [""]
             payload = "\n".join([f"data: {line}" for line in lines])
             yield f"event: token\n{payload}\n\n"
@@ -354,12 +367,14 @@ async def query_cards_stream(request: QueryRequest):
     suppress_live_scope = bool(stream_signals.get("is_hypothetical_conditional")) and not bool(
         stream_signals.get("requests_current_measured_data")
     )
-    active_question = (
-        str(memory_retry.get("effective_question") or latest_user_question) if retry_applied else latest_user_question
-    )
-    active_lab_name = (memory_retry.get("effective_lab_name") if retry_applied else lab_name)
+    active_question = state.effective_question
+    active_lab_name = state.effective_lab
     knowledge_question = active_question if suppress_live_scope else (
-        f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+        build_synthesis_context(
+            tool_results=None,
+            conversation_context=conversation_context,
+            question=active_question,
+        )
     )
     knowledge_lab_name = None if suppress_live_scope else active_lab_name
 
@@ -380,10 +395,10 @@ async def query_cards_stream(request: QueryRequest):
                     cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
                     knowledge_cards_retrieved=int(knowledge_stats.get("knowledge_cards_retrieved") or 0),
                 )
-                meta["memory_carryover_applied"] = bool(memory_retry.get("applied"))
-                meta["memory_carried_lab_name"] = memory_retry.get("carried_lab_name")
-                meta["memory_carried_time_phrase"] = memory_retry.get("carried_time_phrase")
-                meta["memory_carried_metric"] = memory_retry.get("carried_metric")
+                meta["memory_carryover_applied"] = bool(memory_meta.get("applied"))
+                meta["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
+                meta["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
+                meta["memory_carried_metric"] = memory_meta.get("carried_metric")
                 meta = attach_conversation_metadata(
                     meta,
                     conversation_id=normalized_conversation_id,
@@ -391,7 +406,15 @@ async def query_cards_stream(request: QueryRequest):
                     turn_index=None,
                 )
                 meta = attach_policy_metadata(meta, runtime.route_contract)
+                meta = _attach_agent_stream_metadata(meta, route_plan)
+                meta["agent_step_trace"] = agent_step_trace
+                meta["tools_called"] = tools_called
+                meta["agent_steps"] = int(len(agent_step_trace))
+                meta["agent_finish_reason"] = agent_finish_reason
                 yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+                if bool(meta.get("agent_stream_step_events")):
+                    for step_payload in agent_step_trace:
+                        yield f"event: agent_step\ndata: {json.dumps(step_payload)}\n\n"
                 assembled_answer = ""
                 async for chunk in stream_answer_env_question(
                     user_question=knowledge_question,
@@ -415,14 +438,8 @@ async def query_cards_stream(request: QueryRequest):
                 yield "event: done\ndata: [DONE]\n\n"
                 return
 
-            memory = resolve_db_followup_memory(
-                question=active_question,
-                conversation_context=conversation_context,
-                lab_name=active_lab_name,
-                route_plan=route_plan,
-            )
-            effective_question = str(memory.get("effective_question") or active_question)
-            effective_lab_name = memory.get("effective_lab_name") or active_lab_name
+            effective_question = active_question
+            effective_lab_name = active_lab_name
             db_context = await fetch_db_context(
                 latest_user_question=effective_question,
                 execution_intent=execution_intent,
@@ -442,10 +459,10 @@ async def query_cards_stream(request: QueryRequest):
                 )
                 meta["execution_intent"] = execution_intent.value
                 meta["intent_rerouted_to_db"] = execution_intent != decision.intent
-                meta["memory_carryover_applied"] = bool(memory.get("applied"))
-                meta["memory_carried_lab_name"] = memory.get("carried_lab_name")
-                meta["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
-                meta["memory_carried_metric"] = memory.get("carried_metric")
+                meta["memory_carryover_applied"] = bool(memory_meta.get("applied"))
+                meta["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
+                meta["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
+                meta["memory_carried_metric"] = memory_meta.get("carried_metric")
                 meta = attach_conversation_metadata(
                     meta,
                     conversation_id=normalized_conversation_id,
@@ -453,7 +470,15 @@ async def query_cards_stream(request: QueryRequest):
                     turn_index=None,
                 )
                 meta = attach_policy_metadata(meta, runtime.route_contract)
+                meta = _attach_agent_stream_metadata(meta, route_plan)
+                meta["agent_step_trace"] = agent_step_trace
+                meta["tools_called"] = tools_called
+                meta["agent_steps"] = int(len(agent_step_trace))
+                meta["agent_finish_reason"] = agent_finish_reason
                 yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+                if bool(meta.get("agent_stream_step_events")):
+                    for step_payload in agent_step_trace:
+                        yield f"event: agent_step\ndata: {json.dumps(step_payload)}\n\n"
                 clarify_text = str(db_context.get("fallback_answer") or "")
                 lines = clarify_text.splitlines() or [""]
                 payload = "\n".join([f"data: {line}" for line in lines])
@@ -478,10 +503,10 @@ async def query_cards_stream(request: QueryRequest):
                 lab_name=lab_name,
                 db_context=db_context,
             )
-            meta["memory_carryover_applied"] = bool(memory.get("applied"))
-            meta["memory_carried_lab_name"] = memory.get("carried_lab_name")
-            meta["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
-            meta["memory_carried_metric"] = memory.get("carried_metric")
+            meta["memory_carryover_applied"] = bool(memory_meta.get("applied"))
+            meta["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
+            meta["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
+            meta["memory_carried_metric"] = memory_meta.get("carried_metric")
             meta = attach_conversation_metadata(
                 meta,
                 conversation_id=normalized_conversation_id,
@@ -489,7 +514,15 @@ async def query_cards_stream(request: QueryRequest):
                 turn_index=None,
             )
             meta = attach_policy_metadata(meta, runtime.route_contract)
+            meta = _attach_agent_stream_metadata(meta, route_plan)
+            meta["agent_step_trace"] = agent_step_trace
+            meta["tools_called"] = tools_called
+            meta["agent_steps"] = int(len(agent_step_trace))
+            meta["agent_finish_reason"] = agent_finish_reason
             yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+            if bool(meta.get("agent_stream_step_events")):
+                for step_payload in agent_step_trace:
+                    yield f"event: agent_step\ndata: {json.dumps(step_payload)}\n\n"
 
             assembled_answer = ""
             async for chunk in stream_db_query(

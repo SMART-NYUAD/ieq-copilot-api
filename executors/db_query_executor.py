@@ -544,7 +544,7 @@ def prepare_db_query(
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    query_text = db_parsing.strip_conversation_context(question)
+    query_text = str(question or "").strip()
     metric_alias, metric_column = db_parsing.pick_metric(query_text)
     explicit_metrics = db_parsing.extract_metric_aliases(query_text)
     hinted_metrics = db_parsing.planner_metrics(planner_hints)
@@ -804,7 +804,7 @@ def run_db_query(
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
 ) -> Dict:
-    query_text = db_parsing.strip_conversation_context(question)
+    query_text = str(question or "").strip()
     context = prepare_db_query(
         question=question,
         intent=intent,
@@ -918,7 +918,7 @@ async def stream_db_query(
     query_context: Optional[Dict[str, Any]] = None,
     think: Optional[bool] = None,
 ) -> AsyncIterator[str]:
-    query_text = db_parsing.strip_conversation_context(question)
+    query_text = str(question or "").strip()
     context = query_context or prepare_db_query(
         question=question,
         intent=intent,

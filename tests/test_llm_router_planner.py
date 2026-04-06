@@ -257,6 +257,27 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertEqual(plan.decomposition_template, DecompositionTemplate.ANOMALY_EXPLANATION)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_agent_tool_call_fields_are_parsed(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "structured_factual_db",
+            "intent": "aggregation_db",
+            "confidence": 0.8,
+            "action": "tool_call",
+            "tool_name": "query_db",
+            "tool_arguments": {"intent": "aggregation_db"},
+            "expected_observation": "average metric rows",
+            "enough_evidence": True,
+            "goal_coverage": ["compare", "recommend", "unknown_goal"],
+        }
+        plan = plan_route("Average CO2 this week in smart_lab")
+        self.assertEqual(plan.agent_action.value, "tool_call")
+        self.assertEqual(plan.tool_name, "query_db")
+        self.assertEqual(plan.tool_arguments.get("intent"), "aggregation_db")
+        self.assertEqual(plan.expected_observation, "average metric rows")
+        self.assertTrue(plan.enough_evidence)
+        self.assertEqual(plan.goal_coverage, ("compare", "recommend"))
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
     def test_decompose_not_allowed_for_forecast_falls_back_to_direct(self, mock_call):
         mock_call.return_value = {
             "intent_category": "prediction",
@@ -302,6 +323,30 @@ class LlmRouterPlannerTests(unittest.TestCase):
         plan = plan_route("Summarize comfort trends")
         reason = str(plan.planner_fallback_reason or "")
         self.assertIn("planner_error:parse_error", reason)
+
+    @patch("query_routing.llm_router_planner.agent_routing_strict_enabled")
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_strict_mode_disables_signal_fastpath(self, mock_call, mock_strict):
+        mock_strict.return_value = True
+        mock_call.return_value = {
+            "intent_category": "semantic_explanatory",
+            "intent": "definition_explanation",
+            "confidence": 0.9,
+            "response_mode": "knowledge_only",
+        }
+        plan = plan_route("What day is today?")
+        self.assertEqual(plan.route_source, "llm_planner")
+        self.assertEqual(mock_call.call_count, 1)
+
+    @patch("query_routing.llm_router_planner.agent_routing_strict_enabled")
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_strict_mode_uses_emergency_fallback_when_planner_unavailable(self, mock_call, mock_strict):
+        mock_strict.return_value = True
+        mock_call.side_effect = TimeoutError("planner timed out")
+        plan = plan_route("Average CO2 this week in smart_lab")
+        self.assertTrue(plan.planner_fallback_used)
+        self.assertEqual(plan.route_source, "planner_emergency_fallback")
+        self.assertEqual(plan.answer_strategy.value, "clarify")
 
 
 if __name__ == "__main__":

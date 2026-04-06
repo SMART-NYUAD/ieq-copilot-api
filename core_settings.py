@@ -95,6 +95,12 @@ class AppSettings:
     cors_allow_methods: List[str]
     cors_allow_headers: List[str]
     router_clarify_threshold: float
+    agentic_mode: bool
+    agent_max_steps: int
+    agent_max_consecutive_failures: int
+    agent_stall_threshold: int
+    agent_stream_step_events: bool
+    agent_routing_strict: bool
 
 
 def load_settings() -> AppSettings:
@@ -113,6 +119,20 @@ def load_settings() -> AppSettings:
         cors_allow_headers=_parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_HEADERS", ""), default=["*"]),
         router_clarify_threshold=_parse_float(
             os.getenv("ROUTER_CLARIFY_THRESHOLD", "0.5"), default=0.5, minimum=0.0, maximum=1.0
+        ),
+        agentic_mode=_parse_bool(os.getenv("AGENTIC_MODE", "true"), default=True),
+        agent_max_steps=_parse_int(os.getenv("AGENT_MAX_STEPS", "4"), default=4, minimum=1),
+        agent_max_consecutive_failures=_parse_int(
+            os.getenv("AGENT_MAX_CONSECUTIVE_FAILURES", "2"), default=2, minimum=1
+        ),
+        agent_stall_threshold=_parse_int(os.getenv("AGENT_STALL_THRESHOLD", "2"), default=2, minimum=1),
+        agent_stream_step_events=_parse_bool(
+            os.getenv("AGENT_STREAM_STEP_EVENTS", "true"),
+            default=True,
+        ),
+        agent_routing_strict=_parse_bool(
+            os.getenv("AGENT_ROUTING_STRICT", "true"),
+            default=True,
         ),
     )
 

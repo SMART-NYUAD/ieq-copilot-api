@@ -12,16 +12,18 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 try:
+    from core_settings import load_settings
     from query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
         get_route_plan,  # compatibility export for tests/mocks
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,
+        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
+    from query_routing.synthesizer import build_synthesis_context
     from executors.db_query_executor import prepare_db_query, stream_db_query
     from executors.env_query_langchain import (
         get_knowledge_context_stats,
@@ -35,6 +37,7 @@ try:
         normalize_allow_clarify,
         normalize_k,
         normalize_lab_name,
+        resolve_agent_stream_runtime,
         resolve_stream_runtime,
     )
     from query_routing.query_use_cases import (
@@ -51,16 +54,18 @@ try:
     )
     from runtime_errors import log_exception, stream_error_payload
 except ImportError:
+    from ..core_settings import load_settings
     from ..query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
         get_route_plan,  # compatibility export for tests/mocks
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,
+        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
+    from ..query_routing.synthesizer import build_synthesis_context
     from ..executors.db_query_executor import prepare_db_query, stream_db_query
     from ..executors.env_query_langchain import (
         get_knowledge_context_stats,
@@ -74,6 +79,7 @@ except ImportError:
         normalize_allow_clarify,
         normalize_k,
         normalize_lab_name,
+        resolve_agent_stream_runtime,
         resolve_stream_runtime,
     )
     from ..query_routing.query_use_cases import (
@@ -115,6 +121,17 @@ class OpenAIChatCompletionRequest(BaseModel):
 router = APIRouter(prefix="/v1", tags=["openai-compatible"])
 # Compatibility re-exports used by tests that patch route-layer symbols directly.
 _ROUTE_TEST_COMPAT = (get_route_plan, query_scope_class, resolve_execution_intent, should_clarify, should_use_knowledge_executor)
+
+
+def _attach_agent_stream_metadata(meta: Dict[str, Any], route_plan: Any) -> Dict[str, Any]:
+    merged = dict(meta or {})
+    settings = load_settings()
+    merged["agent_mode"] = "enabled" if bool(getattr(settings, "agentic_mode", False)) else "disabled"
+    merged["agent_action"] = str(getattr(getattr(route_plan, "agent_action", None), "value", "finalize"))
+    merged["tool_name"] = getattr(route_plan, "tool_name", None)
+    merged["expected_observation"] = getattr(route_plan, "expected_observation", None)
+    merged["agent_stream_step_events"] = bool(getattr(settings, "agent_stream_step_events", False))
+    return merged
 
 
 def _extract_last_user_message(messages: List[OpenAIMessage]) -> str:
@@ -218,10 +235,12 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         created = int(time.time())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         model = request.model
-        runtime = await resolve_stream_runtime(
+        agent_resolution = await resolve_agent_stream_runtime(
             latest_user_question=latest_user_question,
+            k=k,
             lab_name=lab_name,
             allow_clarify=normalize_allow_clarify(request.allow_clarify),
+            conversation_context=conversation_context,
             endpoint_key="openai_stream",
             get_route_plan_fn=get_route_plan,
             query_scope_class_fn=query_scope_class,
@@ -229,6 +248,11 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
             should_use_knowledge_executor_fn=should_use_knowledge_executor,
             resolve_execution_intent_fn=resolve_execution_intent,
         )
+        runtime = agent_resolution.runtime
+        state = agent_resolution.state
+        agent_step_trace = list(agent_resolution.agent_step_trace or [])
+        tools_called = list(agent_resolution.tools_called or [])
+        agent_finish_reason = str(agent_resolution.finish_reason or "unknown")
         route_plan = runtime.route_plan
         decision = runtime.decision
         should_clarify_response = runtime.should_clarify_response
@@ -239,38 +263,16 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         suppress_live_scope = bool(stream_signals.get("is_hypothetical_conditional")) and not bool(
             stream_signals.get("requests_current_measured_data")
         )
-        active_question = latest_user_question
-        active_lab_name = lab_name
+        active_question = state.effective_question
+        active_lab_name = state.effective_lab
         effective_question = active_question
         effective_lab_name = active_lab_name
-        memory_retry = resolve_db_followup_memory(
-            question=latest_user_question,
-            conversation_context=conversation_context,
-            lab_name=lab_name,
-            route_plan=route_plan,
-        )
-        if should_clarify_response and bool(memory_retry.get("applied")):
-            retry_runtime = await resolve_stream_runtime(
-                latest_user_question=str(memory_retry.get("effective_question") or latest_user_question),
-                lab_name=memory_retry.get("effective_lab_name"),
-                allow_clarify=normalize_allow_clarify(request.allow_clarify),
-                endpoint_key="openai_stream",
-                get_route_plan_fn=get_route_plan,
-                query_scope_class_fn=query_scope_class,
-                should_clarify_fn=should_clarify,
-                should_use_knowledge_executor_fn=should_use_knowledge_executor,
-                resolve_execution_intent_fn=resolve_execution_intent,
-            )
-            if not retry_runtime.should_clarify_response:
-                runtime = retry_runtime
-                route_plan = runtime.route_plan
-                decision = runtime.decision
-                should_clarify_response = runtime.should_clarify_response
-                scope_class = runtime.scope_class
-                use_knowledge_executor = runtime.use_knowledge_executor
-                execution_intent = runtime.execution_intent
-                active_question = str(memory_retry.get("effective_question") or latest_user_question)
-                active_lab_name = memory_retry.get("effective_lab_name")
+        memory_meta = {
+            "applied": bool(state.effective_question != state.original_question or state.effective_lab != lab_name),
+            "carried_lab_name": state.routing_memory.lab_name if state.effective_lab and not lab_name else None,
+            "carried_time_phrase": state.routing_memory.time_phrase if state.effective_question != state.original_question else None,
+            "carried_metric": state.routing_memory.metric if state.effective_question != state.original_question else None,
+        }
         visualization_type = "none"
         chart = None
         db_context = None
@@ -284,13 +286,17 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     lab_name=lab_name,
                     resolved_lab_name=active_lab_name,
                 )
-                x_router["memory_carryover_applied"] = bool(memory_retry.get("applied"))
-                x_router["memory_carried_lab_name"] = memory_retry.get("carried_lab_name")
-                x_router["memory_carried_time_phrase"] = memory_retry.get("carried_time_phrase")
-                x_router["memory_carried_metric"] = memory_retry.get("carried_metric")
+                x_router["memory_carryover_applied"] = bool(memory_meta.get("applied"))
+                x_router["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
+                x_router["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
+                x_router["memory_carried_metric"] = memory_meta.get("carried_metric")
             elif use_knowledge_executor:
                 knowledge_question = active_question if suppress_live_scope else (
-                    f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+                    build_synthesis_context(
+                        tool_results=None,
+                        conversation_context=conversation_context,
+                        question=active_question,
+                    )
                 )
                 knowledge_lab_name = None if suppress_live_scope else active_lab_name
                 knowledge_stats = await fetch_knowledge_stats(
@@ -310,14 +316,8 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     ),
                 )
             else:
-                memory = resolve_db_followup_memory(
-                    question=active_question,
-                    conversation_context=conversation_context,
-                    lab_name=active_lab_name,
-                    route_plan=route_plan,
-                )
-                effective_question = str(memory.get("effective_question") or active_question)
-                effective_lab_name = memory.get("effective_lab_name") or active_lab_name
+                effective_question = active_question
+                effective_lab_name = active_lab_name
                 db_context = await fetch_db_context(
                     latest_user_question=effective_question,
                     execution_intent=execution_intent,
@@ -351,10 +351,10 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                         lab_name=lab_name,
                         db_context=db_context,
                     )
-                    x_router["memory_carryover_applied"] = bool(memory.get("applied"))
-                    x_router["memory_carried_lab_name"] = memory.get("carried_lab_name")
-                    x_router["memory_carried_time_phrase"] = memory.get("carried_time_phrase")
-                    x_router["memory_carried_metric"] = memory.get("carried_metric")
+                    x_router["memory_carryover_applied"] = bool(memory_meta.get("applied"))
+                    x_router["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
+                    x_router["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
+                    x_router["memory_carried_metric"] = memory_meta.get("carried_metric")
         except Exception as exc:
             # Keep streaming functional even if context preparation fails.
             log_exception(exc, scope="openai.stream.prep", extra={"lab_name": lab_name, "k": k})
@@ -376,6 +376,11 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
             turn_index=None,
         )
         x_router = attach_policy_metadata(x_router, runtime.route_contract)
+        x_router = _attach_agent_stream_metadata(x_router, route_plan)
+        x_router["agent_step_trace"] = agent_step_trace
+        x_router["tools_called"] = tools_called
+        x_router["agent_steps"] = int(len(agent_step_trace))
+        x_router["agent_finish_reason"] = agent_finish_reason
         try:
             first_chunk = {
                 "id": completion_id,
@@ -394,6 +399,23 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 ],
             }
             yield f"data: {json.dumps(first_chunk)}\n\n"
+            if bool(x_router.get("agent_stream_step_events")):
+                for step_payload in agent_step_trace:
+                    step_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "x_router": {"agent_step": step_payload},
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(step_chunk)}\n\n"
 
             if should_clarify_response:
                 clarify_text = build_clarify_prompt(route_plan)
@@ -419,7 +441,11 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 x_router["turn_index"] = turn_index
             elif use_knowledge_executor:
                 knowledge_question = active_question if suppress_live_scope else (
-                    f"{active_question}\n\n{conversation_context}" if conversation_context else active_question
+                    build_synthesis_context(
+                        tool_results=None,
+                        conversation_context=conversation_context,
+                        question=active_question,
+                    )
                 )
                 knowledge_lab_name = None if suppress_live_scope else active_lab_name
                 chunk_stream = stream_answer_env_question(

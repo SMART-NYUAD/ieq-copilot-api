@@ -37,6 +37,12 @@ class QueryScopeClass(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class AgentAction(str, Enum):
+    TOOL_CALL = "tool_call"
+    CLARIFY = "clarify"
+    FINALIZE = "finalize"
+
+
 class RouteExecutor(str, Enum):
     KNOWLEDGE_QA = "knowledge_qa"
     DB_QUERY = "db_query"
@@ -56,6 +62,12 @@ class RoutePlan:
     answer_strategy: AnswerStrategy = AnswerStrategy.DIRECT
     secondary_intents: Tuple[IntentType, ...] = field(default_factory=tuple)
     decomposition_template: Optional[DecompositionTemplate] = None
+    agent_action: AgentAction = AgentAction.FINALIZE
+    tool_name: Optional[str] = None
+    tool_arguments: Dict[str, Any] = field(default_factory=dict)
+    expected_observation: Optional[str] = None
+    enough_evidence: Optional[bool] = None
+    goal_coverage: Tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

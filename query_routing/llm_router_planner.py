@@ -15,12 +15,15 @@ try:
     from query_routing.router_policy import (
         ALLOWED_CARD_TOPICS,
         ALLOWED_PLANNER_METRICS,
+        emergency_fallback_plan,
         enforce_non_domain_block,
         fallback_plan,
         normalize_plan,
         normalize_planner_parameters,
+        normalize_planner_parameters_strict,
     )
     from query_routing.router_settings import (
+        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -31,6 +34,7 @@ try:
     )
     from query_routing.router_signals import extract_query_signals
     from query_routing.router_types import (
+        AgentAction,
         AnswerStrategy,
         DecompositionTemplate,
         IntentCategory,
@@ -42,12 +46,15 @@ except ImportError:
     from .router_policy import (
         ALLOWED_CARD_TOPICS,
         ALLOWED_PLANNER_METRICS,
+        emergency_fallback_plan,
         enforce_non_domain_block,
         fallback_plan,
         normalize_plan,
         normalize_planner_parameters,
+        normalize_planner_parameters_strict,
     )
     from .router_settings import (
+        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -58,6 +65,7 @@ except ImportError:
     )
     from .router_signals import extract_query_signals
     from .router_types import (
+        AgentAction,
         AnswerStrategy,
         DecompositionTemplate,
         IntentCategory,
@@ -65,23 +73,72 @@ except ImportError:
         RoutePlan,
     )
 
+_ALLOWED_AGENT_TOOLS = (
+    "query_db",
+    "search_knowledge_cards",
+    "compare_spaces",
+    "forecast_metric",
+    "analyze_anomaly",
+)
+_ALLOWED_AGENT_GOALS = ("compare", "explain", "recommend")
+
+
+def _normalize_goal_coverage(raw_plan: Dict[str, Any]) -> tuple[str, ...]:
+    raw_goals = raw_plan.get("goal_coverage")
+    if not isinstance(raw_goals, list):
+        return tuple()
+    goals: list[str] = []
+    for item in raw_goals:
+        goal = str(item or "").strip().lower()
+        if goal in _ALLOWED_AGENT_GOALS and goal not in goals:
+            goals.append(goal)
+    return tuple(goals)
+
 
 def _build_router_prompt(
-    question: str, lab_name: Optional[str], query_signals: Optional[Dict[str, Any]] = None
+    question: str,
+    lab_name: Optional[str],
+    query_signals: Optional[Dict[str, Any]] = None,
+    strict_mode: bool = False,
 ) -> str:
     allowed_intents = ", ".join(sorted([intent.value for intent in IntentType]))
     signals_json = json.dumps(query_signals or {}, ensure_ascii=True)
+    if strict_mode:
+        return (
+            "You are an IEQ orchestration planner.\n"
+            "Return ONLY JSON with at least: intent_category, intent, confidence.\n"
+            "Optional fields: reason, strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage.\n"
+            "strategy values: [direct, decompose, clarify].\n"
+            "action values: [tool_call, clarify, finalize].\n"
+            "goal_coverage values: [compare, explain, recommend].\n"
+            "confidence must be between 0 and 1.\n"
+            "Do not include markdown or extra text.\n\n"
+            f"Allowed intent values: [{allowed_intents}]\n"
+            "Allowed intent_category values: [semantic_explanatory, structured_factual_db, analytical_visualization, prediction]\n"
+            f"Allowed tool_name values when action=tool_call: [{', '.join(_ALLOWED_AGENT_TOOLS)}]\n"
+            "Use category-intent pairs that are semantically consistent.\n\n"
+            "Planning guidance:\n"
+            "- Prefer tool_call for measurable IEQ questions and multi-part requests.\n"
+            "- Use decompose when the user asks for compare + explain + recommendations.\n"
+            "- Use clarify only when critical scope is missing.\n"
+            "- For clearly out-of-domain asks, choose semantic_explanatory + definition_explanation + finalize.\n\n"
+            f"Question: {question}\n"
+            f"Lab hint: {lab_name or ''}\n"
+        )
     return (
         "You route indoor air-quality questions.\n"
         "Focus on the user question first, then use deterministic hints as secondary guidance.\n"
         "Deterministic hints can be noisy and must never override clear user intent.\n"
         "Return ONLY JSON with at least: intent_category, intent, confidence.\n"
-        "Optional fields: reason, strategy, secondary_intents.\n"
+        "Optional fields: reason, strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage.\n"
         "strategy values: [direct, decompose, clarify].\n"
+        "action values: [tool_call, clarify, finalize].\n"
+        "goal_coverage values: [compare, explain, recommend].\n"
         "confidence must be between 0 and 1.\n"
         "Do not include markdown or extra text.\n\n"
         f"Allowed intent values: [{allowed_intents}]\n"
         "Allowed intent_category values: [semantic_explanatory, structured_factual_db, analytical_visualization, prediction]\n"
+        f"Allowed tool_name values when action=tool_call: [{', '.join(_ALLOWED_AGENT_TOOLS)}]\n"
         "Use category-intent pairs that are semantically consistent.\n\n"
         "Routing policy:\n"
         "- if query_scope_class=non_domain, do NOT choose any DB intent.\n"
@@ -105,9 +162,14 @@ def _build_repair_prompt(
         f"Validation error: {validation_error}\n"
         "Re-answer with ONLY valid JSON and no extra text.\n"
         "Required keys: intent_category, intent, confidence.\n"
-        "Optional keys: reason, strategy, secondary_intents.\n\n"
+        "Optional keys: reason, strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage.\n\n"
         f"Previous output: {prior_response}\n\n"
-        + _build_router_prompt(question=question, lab_name=lab_name, query_signals=query_signals)
+        + _build_router_prompt(
+            question=question,
+            lab_name=lab_name,
+            query_signals=query_signals,
+            strict_mode=agent_routing_strict_enabled(),
+        )
     )
 
 
@@ -130,6 +192,7 @@ def _call_router_planner(
     query_signals: Optional[Dict[str, Any]] = None,
     prompt_override: Optional[str] = None,
 ) -> Dict[str, Any]:
+    strict_mode = agent_routing_strict_enabled()
     schema: Dict[str, Any] = {
         "type": "object",
         "required": ["intent_category", "intent", "confidence"],
@@ -148,10 +211,26 @@ def _call_router_planner(
                 "type": "string",
                 "enum": [strategy.value for strategy in AnswerStrategy],
             },
+            "action": {
+                "type": "string",
+                "enum": [action.value for action in AgentAction],
+            },
             "secondary_intents": {
                 "type": "array",
                 "maxItems": 2,
                 "items": {"type": "string", "enum": [intent.value for intent in IntentType]},
+            },
+            "tool_name": {
+                "type": "string",
+                "enum": list(_ALLOWED_AGENT_TOOLS),
+            },
+            "tool_arguments": {"type": "object"},
+            "expected_observation": {"type": "string"},
+            "enough_evidence": {"type": "boolean"},
+            "goal_coverage": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "enum": list(_ALLOWED_AGENT_GOALS)},
             },
             "metrics_priority": {
                 "type": "array",
@@ -172,7 +251,13 @@ def _call_router_planner(
     }
     payload: Dict[str, Any] = {
         "model": router_model(),
-        "prompt": prompt_override or _build_router_prompt(question=question, lab_name=lab_name, query_signals=query_signals),
+        "prompt": prompt_override
+        or _build_router_prompt(
+            question=question,
+            lab_name=lab_name,
+            query_signals=query_signals,
+            strict_mode=strict_mode,
+        ),
         "stream": False,
         "format": schema,
         "options": {"temperature": router_temperature()},
@@ -220,6 +305,7 @@ def _build_success_plan(
     question: str,
     query_signals: Dict[str, Any],
 ) -> RoutePlan:
+    strict_mode = agent_routing_strict_enabled()
     category, decision, strategy, secondary_intents, template = normalize_plan(raw_plan)
     decision, category, strategy, secondary_intents, template = enforce_non_domain_block(
         decision=decision,
@@ -229,12 +315,38 @@ def _build_success_plan(
         template=template,
         query_signals=query_signals,
     )
-    planner_parameters = normalize_planner_parameters(
-        raw_plan=raw_plan,
-        question=question,
-        intent=decision.intent,
-        query_signals=query_signals,
-    )
+    if strict_mode:
+        planner_parameters = normalize_planner_parameters_strict(
+            raw_plan=raw_plan,
+            question=question,
+            intent=decision.intent,
+            query_signals=query_signals,
+        )
+    else:
+        planner_parameters = normalize_planner_parameters(
+            raw_plan=raw_plan,
+            question=question,
+            intent=decision.intent,
+            query_signals=query_signals,
+        )
+    raw_action = str(raw_plan.get("action") or "").strip().lower()
+    try:
+        agent_action = AgentAction(raw_action) if raw_action else AgentAction.FINALIZE
+    except ValueError:
+        agent_action = AgentAction.FINALIZE
+    if strategy == AnswerStrategy.CLARIFY:
+        agent_action = AgentAction.CLARIFY
+    tool_name = str(raw_plan.get("tool_name") or "").strip().lower() or None
+    if agent_action == AgentAction.TOOL_CALL and tool_name not in _ALLOWED_AGENT_TOOLS:
+        agent_action = AgentAction.FINALIZE
+        tool_name = None
+    tool_arguments = raw_plan.get("tool_arguments")
+    if not isinstance(tool_arguments, dict):
+        tool_arguments = {}
+    expected_observation = str(raw_plan.get("expected_observation") or "").strip() or None
+    enough_evidence_raw = raw_plan.get("enough_evidence")
+    enough_evidence = bool(enough_evidence_raw) if isinstance(enough_evidence_raw, bool) else None
+    goal_coverage = _normalize_goal_coverage(raw_plan)
     if template:
         planner_parameters["decomposition_template"] = template.value
     return RoutePlan(
@@ -249,6 +361,12 @@ def _build_success_plan(
         answer_strategy=strategy,
         secondary_intents=secondary_intents,
         decomposition_template=template,
+        agent_action=agent_action,
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        expected_observation=expected_observation,
+        enough_evidence=enough_evidence,
+        goal_coverage=goal_coverage,
     )
 
 
@@ -315,8 +433,9 @@ def _build_fastpath_knowledge_plan(
 
 def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     model = router_model()
-    query_signals = extract_query_signals(question=question, lab_name=lab_name)
-    if _should_fastpath_knowledge_route(query_signals):
+    strict_mode = agent_routing_strict_enabled()
+    query_signals = {} if strict_mode else extract_query_signals(question=question, lab_name=lab_name)
+    if (not strict_mode) and _should_fastpath_knowledge_route(query_signals):
         return _build_fastpath_knowledge_plan(
             model=model,
             question=question,
@@ -373,6 +492,13 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
             if jitter_ms > 0:
                 time.sleep(random.uniform(0, jitter_ms / 1000.0))
 
+    if strict_mode:
+        return emergency_fallback_plan(
+            question=question,
+            model=model,
+            fallback_reason=_normalize_fallback_reason(last_error),
+            query_signals=query_signals,
+        )
     return fallback_plan(
         question=question,
         model=model,

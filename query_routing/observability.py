@@ -23,10 +23,15 @@ _COUNTERS = {
     "rollout_policy_total": 0,
     "sync_stream_total": 0,
     "sync_stream_flip_total": 0,
+    "agent_runs_total": 0,
+    "agent_steps_total": 0,
+    "agent_tool_calls_total": 0,
+    "agent_tool_failures_total": 0,
 }
 _FALLBACK_REASON_COUNTS: Counter[str] = Counter()
 _TEMPLATE_COUNTS: Counter[str] = Counter()
 _SHADOW_DIFF_COUNTS: Counter[str] = Counter()
+_AGENT_FINISH_REASON_COUNTS: Counter[str] = Counter()
 _ENDPOINT_EXECUTION_CACHE: Dict[str, str] = {}
 _HTTP_COUNTERS = {
     "http_requests_total": 0,
@@ -162,9 +167,14 @@ def reset_observability_metrics() -> None:
         _COUNTERS["rollout_policy_total"] = 0
         _COUNTERS["sync_stream_total"] = 0
         _COUNTERS["sync_stream_flip_total"] = 0
+        _COUNTERS["agent_runs_total"] = 0
+        _COUNTERS["agent_steps_total"] = 0
+        _COUNTERS["agent_tool_calls_total"] = 0
+        _COUNTERS["agent_tool_failures_total"] = 0
         _FALLBACK_REASON_COUNTS.clear()
         _TEMPLATE_COUNTS.clear()
         _SHADOW_DIFF_COUNTS.clear()
+        _AGENT_FINISH_REASON_COUNTS.clear()
         _ENDPOINT_EXECUTION_CACHE.clear()
         _HTTP_COUNTERS["http_requests_total"] = 0
         _HTTP_COUNTERS["http_errors_total"] = 0
@@ -292,6 +302,28 @@ def record_endpoint_executor(
         _ENDPOINT_EXECUTION_CACHE[key] = exec_value
 
 
+def record_agent_step(*, action: str) -> None:
+    _ = action
+    with _LOCK:
+        _COUNTERS["agent_steps_total"] += 1
+
+
+def record_agent_tool_call(*, success: bool) -> None:
+    with _LOCK:
+        _COUNTERS["agent_tool_calls_total"] += 1
+        if not bool(success):
+            _COUNTERS["agent_tool_failures_total"] += 1
+
+
+def record_agent_run(*, finish_reason: str, step_count: int, tool_calls: int) -> None:
+    _ = step_count
+    _ = tool_calls
+    normalized_reason = str(finish_reason or "unknown").strip().lower() or "unknown"
+    with _LOCK:
+        _COUNTERS["agent_runs_total"] += 1
+        _AGENT_FINISH_REASON_COUNTS[normalized_reason] += 1
+
+
 def get_observability_snapshot() -> Dict[str, Any]:
     with _LOCK:
         planner_total = int(_COUNTERS["planner_total"])
@@ -303,9 +335,14 @@ def get_observability_snapshot() -> Dict[str, Any]:
         rollout_policy_total = int(_COUNTERS["rollout_policy_total"])
         sync_stream_total = int(_COUNTERS["sync_stream_total"])
         sync_stream_flip_total = int(_COUNTERS["sync_stream_flip_total"])
+        agent_runs_total = int(_COUNTERS["agent_runs_total"])
+        agent_steps_total = int(_COUNTERS["agent_steps_total"])
+        agent_tool_calls_total = int(_COUNTERS["agent_tool_calls_total"])
+        agent_tool_failures_total = int(_COUNTERS["agent_tool_failures_total"])
         fallback_distribution = dict(_FALLBACK_REASON_COUNTS)
         template_distribution = dict(_TEMPLATE_COUNTS)
         shadow_diff_distribution = dict(_SHADOW_DIFF_COUNTS)
+        agent_finish_distribution = dict(_AGENT_FINISH_REASON_COUNTS)
 
     fallback_rate = (planner_fallback_total / planner_total) if planner_total else 0.0
     critic_failure_rate = (critic_failure_total / critic_total) if critic_total else 0.0
@@ -314,6 +351,10 @@ def get_observability_snapshot() -> Dict[str, Any]:
     sync_stream_flip_rate = (
         (sync_stream_flip_total / sync_stream_total) if sync_stream_total else 0.0
     )
+    agent_tool_failure_rate = (
+        (agent_tool_failures_total / agent_tool_calls_total) if agent_tool_calls_total else 0.0
+    )
+    agent_avg_steps = (agent_steps_total / agent_runs_total) if agent_runs_total else 0.0
 
     return {
         "planner_total": planner_total,
@@ -333,6 +374,13 @@ def get_observability_snapshot() -> Dict[str, Any]:
         "sync_stream_total": sync_stream_total,
         "sync_stream_flip_total": sync_stream_flip_total,
         "sync_stream_flip_rate": sync_stream_flip_rate,
+        "agent_runs_total": agent_runs_total,
+        "agent_steps_total": agent_steps_total,
+        "agent_avg_steps": agent_avg_steps,
+        "agent_tool_calls_total": agent_tool_calls_total,
+        "agent_tool_failures_total": agent_tool_failures_total,
+        "agent_tool_failure_rate": agent_tool_failure_rate,
+        "agent_finish_reason_distribution": agent_finish_distribution,
     }
 
 

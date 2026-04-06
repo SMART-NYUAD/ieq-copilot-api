@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -49,6 +50,14 @@ def _make_route_plan(
 class RoutePolicyEngineTests(unittest.TestCase):
     def setUp(self):
         reset_observability_metrics()
+        self._prior_strict = os.environ.get("AGENT_ROUTING_STRICT")
+        os.environ["AGENT_ROUTING_STRICT"] = "false"
+
+    def tearDown(self):
+        if self._prior_strict is None:
+            os.environ.pop("AGENT_ROUTING_STRICT", None)
+        else:
+            os.environ["AGENT_ROUTING_STRICT"] = self._prior_strict
 
     def test_conceptual_prompt_forces_knowledge_executor(self):
         plan = _make_route_plan(
@@ -242,6 +251,52 @@ class RoutePolicyEngineTests(unittest.TestCase):
         mock_get_route_plan.return_value = plan
         contract = get_route_decision_contract("What is IEQ?", None, True)
         self.assertEqual(contract.policy_version, "route-policy-v1")
+
+    @patch("query_routing.route_policy_engine.load_settings")
+    def test_strict_mode_ignores_keyword_scope_for_semantic_intent(self, mock_load_settings):
+        mock_load_settings.return_value = SimpleNamespace(
+            router_clarify_threshold=0.5,
+            agent_routing_strict=True,
+        )
+        plan = _make_route_plan(
+            intent=IntentType.DEFINITION_EXPLANATION,
+            confidence=0.6,
+            response_mode="db",
+            query_signals={
+                "query_scope_class": "domain",
+                "asks_for_db_facts": True,
+                "has_metric_reference": True,
+                "has_time_window_hint": True,
+                "has_lab_reference": True,
+            },
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="What does IEQ mean for smart_lab this week?",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.KNOWLEDGE_QA)
+        self.assertIn("strict_mode_semantic_intent_knowledge", contract.rule_trace)
+
+    @patch("query_routing.route_policy_engine.load_settings")
+    def test_strict_mode_clarify_only_when_planner_requests(self, mock_load_settings):
+        mock_load_settings.return_value = SimpleNamespace(
+            router_clarify_threshold=0.9,
+            agent_routing_strict=True,
+        )
+        plan = _make_route_plan(
+            intent=IntentType.AGGREGATION_DB,
+            confidence=0.1,
+            response_mode="db",
+            query_signals={"query_scope_class": "ambiguous"},
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="How is it over there?",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.DB_QUERY)
 
 
 if __name__ == "__main__":

@@ -29,10 +29,18 @@ from query_routing.llm_router_planner import (
 
 class StreamRouteMetadataTests(unittest.TestCase):
     def setUp(self):
+        self._prior_strict = os.environ.get("AGENT_ROUTING_STRICT")
+        os.environ["AGENT_ROUTING_STRICT"] = "false"
         app = FastAPI()
         app.include_router(query_router)
         app.include_router(openai_router)
         self.client = TestClient(app)
+
+    def tearDown(self):
+        if self._prior_strict is None:
+            os.environ.pop("AGENT_ROUTING_STRICT", None)
+        else:
+            os.environ["AGENT_ROUTING_STRICT"] = self._prior_strict
 
     @patch("http_routes.query_routes.stream_db_query")
     @patch("http_routes.query_routes.prepare_db_query")
@@ -268,7 +276,6 @@ class StreamRouteMetadataTests(unittest.TestCase):
 
     @patch("http_routes.openai_compat_routes.stream_db_query")
     @patch("http_routes.openai_compat_routes.prepare_db_query")
-    @patch("http_routes.openai_compat_routes.resolve_db_followup_memory")
     @patch("http_routes.openai_compat_routes.build_query_context")
     @patch("http_routes.openai_compat_routes.resolve_execution_intent")
     @patch("http_routes.openai_compat_routes.get_route_plan")
@@ -277,7 +284,6 @@ class StreamRouteMetadataTests(unittest.TestCase):
         mock_get_route_plan,
         mock_resolve_execution_intent,
         mock_build_query_context,
-        mock_resolve_db_followup_memory,
         mock_prepare_db_query,
         mock_stream_db_query,
     ):
@@ -306,15 +312,6 @@ class StreamRouteMetadataTests(unittest.TestCase):
             "Assistant: CO2 is primary driver.",
             True,
         )
-        mock_resolve_db_followup_memory.return_value = {
-            "effective_question": "What about PM2.5? (this week)",
-            "effective_lab_name": "shores_office",
-            "applied": True,
-            "carried_lab_name": "shores_office",
-            "carried_time_phrase": "this week",
-            "carried_metric": None,
-            "previous_user": "Which metric is driving poor IEQ in shores_office this week?",
-        }
         mock_prepare_db_query.return_value = {
             "sources": [{"source_kind": "db_query"}],
             "visualization_type": "bar",
@@ -338,17 +335,15 @@ class StreamRouteMetadataTests(unittest.TestCase):
         self.assertIn('"execution_intent": "comparison_db"', body)
         self.assertIn('"x_visualization_type": "bar"', body)
         self.assertIn('"decomposition_template": "trend_interpretation"', body)
-        self.assertIn('"memory_carryover_applied": true', body)
         prepare_args = mock_prepare_db_query.call_args.args
         self.assertEqual(prepare_args[0], "What about PM2.5? (this week)")
-        self.assertEqual(prepare_args[2], "shores_office")
+        self.assertEqual(prepare_args[2], "smart_lab")
         stream_kwargs = mock_stream_db_query.call_args.kwargs
         self.assertEqual(stream_kwargs.get("question"), "What about PM2.5? (this week)")
-        self.assertEqual(stream_kwargs.get("lab_name"), "shores_office")
+        self.assertEqual(stream_kwargs.get("lab_name"), "smart_lab")
 
     @patch("http_routes.query_routes.stream_db_query")
     @patch("http_routes.query_routes.prepare_db_query")
-    @patch("http_routes.query_routes.resolve_db_followup_memory")
     @patch("http_routes.query_routes.build_query_context")
     @patch("http_routes.query_routes.resolve_execution_intent")
     @patch("http_routes.query_routes.get_route_plan")
@@ -357,7 +352,6 @@ class StreamRouteMetadataTests(unittest.TestCase):
         mock_get_route_plan,
         mock_resolve_execution_intent,
         mock_build_query_context,
-        mock_resolve_db_followup_memory,
         mock_prepare_db_query,
         mock_stream_db_query,
     ):
@@ -386,18 +380,9 @@ class StreamRouteMetadataTests(unittest.TestCase):
             "Assistant: CO2 is primary driver.",
             True,
         )
-        mock_resolve_db_followup_memory.return_value = {
-            "effective_question": "What about PM2.5? (this week)",
-            "effective_lab_name": "shores_office",
-            "applied": True,
-            "carried_lab_name": "shores_office",
-            "carried_time_phrase": "this week",
-            "carried_metric": None,
-            "previous_user": "Which metric is driving poor IEQ in shores_office this week?",
-        }
         mock_prepare_db_query.return_value = {
             "timescale": "1hour",
-            "resolved_lab_name": "shores_office",
+            "resolved_lab_name": "smart_lab",
             "time_window": {"label": "this week", "start": "x", "end": "y"},
             "sources": [],
             "forecast": None,
@@ -413,7 +398,6 @@ class StreamRouteMetadataTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         body = response.text
-        self.assertIn('"memory_carryover_applied": true', body)
         prepare_args = mock_prepare_db_query.call_args.args
         self.assertEqual(prepare_args[0], "What about PM2.5? (this week)")
         self.assertEqual(prepare_args[2], "shores_office")
