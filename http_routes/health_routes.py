@@ -53,8 +53,6 @@ async def router_health():
     thresholds = {
         "planner_fallback_rate_target": 0.05,
         "planner_fallback_rate_max": 0.10,
-        "critic_failure_rate_target": 0.02,
-        "critic_failure_rate_max": 0.05,
         "shadow_diff_rate_target": 0.10,
         "shadow_diff_rate_max": 0.20,
         "sync_stream_flip_rate_target": 0.0,
@@ -213,7 +211,6 @@ async def observability_dashboard():
           ['p95 Latency (ms)', fmt(k.latency_p95_ms)],
           ['p99 Latency (ms)', fmt(k.latency_p99_ms)],
           ['Router Fallback Rate', pct(k.router_planner_fallback_rate)],
-          ['Critic Failure Rate', pct(k.router_critic_failure_rate)],
           ['Shadow Diff Rate', pct(k.router_shadow_diff_rate)],
           ['Sync/Stream Flip Rate', pct(k.router_sync_stream_flip_rate)],
           ['Runtime Errors', k.runtime_errors_total ?? 0]

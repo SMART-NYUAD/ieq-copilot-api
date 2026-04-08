@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import asyncio
 from unittest.mock import patch
 
 
@@ -23,6 +24,8 @@ from query_routing.llm_router_planner import (
 )
 from query_routing.query_orchestrator import execute_query
 from query_routing.observability import get_observability_snapshot, reset_observability_metrics
+from query_routing.query_orchestrator import stream_query
+from query_routing.router_types import RouteDecisionContract, RouteExecutor
 
 
 class GeneralQaRoutingTests(unittest.TestCase):
@@ -444,7 +447,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_critic_warns_on_missing_recommendation(self, mock_route_plan, mock_run_db):
+    def test_response_keeps_answer_without_critic_rewrite_on_recommendation_prompt(self, mock_route_plan, mock_run_db):
         mock_route_plan.return_value = RoutePlan(
             decision=RouteDecision(
                 intent=IntentType.AGGREGATION_DB,
@@ -488,13 +491,13 @@ class GeneralQaRoutingTests(unittest.TestCase):
             lab_name="smart_lab",
         )
 
-        self.assertEqual(result["metadata"]["critic_status"], "warn")
-        self.assertIn("missing_recommendation", result["metadata"]["critic_issues"])
+        self.assertNotIn("critic_status", result["metadata"])
+        self.assertNotIn("critic_issues", result["metadata"])
         self.assertEqual(result["answer"], "CO2 average was 650 ppm.")
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_critic_blocks_on_evidence_answer_mismatch(self, mock_route_plan, mock_run_db):
+    def test_response_does_not_block_on_evidence_kind_mismatch(self, mock_route_plan, mock_run_db):
         mock_route_plan.return_value = RoutePlan(
             decision=RouteDecision(
                 intent=IntentType.AGGREGATION_DB,
@@ -538,14 +541,14 @@ class GeneralQaRoutingTests(unittest.TestCase):
             lab_name="smart_lab",
         )
 
-        self.assertEqual(result["metadata"]["critic_status"], "block")
-        self.assertTrue(result["metadata"]["critic_blocked"])
-        self.assertIn("evidence_answer_mismatch", result["metadata"]["critic_issues"])
-        self.assertIn("re-check evidence alignment", result["answer"])
+        self.assertNotIn("critic_status", result["metadata"])
+        self.assertNotIn("critic_blocked", result["metadata"])
+        self.assertNotIn("critic_issues", result["metadata"])
+        self.assertEqual(result["answer"], "CO2 average was 650 ppm.")
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
-    def test_critic_warns_on_date_consistency_mismatch(self, mock_route_plan, mock_run_db):
+    def test_response_keeps_answer_without_date_consistency_critic(self, mock_route_plan, mock_run_db):
         mock_route_plan.return_value = RoutePlan(
             decision=RouteDecision(
                 intent=IntentType.AGGREGATION_DB,
@@ -595,9 +598,9 @@ class GeneralQaRoutingTests(unittest.TestCase):
             lab_name="smart_lab",
         )
 
-        self.assertEqual(result["metadata"]["critic_status"], "warn")
-        self.assertFalse(result["metadata"]["critic_blocked"])
-        self.assertIn("date_consistency_mismatch", result["metadata"]["critic_issues"])
+        self.assertNotIn("critic_status", result["metadata"])
+        self.assertNotIn("critic_blocked", result["metadata"])
+        self.assertNotIn("critic_issues", result["metadata"])
         self.assertEqual(
             result["answer"],
             "From Feb 27, 2026, 10:15 AM to Feb 28, 2026, 10:15 AM, IEQ stayed stable.",
@@ -1214,12 +1217,210 @@ class GeneralQaRoutingTests(unittest.TestCase):
         result = execute_query("Average CO2 this week", 4, "smart_lab")
         obs = result["metadata"].get("observability") or {}
         self.assertIn("planner_fallback_rate", obs)
-        self.assertIn("critic_failure_rate", obs)
         self.assertIn("decomposition_template_usage", obs)
         self.assertIn("rollout_slo", result["metadata"])
 
         snapshot = get_observability_snapshot()
-        self.assertGreaterEqual(snapshot.get("critic_total", 0), 1)
+        self.assertIn("planner_total", snapshot)
+
+    @patch("query_routing.query_orchestrator.stream_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_stream_query_applies_conversation_memory_for_db_path(self, mock_get_route_plan, mock_stream_db_query):
+        async def _fake_stream(*args, **kwargs):
+            yield "ok"
+
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.CURRENT_STATUS_DB,
+                confidence=0.9,
+                reason="follow_up_metric_only",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "has_lab_reference": False,
+                    "has_time_window_hint": False,
+                    "has_metric_reference": True,
+                    "asks_for_db_facts": True,
+                },
+            },
+            answer_strategy=AnswerStrategy.DIRECT,
+        )
+        mock_stream_db_query.side_effect = _fake_stream
+
+        async def _consume():
+            chunks = []
+            async for chunk in stream_query(
+                question="And what about the PM2.5?",
+                k=4,
+                lab_name=None,
+                conversation_context=(
+                    "Previous conversation context (most recent last):\n"
+                    "User: Which metric is driving poor IEQ in shores_office this week?\n"
+                    "Assistant: CO2 is the main driver this week."
+                ),
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        _ = asyncio.run(_consume())
+        stream_kwargs = mock_stream_db_query.call_args.kwargs
+        self.assertEqual(stream_kwargs.get("lab_name"), "shores_office")
+        self.assertIn("this week", str(stream_kwargs.get("question") or "").lower())
+
+    @patch("query_routing.query_orchestrator.stream_db_query")
+    @patch("query_routing.query_orchestrator.resolve_query_context")
+    def test_stream_query_clarify_gate_yields_prompt_and_stops(self, mock_resolve_query_context, mock_stream_db_query):
+        async def _fake_stream(*args, **kwargs):
+            yield "should-not-be-called"
+
+        clarify_plan = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.AGGREGATION_DB,
+                confidence=0.2,
+                reason="ambiguous",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={
+                "response_mode": "db",
+                "query_signals": {
+                    "query_scope_class": "ambiguous",
+                    "asks_for_db_facts": False,
+                },
+            },
+            answer_strategy=AnswerStrategy.CLARIFY,
+        )
+        mock_resolve_query_context.return_value = {
+            "original_question": "How is it over there?",
+            "effective_question": "How is it over there?",
+            "effective_lab_name": None,
+            "memory_carryover": {},
+            "route_contract": RouteDecisionContract(
+                latest_user_question="How is it over there?",
+                latest_question_hash="abcd1234",
+                policy_version="route-policy-v1",
+                route_plan=clarify_plan,
+                needs_measured_data=False,
+                executor=RouteExecutor.CLARIFY_GATE,
+                execution_intent=IntentType.AGGREGATION_DB,
+                execution_intent_value=IntentType.AGGREGATION_DB.value,
+                query_scope_class="ambiguous",
+                rule_trace=("test_forced_clarify",),
+            ),
+        }
+        mock_stream_db_query.side_effect = _fake_stream
+
+        async def _consume():
+            chunks = []
+            async for chunk in stream_query(
+                question="How is it over there?",
+                k=4,
+                lab_name=None,
+                conversation_context="",
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(_consume())
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Just checking", chunks[0])
+        mock_stream_db_query.assert_not_called()
+
+    @patch("query_routing.query_orchestrator.stream_db_query")
+    @patch("query_routing.query_orchestrator.answer_env_question_with_metadata")
+    @patch("query_routing.query_orchestrator.run_db_query")
+    @patch("query_routing.query_orchestrator.get_route_plan")
+    def test_stream_query_decompose_streams_chunked_merged_answer(
+        self,
+        mock_get_route_plan,
+        mock_run_db_query,
+        mock_answer_with_metadata,
+        mock_stream_db_query,
+    ):
+        async def _fake_stream(*args, **kwargs):
+            yield "should-not-be-called"
+
+        mock_get_route_plan.return_value = RoutePlan(
+            decision=RouteDecision(
+                intent=IntentType.AGGREGATION_DB,
+                confidence=0.93,
+                reason="needs_interpretation",
+            ),
+            intent_category=IntentCategory.STRUCTURED_FACTUAL_DB,
+            route_source="llm_planner",
+            planner_model="qwen3:30b",
+            planner_fallback_used=False,
+            planner_fallback_reason=None,
+            planner_raw={},
+            planner_parameters={"response_mode": "db", "query_signals": {"asks_for_db_facts": True}},
+            answer_strategy=AnswerStrategy.DECOMPOSE,
+            secondary_intents=(IntentType.DEFINITION_EXPLANATION,),
+            decomposition_template=DecompositionTemplate.TREND_INTERPRETATION,
+        )
+        mock_run_db_query.return_value = {
+            "answer": "Primary DB answer.",
+            "timescale": "1hour",
+            "cards_retrieved": 0,
+            "llm_used": True,
+            "time_window": {"label": "this week", "start": "x", "end": "y"},
+            "resolved_lab_name": "smart_lab",
+            "sources": [],
+            "visualization_type": "none",
+            "chart": None,
+            "forecast": None,
+            "correlation": None,
+            "data": [],
+            "evidence": {
+                "evidence_kind": "db_query",
+                "metric_aliases": ["co2"],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+        mock_answer_with_metadata.return_value = {
+            "answer": "Secondary interpretation.",
+            "cards_retrieved": 0,
+            "knowledge_cards_retrieved": 0,
+            "evidence": {
+                "evidence_kind": "knowledge_qa",
+                "metric_aliases": [],
+                "provenance_sources": [],
+                "confidence_notes": [],
+                "recommendation_allowed": True,
+            },
+        }
+        mock_stream_db_query.side_effect = _fake_stream
+
+        async def _consume():
+            chunks = []
+            async for chunk in stream_query(
+                question="How did CO2 trend this week and what does it imply?",
+                k=4,
+                lab_name="smart_lab",
+                conversation_context="",
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(_consume())
+        streamed_answer = "".join(chunks)
+        self.assertIn("Primary DB answer.", streamed_answer)
+        self.assertIn("Interpretation:", streamed_answer)
+        self.assertIn("Secondary interpretation.", streamed_answer)
+        self.assertTrue(all(len(chunk) <= 8 for chunk in chunks))
+        mock_stream_db_query.assert_not_called()
 
 
 if __name__ == "__main__":

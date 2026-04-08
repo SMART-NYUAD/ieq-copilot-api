@@ -47,5 +47,27 @@ class IntentClassifierLightQueryTests(unittest.TestCase):
         self.assertGreater(float(strong["metric_signal_strength"]), float(weak["metric_signal_strength"]))
         self.assertGreater(float(strong["scope_signal_strength"]), float(weak["scope_signal_strength"]))
 
+    def test_unscoped_metric_comparison_routes_to_definition(self):
+        decision = classify_intent("how does PM2.5 compare with CO2 or humidity")
+        self.assertEqual(decision.intent, IntentType.DEFINITION_EXPLANATION)
+
+    def test_unscoped_metric_comparison_not_marked_db_facts(self):
+        signals = extract_query_signals("how does PM2.5 compare with CO2 or humidity", lab_name=None)
+        self.assertFalse(bool(signals.get("asks_for_db_facts")))
+
+    def test_scoped_lab_comparison_stays_comparison_db(self):
+        decision = classify_intent("compare PM2.5 in smart_lab vs concrete_lab")
+        self.assertEqual(decision.intent, IntentType.COMPARISON_DB)
+
+    def test_time_scoped_comparison_keeps_db_facts_signal(self):
+        signals = extract_query_signals("how does PM2.5 compare this week", lab_name=None)
+        self.assertTrue(bool(signals.get("asks_for_db_facts")))
+
+    def test_unscoped_metric_comparison_is_not_domain_scope(self):
+        signals = extract_query_signals("how does PM2.5 compare with CO2 or humidity", lab_name=None)
+        self.assertFalse(bool(signals.get("is_comfort_assessment_phrase")))
+        self.assertFalse(bool(signals.get("asks_for_db_facts")))
+        self.assertEqual(str(signals.get("query_scope_class") or ""), "ambiguous")
+
 if __name__ == "__main__":
     unittest.main()

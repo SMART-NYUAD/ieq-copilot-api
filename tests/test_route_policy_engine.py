@@ -1,7 +1,6 @@
 import os
 import sys
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -50,14 +49,6 @@ def _make_route_plan(
 class RoutePolicyEngineTests(unittest.TestCase):
     def setUp(self):
         reset_observability_metrics()
-        self._prior_strict = os.environ.get("AGENT_ROUTING_STRICT")
-        os.environ["AGENT_ROUTING_STRICT"] = "false"
-
-    def tearDown(self):
-        if self._prior_strict is None:
-            os.environ.pop("AGENT_ROUTING_STRICT", None)
-        else:
-            os.environ["AGENT_ROUTING_STRICT"] = self._prior_strict
 
     def test_conceptual_prompt_forces_knowledge_executor(self):
         plan = _make_route_plan(
@@ -252,51 +243,71 @@ class RoutePolicyEngineTests(unittest.TestCase):
         contract = get_route_decision_contract("What is IEQ?", None, True)
         self.assertEqual(contract.policy_version, "route-policy-v1")
 
-    @patch("query_routing.route_policy_engine.load_settings")
-    def test_strict_mode_ignores_keyword_scope_for_semantic_intent(self, mock_load_settings):
-        mock_load_settings.return_value = SimpleNamespace(
-            router_clarify_threshold=0.5,
-            agent_routing_strict=True,
-        )
+    def test_semantic_intent_never_routes_to_clarify(self):
         plan = _make_route_plan(
             intent=IntentType.DEFINITION_EXPLANATION,
-            confidence=0.6,
+            confidence=0.2,
             response_mode="db",
             query_signals={
-                "query_scope_class": "domain",
-                "asks_for_db_facts": True,
-                "has_metric_reference": True,
-                "has_time_window_hint": True,
-                "has_lab_reference": True,
+                "query_scope_class": "ambiguous",
+                "is_general_knowledge_question": True,
+                "asks_for_db_facts": False,
             },
+            answer_strategy=AnswerStrategy.CLARIFY,
         )
         contract = build_route_decision_contract(
-            latest_user_question="What does IEQ mean for smart_lab this week?",
+            latest_user_question="What does IEQ mean?",
             route_plan=plan,
             allow_clarify=True,
         )
         self.assertEqual(contract.executor, RouteExecutor.KNOWLEDGE_QA)
-        self.assertIn("strict_mode_semantic_intent_knowledge", contract.rule_trace)
+        self.assertNotEqual(contract.executor, RouteExecutor.CLARIFY_GATE)
 
-    @patch("query_routing.route_policy_engine.load_settings")
-    def test_strict_mode_clarify_only_when_planner_requests(self, mock_load_settings):
-        mock_load_settings.return_value = SimpleNamespace(
-            router_clarify_threshold=0.9,
-            agent_routing_strict=True,
-        )
+    def test_general_knowledge_metric_comparison_without_scope_stays_knowledge(self):
         plan = _make_route_plan(
-            intent=IntentType.AGGREGATION_DB,
-            confidence=0.1,
-            response_mode="db",
-            query_signals={"query_scope_class": "ambiguous"},
-            answer_strategy=AnswerStrategy.DIRECT,
+            intent=IntentType.DEFINITION_EXPLANATION,
+            confidence=0.85,
+            response_mode="knowledge_only",
+            query_signals={
+                "query_scope_class": "ambiguous",
+                "is_general_knowledge_question": True,
+                "asks_for_db_facts": False,
+                "has_metric_reference": True,
+                "has_db_scope_phrase": True,
+                "has_lab_reference": False,
+                "has_time_window_hint": False,
+            },
         )
         contract = build_route_decision_contract(
-            latest_user_question="How is it over there?",
+            latest_user_question="how does PM2.5 compare with CO2 or humidity",
             route_plan=plan,
             allow_clarify=True,
         )
-        self.assertEqual(contract.executor, RouteExecutor.DB_QUERY)
+        self.assertEqual(contract.executor, RouteExecutor.KNOWLEDGE_QA)
+        self.assertFalse(contract.needs_measured_data)
+        self.assertIn("conceptual_semantic_forces_knowledge", contract.rule_trace)
+
+    def test_high_confidence_definition_without_scope_signals_stays_knowledge(self):
+        plan = _make_route_plan(
+            intent=IntentType.DEFINITION_EXPLANATION,
+            confidence=0.9,
+            response_mode="db",
+            query_signals={
+                "query_scope_class": "domain",
+                "is_general_knowledge_question": False,
+                "asks_for_db_facts": False,
+                "has_time_window_hint": False,
+                "has_db_scope_phrase": False,
+                "is_air_assessment_phrase": False,
+            },
+        )
+        contract = build_route_decision_contract(
+            latest_user_question="What does CO2 mean?",
+            route_plan=plan,
+            allow_clarify=True,
+        )
+        self.assertEqual(contract.executor, RouteExecutor.KNOWLEDGE_QA)
+        self.assertFalse(contract.needs_measured_data)
 
 
 if __name__ == "__main__":

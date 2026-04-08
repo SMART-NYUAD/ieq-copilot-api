@@ -132,7 +132,8 @@ def build_stream_clarify_metadata(
     )
     metadata = {
         **base_route_metadata(route_plan, decision),
-        "timescale": "clarify",
+        "timescale": None,
+        "clarify_reason": "scope_underspecified",
         "cards_retrieved": 0,
         "recent_card": False,
         "clarification_required": True,

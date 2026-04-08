@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import sys
 from typing import List
 
 _ENV_LOADED = False
@@ -62,7 +61,6 @@ def _load_env_file_if_present() -> None:
     if _ENV_LOADED:
         return
     _ENV_LOADED = True
-    is_unittest = "unittest" in sys.modules
     env_path = Path(__file__).resolve().parent / ".env"
     if not env_path.exists():
         return
@@ -74,10 +72,6 @@ def _load_env_file_if_present() -> None:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip("'").strip('"')
-            # Keep unit tests deterministic: strict-routing should be controlled
-            # by test code/env patches, not by developer-local .env defaults.
-            if is_unittest and key == "AGENT_ROUTING_STRICT":
-                continue
             if key and key not in os.environ:
                 os.environ[key] = value
     except Exception:
@@ -106,7 +100,6 @@ class AppSettings:
     agent_max_consecutive_failures: int
     agent_stall_threshold: int
     agent_stream_step_events: bool
-    agent_routing_strict: bool
 
 
 def load_settings() -> AppSettings:
@@ -135,10 +128,6 @@ def load_settings() -> AppSettings:
         agent_stream_step_events=_parse_bool(
             os.getenv("AGENT_STREAM_STEP_EVENTS", "true"),
             default=True,
-        ),
-        agent_routing_strict=_parse_bool(
-            os.getenv("AGENT_ROUTING_STRICT", "false"),
-            default=False,
         ),
     )
 
@@ -214,8 +203,4 @@ def router_semantic_rewrite_timeout_seconds() -> float:
     except ValueError:
         return 4.0
 
-
-def agent_routing_strict_enabled() -> bool:
-    ensure_env_loaded()
-    return _parse_bool(os.getenv("AGENT_ROUTING_STRICT", "false"), default=False)
 

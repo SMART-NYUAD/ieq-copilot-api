@@ -29,18 +29,10 @@ from query_routing.llm_router_planner import (
 
 class StreamRouteMetadataTests(unittest.TestCase):
     def setUp(self):
-        self._prior_strict = os.environ.get("AGENT_ROUTING_STRICT")
-        os.environ["AGENT_ROUTING_STRICT"] = "false"
         app = FastAPI()
         app.include_router(query_router)
         app.include_router(openai_router)
         self.client = TestClient(app)
-
-    def tearDown(self):
-        if self._prior_strict is None:
-            os.environ.pop("AGENT_ROUTING_STRICT", None)
-        else:
-            os.environ["AGENT_ROUTING_STRICT"] = self._prior_strict
 
     @patch("http_routes.query_routes.stream_db_query")
     @patch("http_routes.query_routes.prepare_db_query")

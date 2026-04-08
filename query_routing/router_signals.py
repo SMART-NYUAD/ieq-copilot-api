@@ -33,6 +33,8 @@ _TIME_WINDOW_HINT_RE = re.compile(
 )
 _GENERAL_QA_HINTS = (
     "what is",
+    "how does",
+    "how do",
     "who are you",
     "what are you",
     "what can you do",
@@ -89,7 +91,7 @@ _COMFORT_ASSESSMENT_HINTS = (
     "stuffy",
     "fresh air",
     "dry",
-    "humid",
+    "too humid",
 )
 _HYPOTHETICAL_CONDITIONAL_HINTS = (
     "what if",
@@ -127,9 +129,6 @@ _DB_SCOPE_HINTS = (
     "average",
     "avg",
     "trend",
-    "compare",
-    "vs",
-    "versus",
     "during",
     "between",
     "over",
@@ -272,20 +271,24 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         has_conceptual_ieq_term and has_general_qa_phrase
     )
     is_air_assessment_phrase = _is_air_quality_query_text(latest_question)
-    has_db_scope_phrase = any(hint in q for hint in _DB_SCOPE_HINTS) or any(
-        hint in q for hint in _COMPARISON_HINTS
+    has_comparison_phrase = any(hint in q for hint in _COMPARISON_HINTS)
+    has_db_scope_phrase = any(hint in q for hint in _DB_SCOPE_HINTS) or has_comparison_phrase
+    has_non_comparison_scope = (
+        has_time_window_hint
+        or has_lab_reference
+        or re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is not None
     )
     measured_scope_request = (
         requests_current_measured_data
         or has_time_window_hint
         or (has_lab_reference and has_metric_reference)
-        or (has_metric_reference and has_db_scope_phrase)
+        or (has_metric_reference and has_db_scope_phrase and has_non_comparison_scope)
     )
     # Treat conceptual wording as knowledge-oriented only when measured scope is
     # not explicitly requested.
     is_general_knowledge_question = (
         has_knowledge_domain
-        and has_general_qa_phrase
+        and (has_general_qa_phrase or (has_comparison_phrase and not has_non_comparison_scope))
         and not measured_scope_request
     )
     is_comfort_assessment_phrase = any(hint in q for hint in _COMFORT_ASSESSMENT_HINTS)
@@ -315,13 +318,19 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         else:
             query_scope_class = QueryScopeClass.AMBIGUOUS.value
     else:
+        scoped_metric_db_evidence = has_metric_reference and (
+            has_lab_reference
+            or has_time_window_hint
+            or requests_current_measured_data
+            or (has_db_scope_phrase and has_non_comparison_scope)
+        )
         has_db_scope_evidence = (
-            has_metric_reference
+            scoped_metric_db_evidence
             or has_lab_reference
             or is_air_assessment_phrase
             or is_comfort_assessment_phrase
             or (has_time_window_hint and has_domain_anchor)
-            or has_db_scope_phrase
+            or (has_db_scope_phrase and has_non_comparison_scope)
         )
         if has_db_scope_evidence and not is_general_knowledge_question:
             query_scope_class = QueryScopeClass.DOMAIN.value
@@ -335,7 +344,15 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         or re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is not None
     )
     if query_scope_class == QueryScopeClass.AMBIGUOUS.value and explicit_scope_intent and has_domain_anchor:
-        asks_for_db_facts = True
+        if has_non_comparison_scope:
+            asks_for_db_facts = True
+    if (
+        any(hint in q for hint in _COMPARISON_HINTS)
+        and not has_lab_reference
+        and not has_time_window_hint
+        and re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is None
+    ):
+        asks_for_db_facts = False
     if is_hypothetical_conditional and not requests_current_measured_data and not (has_lab_reference and has_metric_reference):
         asks_for_db_facts = False
     if single_explicit_lab_with_baseline_reference:

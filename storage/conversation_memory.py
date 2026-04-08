@@ -57,6 +57,20 @@ _TOPIC_PHRASES = (
     "comfort",
     "comfortable",
 )
+_DEFINITIONAL_PHRASES = (
+    "what does",
+    "what is",
+    "what are",
+    "what do",
+    "meaning of",
+    "define",
+    "definition",
+    "explain",
+    "how does",
+    "how do",
+    "what do you mean",
+    "tell me about",
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +129,11 @@ def _extract_topic_phrase(question: str) -> Optional[str]:
         if phrase in q:
             return phrase
     return None
+
+
+def _is_definitional_question(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    return any(phrase in q for phrase in _DEFINITIONAL_PHRASES)
 
 
 def _should_apply_memory(question: str, current_signals: Dict[str, Any]) -> bool:
@@ -201,7 +220,9 @@ def apply_routing_memory(
         effective_lab = memory.lab_name
         carried_lab = memory.lab_name
 
-    if not has_time_window_hint and memory.time_phrase:
+    skip_time_phrase = _is_definitional_question(base_question)
+
+    if not skip_time_phrase and not has_time_window_hint and memory.time_phrase:
         effective_question = f"{effective_question} ({memory.time_phrase})"
         carried_time = memory.time_phrase
 

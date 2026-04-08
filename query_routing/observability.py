@@ -16,8 +16,6 @@ _STARTED_MONOTONIC = time.monotonic()
 _COUNTERS = {
     "planner_total": 0,
     "planner_fallback_total": 0,
-    "critic_total": 0,
-    "critic_failure_total": 0,
     "shadow_total": 0,
     "shadow_diff_total": 0,
     "rollout_policy_total": 0,
@@ -160,8 +158,6 @@ def reset_observability_metrics() -> None:
     with _LOCK:
         _COUNTERS["planner_total"] = 0
         _COUNTERS["planner_fallback_total"] = 0
-        _COUNTERS["critic_total"] = 0
-        _COUNTERS["critic_failure_total"] = 0
         _COUNTERS["shadow_total"] = 0
         _COUNTERS["shadow_diff_total"] = 0
         _COUNTERS["rollout_policy_total"] = 0
@@ -250,16 +246,6 @@ def record_route_plan(route_plan: Any) -> None:
                 _TEMPLATE_COUNTS[template_id] += 1
 
 
-def record_critic_outcome(status: Optional[str]) -> None:
-    value = str(status or "").strip().lower()
-    if not value:
-        return
-    with _LOCK:
-        _COUNTERS["critic_total"] += 1
-        if value != "pass":
-            _COUNTERS["critic_failure_total"] += 1
-
-
 def record_rollout_selection(selected_policy: str) -> None:
     with _LOCK:
         _COUNTERS["rollout_policy_total"] += 1
@@ -328,8 +314,6 @@ def get_observability_snapshot() -> Dict[str, Any]:
     with _LOCK:
         planner_total = int(_COUNTERS["planner_total"])
         planner_fallback_total = int(_COUNTERS["planner_fallback_total"])
-        critic_total = int(_COUNTERS["critic_total"])
-        critic_failure_total = int(_COUNTERS["critic_failure_total"])
         shadow_total = int(_COUNTERS["shadow_total"])
         shadow_diff_total = int(_COUNTERS["shadow_diff_total"])
         rollout_policy_total = int(_COUNTERS["rollout_policy_total"])
@@ -345,7 +329,6 @@ def get_observability_snapshot() -> Dict[str, Any]:
         agent_finish_distribution = dict(_AGENT_FINISH_REASON_COUNTS)
 
     fallback_rate = (planner_fallback_total / planner_total) if planner_total else 0.0
-    critic_failure_rate = (critic_failure_total / critic_total) if critic_total else 0.0
     shadow_diff_rate = (shadow_diff_total / shadow_total) if shadow_total else 0.0
     rollout_policy_rate = 1.0 if rollout_policy_total else 0.0
     sync_stream_flip_rate = (
@@ -361,9 +344,6 @@ def get_observability_snapshot() -> Dict[str, Any]:
         "planner_fallback_total": planner_fallback_total,
         "planner_fallback_rate": fallback_rate,
         "planner_fallback_reason_distribution": fallback_distribution,
-        "critic_total": critic_total,
-        "critic_failure_total": critic_failure_total,
-        "critic_failure_rate": critic_failure_rate,
         "decomposition_template_usage": template_distribution,
         "shadow_total": shadow_total,
         "shadow_diff_total": shadow_diff_total,
@@ -500,14 +480,11 @@ def get_error_observability_snapshot(top_n: int = 10) -> Dict[str, Any]:
 def evaluate_rollout_slo(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     data = snapshot or get_observability_snapshot()
     fallback_rate = float(data.get("planner_fallback_rate") or 0.0)
-    critic_failure_rate = float(data.get("critic_failure_rate") or 0.0)
     shadow_diff_rate = float(data.get("shadow_diff_rate") or 0.0)
     sync_stream_flip_rate = float(data.get("sync_stream_flip_rate") or 0.0)
 
     fallback_target_ok = fallback_rate <= 0.05
     fallback_max_ok = fallback_rate <= 0.10
-    critic_target_ok = critic_failure_rate <= 0.02
-    critic_max_ok = critic_failure_rate <= 0.05
     shadow_target_ok = shadow_diff_rate <= 0.10
     shadow_max_ok = shadow_diff_rate <= 0.20
     parity_target_ok = sync_stream_flip_rate <= 0.0
@@ -516,13 +493,11 @@ def evaluate_rollout_slo(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str,
     return {
         "fallback_target_ok": fallback_target_ok,
         "fallback_max_ok": fallback_max_ok,
-        "critic_target_ok": critic_target_ok,
-        "critic_max_ok": critic_max_ok,
         "shadow_target_ok": shadow_target_ok,
         "shadow_max_ok": shadow_max_ok,
         "parity_target_ok": parity_target_ok,
         "parity_max_ok": parity_max_ok,
-        "rollout_blocked": not (fallback_max_ok and critic_max_ok and shadow_max_ok and parity_max_ok),
+        "rollout_blocked": not (fallback_max_ok and shadow_max_ok and parity_max_ok),
     }
 
 
@@ -543,7 +518,6 @@ def get_observability_kpis() -> Dict[str, Any]:
             "latency_p95_ms": float((http.get("app_latency_ms") or {}).get("p95_ms") or 0.0),
             "latency_p99_ms": float((http.get("app_latency_ms") or {}).get("p99_ms") or 0.0),
             "router_planner_fallback_rate": float(router.get("planner_fallback_rate") or 0.0),
-            "router_critic_failure_rate": float(router.get("critic_failure_rate") or 0.0),
             "router_shadow_diff_rate": float(router.get("shadow_diff_rate") or 0.0),
             "router_sync_stream_flip_rate": float(router.get("sync_stream_flip_rate") or 0.0),
             "runtime_errors_total": int(errors.get("runtime_errors_total") or 0),

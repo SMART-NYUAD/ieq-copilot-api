@@ -12,7 +12,6 @@ import requests
 
 try:
     from core_settings import (
-        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -27,12 +26,10 @@ try:
     from query_routing.router_policy import (
         ALLOWED_CARD_TOPICS,
         ALLOWED_PLANNER_METRICS,
-        emergency_fallback_plan,
         enforce_non_domain_block,
         fallback_plan,
         normalize_plan,
         normalize_planner_parameters,
-        normalize_planner_parameters_strict,
     )
     from query_routing.router_signals import extract_query_signals
     from query_routing.router_types import (
@@ -45,7 +42,6 @@ try:
     )
 except ImportError:
     from ..core_settings import (
-        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -60,12 +56,10 @@ except ImportError:
     from .router_policy import (
         ALLOWED_CARD_TOPICS,
         ALLOWED_PLANNER_METRICS,
-        emergency_fallback_plan,
         enforce_non_domain_block,
         fallback_plan,
         normalize_plan,
         normalize_planner_parameters,
-        normalize_planner_parameters_strict,
     )
     from .router_signals import extract_query_signals
     from .router_types import (
@@ -589,7 +583,6 @@ def _build_success_plan(
     question: str,
     query_signals: Dict[str, Any],
 ) -> RoutePlan:
-    strict_mode = agent_routing_strict_enabled()
     category, decision, strategy, secondary_intents, template = normalize_plan(raw_plan)
     decision, category, strategy, secondary_intents, template = enforce_non_domain_block(
         decision=decision,
@@ -599,20 +592,12 @@ def _build_success_plan(
         template=template,
         query_signals=query_signals,
     )
-    if strict_mode:
-        planner_parameters = normalize_planner_parameters_strict(
-            raw_plan=raw_plan,
-            question=question,
-            intent=decision.intent,
-            query_signals=query_signals,
-        )
-    else:
-        planner_parameters = normalize_planner_parameters(
-            raw_plan=raw_plan,
-            question=question,
-            intent=decision.intent,
-            query_signals=query_signals,
-        )
+    planner_parameters = normalize_planner_parameters(
+        raw_plan=raw_plan,
+        question=question,
+        intent=decision.intent,
+        query_signals=query_signals,
+    )
     raw_action = str(raw_plan.get("action") or "").strip().lower()
     try:
         agent_action = AgentAction(raw_action) if raw_action else AgentAction.FINALIZE
@@ -717,7 +702,6 @@ def _build_fastpath_knowledge_plan(
 
 def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     model = router_model()
-    strict_mode = agent_routing_strict_enabled()
     effective_question = question
     query_signals = extract_query_signals(question=effective_question, lab_name=lab_name)
     rewrite_metadata: Dict[str, Any] = {"enabled": router_semantic_rewrite_enabled(), "attempted": False, "applied": False}
@@ -738,7 +722,7 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
                 rewrite_metadata["rewritten_question"] = effective_question
         except Exception as exc:
             rewrite_metadata["error"] = type(exc).__name__
-    if (not strict_mode) and _should_fastpath_knowledge_route(query_signals):
+    if _should_fastpath_knowledge_route(query_signals):
         plan = _build_fastpath_knowledge_plan(
             model=model,
             question=effective_question,
@@ -885,15 +869,6 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
             if jitter_ms > 0:
                 time.sleep(random.uniform(0, jitter_ms / 1000.0))
 
-    if strict_mode:
-        plan = emergency_fallback_plan(
-            question=effective_question,
-            model=model,
-            fallback_reason=_normalize_fallback_reason(last_error),
-            query_signals=query_signals,
-        )
-        plan.planner_parameters["semantic_rewrite"] = rewrite_metadata
-        return plan
     plan = fallback_plan(
         question=effective_question,
         model=model,

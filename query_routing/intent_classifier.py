@@ -116,7 +116,12 @@ def _rank_intent_candidates(
     if has_forecast:
         scores[IntentType.FORECAST_DB] += 0.9
     if has_comparison or has_dual_space_tokens:
-        scores[IntentType.COMPARISON_DB] += 0.85
+        scope_evidence = has_lab_reference or has_time_window or asks_for_db_facts
+        if scope_evidence:
+            scores[IntentType.COMPARISON_DB] += 0.85
+        else:
+            scores[IntentType.COMPARISON_DB] += 0.2
+            scores[IntentType.DEFINITION_EXPLANATION] += 0.4
     if has_anomaly:
         scores[IntentType.ANOMALY_ANALYSIS_DB] += 0.7
     if has_aggregation or has_trend or has_graph or asks_for_values:
@@ -247,7 +252,14 @@ def classify_intent(question: str) -> RouteDecision:
         return _decision(IntentType.AGGREGATION_DB, 0.68, "anomaly_keyword_unscoped", ranked)
 
     if has_comparison:
-        return _decision(IntentType.COMPARISON_DB, 0.9, "comparison_keyword", ranked)
+        has_scope_for_comparison = (
+            has_lab_reference
+            or has_time_window
+            or asks_for_db_facts
+            or has_dual_space_tokens
+        )
+        if has_scope_for_comparison:
+            return _decision(IntentType.COMPARISON_DB, 0.9, "comparison_keyword", ranked)
 
     if has_dual_space_tokens and (has_air_quality_phrase or has_metric or has_time_window):
         return _decision(IntentType.COMPARISON_DB, 0.88, "dual_space_tokens", ranked)

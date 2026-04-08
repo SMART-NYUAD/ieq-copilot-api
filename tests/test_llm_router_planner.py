@@ -325,10 +325,8 @@ class LlmRouterPlannerTests(unittest.TestCase):
         reason = str(plan.planner_fallback_reason or "")
         self.assertIn("planner_error:parse_error", reason)
 
-    @patch("query_routing.llm_router_planner.agent_routing_strict_enabled")
     @patch("query_routing.llm_router_planner._call_router_planner")
-    def test_strict_mode_disables_signal_fastpath(self, mock_call, mock_strict):
-        mock_strict.return_value = True
+    def test_signal_fastpath_bypasses_planner_for_general_knowledge(self, mock_call):
         mock_call.return_value = {
             "intent_category": "semantic_explanatory",
             "intent": "definition_explanation",
@@ -336,18 +334,15 @@ class LlmRouterPlannerTests(unittest.TestCase):
             "response_mode": "knowledge_only",
         }
         plan = plan_route("What day is today?")
-        self.assertEqual(plan.route_source, "llm_planner")
-        self.assertEqual(mock_call.call_count, 1)
+        self.assertEqual(plan.route_source, "signal_fastpath")
+        self.assertEqual(mock_call.call_count, 0)
 
-    @patch("query_routing.llm_router_planner.agent_routing_strict_enabled")
     @patch("query_routing.llm_router_planner._call_router_planner")
-    def test_strict_mode_uses_emergency_fallback_when_planner_unavailable(self, mock_call, mock_strict):
-        mock_strict.return_value = True
+    def test_planner_unavailable_uses_rule_fallback(self, mock_call):
         mock_call.side_effect = TimeoutError("planner timed out")
         plan = plan_route("Average CO2 this week in smart_lab")
         self.assertTrue(plan.planner_fallback_used)
-        self.assertEqual(plan.route_source, "planner_emergency_fallback")
-        self.assertEqual(plan.answer_strategy.value, "clarify")
+        self.assertEqual(plan.route_source, "planner_rule_fallback")
 
     @patch("query_routing.llm_router_planner.router_semantic_rewrite_enabled")
     @patch("query_routing.llm_router_planner._call_semantic_rewrite")

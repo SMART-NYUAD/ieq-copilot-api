@@ -300,62 +300,6 @@ def normalize_planner_parameters(raw_plan: Dict[str, Any], question: str, intent
     }
 
 
-def normalize_planner_parameters_strict(
-    raw_plan: Dict[str, Any],
-    question: str,
-    intent: IntentType,
-    query_signals: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Strict mode: keep only minimal non-domain safety steering."""
-    signals = query_signals or {}
-    scope_class = str(signals.get("query_scope_class") or "").strip().lower()
-    raw_response_mode = str(raw_plan.get("response_mode") or "").strip().lower()
-    response_mode = raw_response_mode if raw_response_mode in {"db", "knowledge_only"} else "db"
-    if scope_class == QueryScopeClass.NON_DOMAIN.value:
-        response_mode = "knowledge_only"
-
-    raw_metrics = raw_plan.get("metrics_priority")
-    metrics: list[str] = []
-    if isinstance(raw_metrics, list):
-        for item in raw_metrics:
-            metric = str(item or "").strip().lower().replace(" ", "_")
-            if metric in ALLOWED_PLANNER_METRICS and metric not in metrics:
-                metrics.append(metric)
-    if not metrics:
-        if intent == IntentType.FORECAST_DB:
-            metrics = ["pm25"]
-        elif intent in DB_INTENTS:
-            metrics = ["ieq", "co2", "pm25", "humidity", "tvoc"]
-        else:
-            metrics = ["ieq"]
-
-    raw_needs_cards = raw_plan.get("needs_cards")
-    needs_cards = bool(raw_needs_cards) if isinstance(raw_needs_cards, bool) else response_mode == "knowledge_only"
-    raw_card_topics = raw_plan.get("card_topics")
-    topics: list[str] = []
-    if isinstance(raw_card_topics, list):
-        for item in raw_card_topics:
-            topic = str(item or "").strip().lower().replace(" ", "_")
-            if topic in ALLOWED_CARD_TOPICS and topic not in topics:
-                topics.append(topic)
-    if needs_cards and not topics:
-        topics = ["definitions", "metric_explanations"]
-
-    try:
-        max_cards = int(raw_plan.get("max_cards"))
-    except (TypeError, ValueError):
-        max_cards = 2
-    max_cards = max(1, min(4, max_cards))
-    return {
-        "metrics_priority": metrics,
-        "response_mode": response_mode,
-        "needs_cards": needs_cards,
-        "card_topics": topics,
-        "max_cards": max_cards,
-        "query_signals": signals,
-    }
-
-
 def enforce_non_domain_block(decision: RouteDecision, category: IntentCategory, strategy: AnswerStrategy, secondary_intents: Tuple[IntentType, ...], template: Optional[DecompositionTemplate], query_signals: Dict[str, Any]) -> Tuple[RouteDecision, IntentCategory, AnswerStrategy, Tuple[IntentType, ...], Optional[DecompositionTemplate]]:
     scope_class = str(query_signals.get("query_scope_class") or "").strip().lower()
     if scope_class == QueryScopeClass.NON_DOMAIN.value and decision.intent in DB_INTENTS:
@@ -389,45 +333,3 @@ def fallback_plan(question: str, model: str, fallback_reason: str, query_signals
     )
 
 
-def emergency_fallback_plan(
-    question: str,
-    model: str,
-    fallback_reason: str,
-    query_signals: Optional[Dict[str, Any]] = None,
-) -> RoutePlan:
-    """Strict-mode planner unavailable safety fallback (no keyword intent routing)."""
-    reason = f"planner_unavailable:{fallback_reason}"
-    signals = query_signals or {}
-    decision = RouteDecision(
-        intent=IntentType.UNKNOWN_FALLBACK,
-        confidence=0.0,
-        reason=reason[:240],
-    )
-    params = normalize_planner_parameters_strict(
-        raw_plan={
-            "response_mode": "knowledge_only",
-            "needs_cards": True,
-            "card_topics": ["definitions"],
-            "max_cards": 2,
-        },
-        question=question,
-        intent=decision.intent,
-        query_signals=signals,
-    )
-    return RoutePlan(
-        decision=decision,
-        intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
-        route_source="planner_emergency_fallback",
-        planner_model=model,
-        planner_fallback_used=True,
-        planner_fallback_reason=reason,
-        planner_raw=None,
-        planner_parameters=params,
-        answer_strategy=AnswerStrategy.CLARIFY,
-        secondary_intents=tuple(),
-        decomposition_template=None,
-        agent_action=AgentAction.CLARIFY,
-        tool_name=None,
-        tool_arguments={},
-        expected_observation=None,
-    )

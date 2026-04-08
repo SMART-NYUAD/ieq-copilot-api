@@ -1,7 +1,5 @@
 """Top-level query orchestration between routing and executors."""
 
-from datetime import datetime, timedelta, timezone
-import re
 from typing import Any, AsyncIterator, Dict, Optional
 
 try:
@@ -33,7 +31,6 @@ try:
         record_agent_step,
         record_agent_tool_call,
         record_endpoint_executor,
-        record_critic_outcome,
         record_route_plan,
     )
     from storage.conversation_memory import (
@@ -69,7 +66,6 @@ except ImportError:
         record_agent_step,
         record_agent_tool_call,
         record_endpoint_executor,
-        record_critic_outcome,
         record_route_plan,
     )
     from ..storage.conversation_memory import (
@@ -104,14 +100,6 @@ def query_scope_class(route_plan: RoutePlan) -> str:
     return str(signals.get("query_scope_class") or "").strip().lower()
 
 
-def _strict_mode_enabled() -> bool:
-    raw = getattr(load_settings(), "agent_routing_strict", False)
-    if isinstance(raw, bool):
-        return raw
-    text = str(raw or "").strip().lower()
-    return text in {"1", "true", "yes", "on"}
-
-
 def build_non_domain_scope_message(question: str) -> str:
     return (
         "That's a bit outside what I can help with — I'm set up to answer questions about "
@@ -126,15 +114,10 @@ def build_non_domain_scope_message(question: str) -> str:
 
 
 def should_use_knowledge_executor(route_plan: RoutePlan) -> bool:
-    if _strict_mode_enabled():
-        return query_scope_class(route_plan) == "non_domain" or (
-            route_plan.decision.intent in {IntentType.DEFINITION_EXPLANATION, IntentType.UNKNOWN_FALLBACK}
-        )
     planner_parameters = route_plan.planner_parameters or {}
     mode = str(planner_parameters.get("response_mode") or "").strip().lower()
     signals = planner_parameters.get("query_signals") or {}
-    scope_class = query_scope_class(route_plan)
-    if scope_class == "non_domain":
+    if query_scope_class(route_plan) == "non_domain":
         return True
     if mode != "knowledge_only":
         return False
@@ -160,8 +143,6 @@ def _clarify_threshold() -> float:
 def should_clarify(route_plan: RoutePlan, allow_clarify: bool) -> bool:
     if not allow_clarify:
         return False
-    if _strict_mode_enabled():
-        return route_plan.answer_strategy == AnswerStrategy.CLARIFY
     if route_plan.answer_strategy == AnswerStrategy.CLARIFY:
         return True
     scope_class = query_scope_class(route_plan)
@@ -351,82 +332,6 @@ def _execute_db_path(
         "chart": db_result.get("chart"),
     }
 
-_METRIC_KEYWORDS = (
-    "ieq",
-    "co2",
-    "pm2.5",
-    "pm25",
-    "tvoc",
-    "temperature",
-    "humidity",
-    "light",
-    "sound",
-)
-_TIME_PHRASES = (
-    "today",
-    "yesterday",
-    "this week",
-    "last week",
-    "this month",
-    "last month",
-)
-
-_MONTH_TOKEN_TO_NUMBER = {
-    "january": 1,
-    "jan": 1,
-    "february": 2,
-    "feb": 2,
-    "march": 3,
-    "mar": 3,
-    "april": 4,
-    "apr": 4,
-    "may": 5,
-    "june": 6,
-    "jun": 6,
-    "july": 7,
-    "jul": 7,
-    "august": 8,
-    "aug": 8,
-    "september": 9,
-    "sep": 9,
-    "sept": 9,
-    "october": 10,
-    "oct": 10,
-    "november": 11,
-    "nov": 11,
-    "december": 12,
-    "dec": 12,
-}
-_MONTH_MENTION_RE = re.compile(
-    r"\b(" + "|".join(sorted(_MONTH_TOKEN_TO_NUMBER.keys(), key=len, reverse=True)) + r")\.?"
-    r"(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?\b",
-    flags=re.IGNORECASE,
-)
-
-
-def _extract_requested_metrics(question: str) -> list[str]:
-    q = (question or "").lower()
-    metrics = []
-    for token in _METRIC_KEYWORDS:
-        if token in q and token not in metrics:
-            metrics.append(token)
-    return metrics
-
-
-def _requested_time_phrase(question: str) -> Optional[str]:
-    q = (question or "").lower()
-    for token in ("right now", "at this moment", "latest", "current", "now"):
-        if token in q:
-            return token
-    for phrase in _TIME_PHRASES:
-        if phrase in q:
-            return phrase
-    m = re.search(r"\b(last|past)\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)\b", q)
-    if m:
-        return m.group(0)
-    return None
-
-
 def resolve_db_followup_memory(
     *,
     question: str,
@@ -458,14 +363,40 @@ def resolve_db_followup_memory(
     }
 
 
-def _question_needs_recommendation(question: str) -> bool:
-    q = (question or "").lower()
-    return any(token in q for token in ("recommend", "advice", "improve", "what should", "next step"))
-
-
-def _question_needs_explanation(question: str) -> bool:
-    q = (question or "").lower()
-    return any(token in q for token in ("why", "explain", "reason", "how come"))
+def resolve_query_context(
+    question: str,
+    lab_name: Optional[str],
+    allow_clarify: bool = True,
+    conversation_context: str = "",
+) -> Dict[str, Any]:
+    """Shared pre-execution context resolution for both sync and stream paths."""
+    original_question = str(question or "").strip()
+    query_signals = extract_query_signals(
+        question=original_question,
+        lab_name=lab_name,
+    )
+    routing_memory = extract_routing_memory(
+        conversation_context=conversation_context,
+        current_signals=query_signals,
+    )
+    effective_question, effective_lab_name, memory_carryover = apply_routing_memory(
+        question=original_question,
+        lab_name=lab_name,
+        memory=routing_memory,
+        current_signals=query_signals,
+    )
+    route_contract = get_route_decision_contract(
+        question=effective_question,
+        lab_name=effective_lab_name,
+        allow_clarify=allow_clarify,
+    )
+    return {
+        "original_question": original_question,
+        "effective_question": effective_question,
+        "effective_lab_name": effective_lab_name,
+        "memory_carryover": memory_carryover,
+        "route_contract": route_contract,
+    }
 
 
 def _suppress_live_scope_for_hypothetical(route_plan: RoutePlan) -> bool:
@@ -473,152 +404,6 @@ def _suppress_live_scope_for_hypothetical(route_plan: RoutePlan) -> bool:
     return bool(signals.get("is_hypothetical_conditional")) and not bool(
         signals.get("requests_current_measured_data")
     )
-
-
-def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _extract_answer_month_mentions(answer: str) -> list[tuple[int, Optional[int]]]:
-    mentions: list[tuple[int, Optional[int]]] = []
-    for match in _MONTH_MENTION_RE.finditer(str(answer or "")):
-        token = str(match.group(1) or "").lower()
-        month = _MONTH_TOKEN_TO_NUMBER.get(token)
-        if not month:
-            continue
-        day_raw = match.group(2)
-        day: Optional[int] = int(day_raw) if day_raw and day_raw.isdigit() else None
-        mentions.append((month, day))
-    return mentions
-
-
-def _expected_month_day_sets(start: datetime, end: datetime) -> tuple[set[int], set[tuple[int, int]]]:
-    start_utc = start.astimezone(timezone.utc)
-    end_utc = end.astimezone(timezone.utc)
-    if end_utc < start_utc:
-        start_utc, end_utc = end_utc, start_utc
-
-    adjusted_end = end_utc - timedelta(seconds=1)
-    if adjusted_end < start_utc:
-        adjusted_end = start_utc
-
-    current = start_utc.date()
-    end_date = adjusted_end.date()
-    expected_months: set[int] = set()
-    expected_pairs: set[tuple[int, int]] = set()
-    max_days = 62
-    steps = 0
-    while current <= end_date and steps < max_days:
-        expected_months.add(current.month)
-        expected_pairs.add((current.month, current.day))
-        current = current + timedelta(days=1)
-        steps += 1
-    if not expected_months:
-        expected_months.add(start_utc.month)
-        expected_months.add(end_utc.month)
-        expected_pairs.add((start_utc.month, start_utc.day))
-        expected_pairs.add((end_utc.month, end_utc.day))
-    return expected_months, expected_pairs
-
-
-def _has_date_consistency_mismatch(answer: str, metadata: Dict[str, Any]) -> bool:
-    mentions = _extract_answer_month_mentions(answer)
-    if not mentions:
-        return False
-    time_window = metadata.get("time_window") or {}
-    start = _parse_iso_datetime(time_window.get("start"))
-    end = _parse_iso_datetime(time_window.get("end"))
-    if not start or not end:
-        return False
-    expected_months, expected_pairs = _expected_month_day_sets(start=start, end=end)
-    for month, day in mentions:
-        if month not in expected_months:
-            return True
-        if day is not None and (month, day) not in expected_pairs:
-            return True
-    return False
-
-
-def _run_answer_critic(question: str, answer: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-    issues: list[str] = []
-    answer_text = (answer or "").lower()
-    answer_text = (
-        answer_text.replace("co₂", "co2")
-        .replace("pm2.5", "pm25")
-        .replace("pm 2.5", "pm25")
-        .replace("pm 2 5", "pm25")
-    )
-    evidence = metadata.get("evidence") or {}
-    requested_metrics = _extract_requested_metrics(question)
-    if requested_metrics and not any(metric in answer_text for metric in requested_metrics):
-        issues.append("missing_metric")
-
-    requested_time = _requested_time_phrase(question)
-    time_window_label = str(((metadata.get("time_window") or {}).get("label") or "")).lower()
-    if requested_time and requested_time not in time_window_label:
-        issues.append("wrong_time_window")
-    if _has_date_consistency_mismatch(answer=answer, metadata=metadata):
-        issues.append("date_consistency_mismatch")
-
-    if _question_needs_recommendation(question):
-        recommendation_markers = ("recommend", "should", "consider", "action", "improve")
-        if not any(marker in answer_text for marker in recommendation_markers):
-            issues.append("missing_recommendation")
-
-    if _question_needs_explanation(question):
-        explanation_markers = ("because", "due to", "likely", "indicates", "explains")
-        if not any(marker in answer_text for marker in explanation_markers):
-            issues.append("missing_explanation")
-
-    executor = str(metadata.get("executor") or "")
-    evidence_kind = str(evidence.get("evidence_kind") or "")
-    allowed = {
-        "db_query": {"db_query", "decomposed_composition"},
-        "decompose": {"decomposed_composition"},
-        "knowledge_qa": {"knowledge_qa"},
-    }
-    if executor in allowed and evidence_kind not in allowed[executor]:
-        issues.append("evidence_answer_mismatch")
-
-    status = "pass" if not issues else "warn"
-    blocked = False
-    if "evidence_answer_mismatch" in issues:
-        status = "block"
-        blocked = True
-    return {
-        "critic_status": status,
-        "critic_blocked": blocked,
-        "critic_issues": issues,
-    }
-
-
-def _apply_critic(result: Dict[str, Any], question: str) -> Dict[str, Any]:
-    metadata = dict(result.get("metadata") or {})
-    answer = str(result.get("answer") or "")
-    critic = _run_answer_critic(question=question, answer=answer, metadata=metadata)
-    record_critic_outcome(str(critic.get("critic_status") or ""))
-    metadata.update(critic)
-    if critic.get("critic_blocked"):
-        answer = (
-            "I need to re-check evidence alignment before giving a definitive answer. "
-            "Please rephrase with explicit metric and time scope."
-        )
-    elif critic.get("critic_issues"):
-        # Keep critic warnings in metadata, but avoid prepending user-visible
-        # warning banners to answer text.
-        answer = str(result.get("answer") or "")
-    result["answer"] = answer
-    result["metadata"] = metadata
-    return result
 
 
 def _attach_observability_snapshot(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -635,8 +420,6 @@ def _attach_observability_snapshot(result: Dict[str, Any]) -> Dict[str, Any]:
     metadata["rollout_slo"] = {
         "planner_fallback_rate_target": 0.05,
         "planner_fallback_rate_max": 0.10,
-        "critic_failure_rate_target": 0.02,
-        "critic_failure_rate_max": 0.05,
         "shadow_diff_rate_target": 0.10,
         "shadow_diff_rate_max": 0.20,
         "sync_stream_flip_rate_target": 0.0,
@@ -872,16 +655,17 @@ def execute_query(
     endpoint_key: str = "query_sync",
     conversation_context: str = "",
 ) -> Dict:
-    original_question = str(question or "").strip()
-    original_lab_name = lab_name
-    query_signals = extract_query_signals(question=original_question, lab_name=original_lab_name)
-    routing_memory = extract_routing_memory(conversation_context=conversation_context, current_signals=query_signals)
-    effective_question, effective_lab_name, memory_carryover = apply_routing_memory(
-        question=original_question,
-        lab_name=original_lab_name,
-        memory=routing_memory,
-        current_signals=query_signals,
+    resolved_context = resolve_query_context(
+        question=question,
+        lab_name=lab_name,
+        allow_clarify=allow_clarify,
+        conversation_context=conversation_context,
     )
+    original_question = str(resolved_context.get("original_question") or "")
+    effective_question = str(resolved_context.get("effective_question") or "")
+    effective_lab_name = resolved_context.get("effective_lab_name")
+    memory_carryover = resolved_context.get("memory_carryover") or {}
+    route_contract = resolved_context.get("route_contract")
     generation_question = original_question
     settings = load_settings()
     if settings.agentic_mode:
@@ -907,11 +691,6 @@ def execute_query(
             record_agent_step_fn=record_agent_step,
             record_agent_tool_call_fn=record_agent_tool_call,
         )
-    route_contract = get_route_decision_contract(
-        question=effective_question,
-        lab_name=effective_lab_name,
-        allow_clarify=allow_clarify,
-    )
     result = _execute_query_with_route_contract(
         route_contract=route_contract,
         question=effective_question,
@@ -983,7 +762,7 @@ def _execute_query_with_route_contract(
         decomposed_meta["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
         decomposed_meta["memory_carried_metric"] = memory_meta.get("carried_metric")
         decomposed["metadata"] = decomposed_meta
-        return _attach_observability_snapshot(_apply_critic(result=decomposed, question=question))
+        return _attach_observability_snapshot(decomposed)
 
     if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
         suppress_live_scope = _suppress_live_scope_for_hypothetical(route_plan)
@@ -1009,7 +788,7 @@ def _execute_query_with_route_contract(
         knowledge_meta["rule_trace"] = list(route_contract.rule_trace)
         knowledge_meta["needs_measured_data"] = route_contract.needs_measured_data
         knowledge_result["metadata"] = knowledge_meta
-        return _attach_observability_snapshot(_apply_critic(result=knowledge_result, question=question))
+        return _attach_observability_snapshot(knowledge_result)
 
     execution_intent = route_contract.execution_intent
     db_result = _execute_db_path(
@@ -1030,7 +809,7 @@ def _execute_query_with_route_contract(
     db_meta["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
     db_meta["memory_carried_metric"] = memory_meta.get("carried_metric")
     db_result["metadata"] = db_meta
-    return _attach_observability_snapshot(_apply_critic(result=db_result, question=question))
+    return _attach_observability_snapshot(db_result)
 
 
 async def stream_query(
@@ -1040,27 +819,42 @@ async def stream_query(
     endpoint_key: str = "query_stream",
     conversation_context: str = "",
 ) -> AsyncIterator[str]:
-    original_question = str(question or "").strip()
-    query_signals = extract_query_signals(question=original_question, lab_name=lab_name)
-    routing_memory = extract_routing_memory(conversation_context=conversation_context, current_signals=query_signals)
-    effective_question, effective_lab_name, _ = apply_routing_memory(
-        question=original_question,
+    resolved_context = resolve_query_context(
+        question=question,
         lab_name=lab_name,
-        memory=routing_memory,
-        current_signals=query_signals,
-    )
-    route_contract = get_route_decision_contract(
-        question=effective_question,
-        lab_name=effective_lab_name,
         allow_clarify=False,
+        conversation_context=conversation_context,
     )
+    original_question = str(resolved_context.get("original_question") or "")
+    effective_question = str(resolved_context.get("effective_question") or "")
+    effective_lab_name = resolved_context.get("effective_lab_name")
+    route_contract = resolved_context.get("route_contract")
     route_plan = route_contract.route_plan
-    decision = route_plan.decision
     record_endpoint_executor(
         latest_question_hash=route_contract.latest_question_hash,
         endpoint_key=endpoint_key,
         executor=route_contract.executor.value,
     )
+
+    if route_contract.executor == RouteExecutor.CLARIFY_GATE:
+        yield build_clarify_prompt(route_plan)
+        return
+
+    if _is_decomposition_allowed(route_plan):
+        decomposed = _execute_decomposed_query(
+            question=effective_question,
+            generation_question=original_question,
+            k=k,
+            lab_name=effective_lab_name,
+            route_plan=route_plan,
+            conversation_context=conversation_context,
+        )
+        answer = str(decomposed.get("answer") or "")
+        chunk_size = 8
+        for i in range(0, len(answer), chunk_size):
+            yield answer[i : i + chunk_size]
+        return
+
     if route_contract.executor == RouteExecutor.KNOWLEDGE_QA:
         suppress_live_scope = _suppress_live_scope_for_hypothetical(route_plan)
         async for chunk in stream_answer_env_question(

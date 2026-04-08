@@ -33,6 +33,48 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertIn("co2", effective_question.lower())
         self.assertTrue(bool(details.get("applied")))
 
+    def test_definitional_followup_skips_time_phrase_but_keeps_lab(self):
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: What's the CO2 right now in smart_lab?\n"
+            "Assistant: CO2 is 710 ppm right now."
+        )
+        current_question = "What does CO2 mean?"
+        current_signals = extract_query_signals(question=current_question, lab_name=None)
+        memory = extract_routing_memory(context, current_signals)
+        effective_question, effective_lab, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(effective_lab, "smart_lab")
+        self.assertNotIn("right now", effective_question.lower())
+        self.assertNotIn("(now)", effective_question.lower())
+        self.assertIn("co2", effective_question.lower())
+        self.assertTrue(bool(details.get("applied")))
+        self.assertIsNone(details.get("carried_time_phrase"))
+
+    def test_non_definitional_followup_still_carries_time_phrase(self):
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: What's the CO2 right now in smart_lab?\n"
+            "Assistant: CO2 is 710 ppm right now."
+        )
+        current_question = "What about PM2.5?"
+        current_signals = extract_query_signals(question=current_question, lab_name=None)
+        memory = extract_routing_memory(context, current_signals)
+        effective_question, effective_lab, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(effective_lab, "smart_lab")
+        self.assertIn("right now", effective_question.lower())
+        self.assertTrue(bool(details.get("applied")))
+        self.assertEqual(details.get("carried_time_phrase"), "right now")
+
 
 if __name__ == "__main__":
     unittest.main()

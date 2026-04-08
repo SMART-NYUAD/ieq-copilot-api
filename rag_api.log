@@ -1,48 +1,24 @@
 Importing plotly failed. Interactive plots will not work.
-INFO:     Started server process [3389871]
+INFO:     Started server process [3664169]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
 Starting RAG API server on 0.0.0.0:8001
 API docs available at http://0.0.0.0:8001/docs
-INFO:     192.168.50.99:57630 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 05:21:50,231 INFO sentence_transformers.SentenceTransformer: Use pytorch device_name: cuda:0
-2026-04-08 05:21:50,231 INFO sentence_transformers.SentenceTransformer: Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
-2026-04-08 05:21:58,198 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:39468 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 05:22:58,628 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:53494 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 05:23:28,313 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:43262 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 05:40:56,769 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:52332 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 10:12:36,339 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:52964 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 10:13:39,647 INFO cmdstanpy: Chain [1] start processing
-2026-04-08 10:13:39,714 INFO cmdstanpy: Chain [1] done processing
-2026-04-08 10:13:40,241 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:58610 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 12:40:18,297 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:36802 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-08 21:52:14,305 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:32856 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-INFO:     192.168.50.99:47000 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-INFO:     192.168.50.99:47006 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:44:02,200 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:59312 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:44:10,962 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:48734 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-INFO:     192.168.50.99:52816 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:44:45,518 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:48834 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:44:55,895 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:51146 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:45:10,316 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:46840 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-INFO:     192.168.50.99:49314 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:45:44,799 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:38054 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:47:34,133 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
-INFO:     192.168.50.99:54698 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-INFO:     192.168.50.99:34226 - "POST /v1/chat/completions HTTP/1.1" 200 OK
-2026-04-09 00:49:16,827 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:33032 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:17:51,186 INFO sentence_transformers.SentenceTransformer: Use pytorch device_name: cuda:0
+2026-04-09 02:17:51,186 INFO sentence_transformers.SentenceTransformer: Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-04-09 02:17:59,094 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:44882 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:18:15,145 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:58134 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:19:45,036 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:58134 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     192.168.50.99:57766 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     192.168.50.99:48268 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     192.168.50.99:44342 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:20:24,934 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:48308 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:20:39,108 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"
+INFO:     192.168.50.99:49288 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-04-09 02:21:08,229 INFO httpx: HTTP Request: POST http://192.168.50.103:11434/api/generate "HTTP/1.1 200 OK"

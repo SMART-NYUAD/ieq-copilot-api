@@ -4,7 +4,6 @@ from __future__ import annotations
 
 try:
     from core_settings import (
-        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -15,7 +14,6 @@ try:
     )
 except ImportError:
     from ..core_settings import (
-        agent_routing_strict_enabled,
         router_base_url,
         router_max_retries,
         router_model,
@@ -33,5 +31,4 @@ __all__ = [
     "router_thinking_enabled",
     "router_max_retries",
     "router_retry_jitter_ms",
-    "agent_routing_strict_enabled",
 ]
