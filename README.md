@@ -34,7 +34,7 @@ Main modules:
   - `llm_router_planner.py`
   - `route_policy_engine.py`
   - `query_orchestrator.py`
-  - `query_use_cases.py` (branch-specific application use cases)
+  - `query_orchestrator.py` (branch execution and payload assembly)
 - `http_routes/query_runtime.py`: shared runtime adapters used by both native and OpenAI-compatible routes
 - `http_routes/route_helpers.py`: route metadata helpers + conversation persistence hooks
 - `executors/`: execution engines

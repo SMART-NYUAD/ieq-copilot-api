@@ -158,6 +158,61 @@ class AgentOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["agent_finish_reason"], "tool_budget_exhausted")
         self.assertEqual(result["metadata"]["tools_called"], ["compare_spaces"])
 
+    def test_planner_clarify_action_does_not_override_knowledge_executor(self):
+        """Policy KNOWLEDGE_QA (e.g. non_domain) must not be replaced by agent_action=CLARIFY."""
+        contract = _Contract(
+            route_plan=RoutePlan(
+                decision=RouteDecision(IntentType.DEFINITION_EXPLANATION, 0.4, "unsure_planner"),
+                intent_category=IntentCategory.SEMANTIC_EXPLANATORY,
+                route_source="llm_planner",
+                planner_model="model",
+                planner_fallback_used=False,
+                agent_action=AgentAction.CLARIFY,
+            ),
+            executor=RouteExecutor.KNOWLEDGE_QA,
+            execution_intent=IntentType.DEFINITION_EXPLANATION,
+        )
+
+        def _contract_fn(*args, **kwargs):
+            _ = (args, kwargs)
+            return contract
+
+        executed = {"n": 0}
+
+        def _execute_with_contract(**kwargs):
+            executed["n"] += 1
+            return {
+                "answer": "knowledge path",
+                "timescale": "knowledge",
+                "cards_retrieved": 0,
+                "recent_card": False,
+                "metadata": {"executor": "knowledge_qa"},
+            }
+
+        result = run_agentic_query_loop(
+            question="How much does a laptop cost?",
+            generation_question="How much does a laptop cost?",
+            k=5,
+            lab_name=None,
+            allow_clarify=True,
+            max_steps=3,
+            max_consecutive_failures=2,
+            stall_threshold=2,
+            get_route_decision_contract_fn=_contract_fn,
+            execute_with_contract_fn=_execute_with_contract,
+            build_clarify_result_fn=lambda **kwargs: {
+                "answer": "should_not_use",
+                "timescale": "clarify",
+                "cards_retrieved": 0,
+                "recent_card": False,
+                "metadata": {},
+            },
+            build_clarify_prompt_fn=lambda *_: "should_not_use",
+        )
+        self.assertEqual(result["answer"], "knowledge path")
+        self.assertEqual(executed["n"], 1)
+        self.assertEqual(result["metadata"]["agent_finish_reason"], "finalize")
+
 
 if __name__ == "__main__":
     unittest.main()

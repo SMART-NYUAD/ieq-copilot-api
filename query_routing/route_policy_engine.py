@@ -64,17 +64,27 @@ def _strict_mode_enabled() -> bool:
 def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool) -> bool:
     if not allow_clarify:
         return False
+    signals = _query_signals(route_plan)
+    explicit_measured_scope = (
+        bool(signals.get("asks_for_db_facts"))
+        and (
+            bool(signals.get("has_lab_reference"))
+            or bool(signals.get("has_time_window_hint"))
+            or bool(signals.get("has_db_scope_phrase"))
+            or bool(signals.get("has_metric_reference"))
+            or bool(signals.get("is_air_assessment_phrase"))
+            or bool(signals.get("is_comfort_assessment_phrase"))
+            or bool(signals.get("is_diagnostic_phrase"))
+        )
+    )
     if _strict_mode_enabled():
-        return (
+        planner_requests_clarify = (
             route_plan.answer_strategy == AnswerStrategy.CLARIFY
             or getattr(route_plan, "agent_action", AgentAction.FINALIZE) == AgentAction.CLARIFY
         )
-    signals = _query_signals(route_plan)
-    explicit_measured_scope = bool(signals.get("has_metric_reference")) and (
-        bool(signals.get("has_lab_reference"))
-        or bool(signals.get("has_time_window_hint"))
-        or bool(signals.get("has_db_scope_phrase"))
-    )
+        if planner_requests_clarify and explicit_measured_scope:
+            return False
+        return planner_requests_clarify
     if route_plan.answer_strategy == AnswerStrategy.CLARIFY:
         # Avoid unnecessary clarification when measured DB scope is already explicit.
         if explicit_measured_scope:
@@ -82,7 +92,9 @@ def _should_clarify(route_plan: RoutePlan, scope_class: str, allow_clarify: bool
         return True
     confidence = float(route_plan.decision.confidence)
     threshold = _clarify_threshold()
-    if scope_class == QueryScopeClass.AMBIGUOUS.value and confidence < max(threshold, 0.65):
+    # Keep an ambiguity floor, but avoid over-triggering clarify for moderately
+    # confident planner outputs.
+    if scope_class == QueryScopeClass.AMBIGUOUS.value and confidence < max(threshold, 0.58):
         return True
     return confidence < threshold
 

@@ -21,9 +21,11 @@ _METRIC_TOKEN_RE = re.compile(
 )
 _TIME_WINDOW_HINT_RE = re.compile(
     r"\b("
-    r"this week|last week|this month|last month|today|yesterday|"
+    r"this week|last week|this month|last month|today|yesterday|tomorrow|"
     r"last\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"past\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"next\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"next\s+(hour|day|week|month)|"
     r"january|february|march|april|may|june|july|august|september|october|november|december|"
     r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|"
     r"\d{4}-\d{1,2}-\d{1,2}"
@@ -39,6 +41,7 @@ _GENERAL_QA_HINTS = (
     "your name",
     "what does",
     "meaning of",
+    "difference between",
     "explain",
     "definition",
     "interpret",
@@ -75,7 +78,7 @@ _IEQ_CONCEPTUAL_HINTS = (
 _EXPLICIT_LAB_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
 _NATURAL_LAB_TOKEN_RE = re.compile(r"\b([a-z0-9]+)\s+lab\b")
 _COMPARE_ONE_WORD_RE = re.compile(
-    r"\b(?:compare\s+)?([a-z0-9]{3,})\s+(?:vs|versus|and|with)\s+([a-z0-9]{3,})\b"
+    r"\bcompare\s+([a-z0-9]{3,})\s+(?:vs|versus|and|with)\s+([a-z0-9]{3,})\b"
 )
 _COMPARISON_HINTS = ("compare", "comparison", "vs", "versus", "higher than", "lower than")
 _COMFORT_ASSESSMENT_HINTS = (
@@ -269,14 +272,24 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         has_conceptual_ieq_term and has_general_qa_phrase
     )
     is_air_assessment_phrase = _is_air_quality_query_text(latest_question)
-    is_general_knowledge_question = (
-        has_knowledge_domain and has_general_qa_phrase and not has_time_window_hint
-    )
-    is_comfort_assessment_phrase = any(hint in q for hint in _COMFORT_ASSESSMENT_HINTS)
-    is_diagnostic_phrase = is_diagnostic_query_text(latest_question)
     has_db_scope_phrase = any(hint in q for hint in _DB_SCOPE_HINTS) or any(
         hint in q for hint in _COMPARISON_HINTS
     )
+    measured_scope_request = (
+        requests_current_measured_data
+        or has_time_window_hint
+        or (has_lab_reference and has_metric_reference)
+        or (has_metric_reference and has_db_scope_phrase)
+    )
+    # Treat conceptual wording as knowledge-oriented only when measured scope is
+    # not explicitly requested.
+    is_general_knowledge_question = (
+        has_knowledge_domain
+        and has_general_qa_phrase
+        and not measured_scope_request
+    )
+    is_comfort_assessment_phrase = any(hint in q for hint in _COMFORT_ASSESSMENT_HINTS)
+    is_diagnostic_phrase = is_diagnostic_query_text(latest_question)
     has_domain_anchor = (
         has_metric_reference
         or has_lab_reference
@@ -323,12 +336,48 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     )
     if query_scope_class == QueryScopeClass.AMBIGUOUS.value and explicit_scope_intent and has_domain_anchor:
         asks_for_db_facts = True
-    if is_hypothetical_conditional and not requests_current_measured_data:
+    if is_hypothetical_conditional and not requests_current_measured_data and not (has_lab_reference and has_metric_reference):
         asks_for_db_facts = False
     if single_explicit_lab_with_baseline_reference:
         asks_for_db_facts = True
     if is_diagnostic_phrase:
         asks_for_db_facts = True
+    # Soft weights for downstream fusion (0..1), so planners/classifiers can
+    # reason about signal strength instead of hard booleans only.
+    metric_signal_strength = 0.0
+    if has_metric_reference:
+        metric_signal_strength += 0.65
+    if has_knowledge_domain:
+        metric_signal_strength += 0.2
+    if is_air_assessment_phrase:
+        metric_signal_strength += 0.15
+    metric_signal_strength = max(0.0, min(1.0, metric_signal_strength))
+
+    scope_signal_strength = 0.0
+    if has_lab_reference:
+        scope_signal_strength += 0.35
+    if has_time_window_hint:
+        scope_signal_strength += 0.35
+    if has_db_scope_phrase:
+        scope_signal_strength += 0.2
+    if has_current_data_phrase:
+        scope_signal_strength += 0.15
+    if requests_current_measured_data:
+        scope_signal_strength += 0.25
+    if has_explicit_second_space:
+        scope_signal_strength += 0.1
+    scope_signal_strength = max(0.0, min(1.0, scope_signal_strength))
+
+    diagnostic_signal_strength = 0.0
+    if is_diagnostic_phrase:
+        diagnostic_signal_strength += 0.7
+    if has_conceptual_ieq_term:
+        diagnostic_signal_strength += 0.35
+    if is_comfort_assessment_phrase:
+        diagnostic_signal_strength += 0.2
+    if has_metric_reference and (has_time_window_hint or has_lab_reference):
+        diagnostic_signal_strength += 0.15
+    diagnostic_signal_strength = max(0.0, min(1.0, diagnostic_signal_strength))
     return {
         "has_lab_reference": has_lab_reference,
         "has_time_window_hint": has_time_window_hint,
@@ -347,6 +396,9 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         "explicit_lab_count": explicit_lab_count,
         "has_explicit_second_space": has_explicit_second_space,
         "asks_for_db_facts": asks_for_db_facts,
+        "metric_signal_strength": metric_signal_strength,
+        "scope_signal_strength": scope_signal_strength,
+        "diagnostic_signal_strength": diagnostic_signal_strength,
         "query_scope_class": query_scope_class,
         "has_domain_anchor": has_domain_anchor,
         "lab_candidates": lab_candidates,

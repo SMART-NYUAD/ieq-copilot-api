@@ -6,7 +6,6 @@ import json
 import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
-from langchain_core.output_parsers import StrOutputParser
 import pandas as pd
 
 try:
@@ -22,9 +21,17 @@ except ImportError:
     from ..storage.postgres_client import get_cursor
 
 try:
-    from executors.env_query_langchain import get_llm_client, search_knowledge_cards
+    from executors.env_query_langchain import (
+        _build_prompt_text_from_messages,
+        _generate_ollama_text,
+        search_knowledge_cards,
+    )
 except ImportError:
-    from ..executors.env_query_langchain import get_llm_client, search_knowledge_cards
+    from ..executors.env_query_langchain import (
+        _build_prompt_text_from_messages,
+        _generate_ollama_text,
+        search_knowledge_cards,
+    )
 try:
     from executors.db_support import charts as db_charts
     from executors.db_support import query_handlers as db_handlers
@@ -95,61 +102,6 @@ def _serialize_timestamp_value(value: Any) -> Any:
             return value
         return _serialize_datetime_iso(parsed)
     return value
-DB_TOOL_RESPONSE_DIRECTIVE = """
-You are answering from a structured DB query result.
-- First, answer the exact user question directly before additional detail.
-- For air-quality assessment/summary queries, include:
-  1) overall status,
-  2) metric-by-metric interpretation,
-  3) explicit analysis window using the provided time bounds ("from ... to ..."),
-  4) stability/trend summary and notable peaks/dips when those stats are available,
-  5) missing-metric coverage note (especially TVOC, PM2.5, CO2, humidity),
-  6) confidence qualifier tied to metric coverage,
-  7) 2-4 practical recommendations.
-- For risk-focused questions, lead with the main risk level and concrete risk drivers first.
-- When `display_start` and `display_end` are present in measured room facts, copy those values verbatim
-    when mentioning the analysis window. Do not rewrite or infer date/month values.
-- If a metric was requested but not available, explicitly state it as "not available in this window".
-- Keep recommendations actionable and grounded in provided measurements/guidelines.
-""".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = """
-You are answering a point lookup from a structured DB query result.
-- Lead with the current/latest value requested.
-- Give a short plain-language interpretation with unit and citation-style classification if available.
-- Keep it concise (one short paragraph + up to 2 bullets).
-- If value is missing, say it clearly and suggest the nearest useful fallback window.
-""".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = """
-You are answering a current air-quality point lookup from a structured DB query result.
-- First, directly answer the exact question asked.
-- Provide an overall current air-quality status in plain language.
-- Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, TVOC, humidity, and IEQ when present).
-- Explain what occupants would likely notice/feel.
-- Add 2-4 practical recommendations (maintenance actions are allowed when conditions are good).
-- If any core metric is missing, call it out clearly and lower confidence in the overall assessment.
-- If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
-- Do not collapse the answer to a single sentence.
-""".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = """
-You are answering a comparison from a structured DB query result.
-- Highlight which space is better/worse for each available metric and by how much.
-- Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
-- End with 2-4 practical actions to improve the weaker metric(s).
-""".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_FORECAST = """
-You are answering a forecast from a structured DB query result.
-- Report forecast horizon, trend direction, and confidence in plain language.
-- Mention assumptions/limits and avoid deterministic claims beyond provided forecast output.
-- Provide 2-3 operational recommendations tied to confidence and trend.
-""".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = """
-You are answering an anomaly analysis from a structured DB query result.
-- State whether anomalies were detected, when they occurred, and likely occupant impact.
-- If no anomalies are detected, say so explicitly.
-- Provide 2-4 practical troubleshooting/monitoring actions grounded in observed data.
-""".strip()
-
-
 def _is_air_quality_query_text(question: str) -> bool:
     return db_helpers.is_air_quality_query_text(question)
 
@@ -504,12 +456,41 @@ def _build_compact_llm_rows_and_summary(rows: List[Dict[str, Any]]) -> Tuple[Lis
     return compact, summary
 
 
+def _build_metric_coverage(rows: List[Dict[str, Any]], metrics_used: List[str]) -> Dict[str, Any]:
+    available: List[str] = []
+    missing: List[str] = []
+    for metric in list(metrics_used or []):
+        has_value = any(row.get(metric) is not None for row in rows or [])
+        if has_value:
+            available.append(metric)
+        else:
+            missing.append(metric)
+    return {
+        "available_metrics": available,
+        "missing_metrics": missing,
+        "has_full_coverage": len(missing) == 0,
+    }
+
+
+def _infer_metrics_from_rows(rows: List[Dict[str, Any]], fallback_metric: str) -> List[str]:
+    known_metrics = {"air_contribution", "co2", "pm25", "temperature", "humidity", "tvoc", "light", "sound", "ieq"}
+    inferred: List[str] = []
+    for row in rows or []:
+        for key in row.keys():
+            metric_key = str(key or "").strip().lower()
+            if metric_key in known_metrics and metric_key not in inferred:
+                inferred.append(metric_key)
+    if fallback_metric and fallback_metric not in inferred:
+        inferred.insert(0, fallback_metric)
+    return inferred
+
+
 def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
     violations = list(invariant.get("violations") or [])
     if "lab_scope_not_justified" in violations:
         return (
             "I can answer this with measured data, but I need the lab first. "
-            "Which lab should I use (for example: smart_lab, concrete_lab, or eco_lab)?"
+            "Which lab should I use (for example: smart_lab, concrete_lab, or shores_office)?"
         )
     if "comparison_second_space_not_justified" in violations:
         return (
@@ -674,6 +655,7 @@ def prepare_db_query(
     )
     if isinstance(correlation_data, dict) and "correlations" in correlation_data:
         payload["correlation_analysis"] = _serialize_timestamp_value(correlation_data)
+    payload["metric_coverage"] = _build_metric_coverage(rows=rows, metrics_used=metrics_used)
     if operation_type == "prediction" and forecast_data:
         payload["forecast_only_context"] = True
     if row_summary:
@@ -777,6 +759,10 @@ def _render_db_answer_with_llm(
         payload["forecast_only_context"] = True
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
+    payload["metric_coverage"] = _build_metric_coverage(
+        rows=rows,
+        metrics_used=_infer_metrics_from_rows(rows=rows, fallback_metric=metric_alias),
+    )
     if correlation:
         if isinstance(correlation, dict) and "correlations" in correlation:
             payload["correlation_analysis"] = _serialize_timestamp_value(correlation)
@@ -798,20 +784,18 @@ def _render_db_answer_with_llm(
         response_directive=_db_response_directive(intent, question=question)
     )
     try:
-        qa_chain = prompt_template | get_llm_client() | StrOutputParser()
-        text = qa_chain.invoke(
-            {
-                "question": question,
-                "context_label": "Structured DB Query Result with knowledge grounding",
-                "context_data": context_data,
-            }
+        messages = prompt_template.format_messages(
+            question=question,
+            context_label="Structured DB Query Result with knowledge grounding",
+            context_data=context_data,
         )
-        text = _ensure_think_prefix(text)
+        prompt_text = _build_prompt_text_from_messages(messages)
+        text = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
         if text:
             return text, True
     except Exception:
         pass
-    return _ensure_think_prefix(fallback_answer), False
+    return str(fallback_answer or ""), False
 
 
 def run_db_query(
@@ -980,7 +964,7 @@ async def stream_db_query(
         "model": model,
         "prompt": prompt_text,
         "stream": True,
-        "temperature": 0.1,
+        "temperature": 0.4,
     }
     # Some model/runtime combos emit more raw reasoning when think=False is passed
     # explicitly. We only pass think=True and use server-side filtering for think=False.

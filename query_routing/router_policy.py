@@ -87,6 +87,15 @@ DB_INTENTS = {
 }
 
 
+def _coarsen_rule_confidence(score: float) -> float:
+    """Map keyword confidence to coarse fallback-only bands."""
+    if score >= 0.85:
+        return 0.75
+    if score >= 0.6:
+        return 0.55
+    return 0.35
+
+
 def _is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
     issue_hints = ("issue", "issues", "problem", "problems", "anything wrong", "wrong")
@@ -359,7 +368,14 @@ def enforce_non_domain_block(decision: RouteDecision, category: IntentCategory, 
 
 
 def fallback_plan(question: str, model: str, fallback_reason: str, query_signals: Optional[Dict[str, Any]] = None) -> RoutePlan:
-    decision = classify_intent(question)
+    classifier_decision = classify_intent(question)
+    # Classifier output is fallback-only; keep confidence intentionally coarse.
+    decision = RouteDecision(
+        intent=classifier_decision.intent,
+        confidence=_coarsen_rule_confidence(float(classifier_decision.confidence)),
+        reason=classifier_decision.reason,
+        ranked_intents=classifier_decision.ranked_intents,
+    )
     category = CATEGORY_BY_INTENT.get(decision.intent, IntentCategory.SEMANTIC_EXPLANATORY)
     return RoutePlan(
         decision=decision,
@@ -381,6 +397,7 @@ def emergency_fallback_plan(
 ) -> RoutePlan:
     """Strict-mode planner unavailable safety fallback (no keyword intent routing)."""
     reason = f"planner_unavailable:{fallback_reason}"
+    signals = query_signals or {}
     decision = RouteDecision(
         intent=IntentType.UNKNOWN_FALLBACK,
         confidence=0.0,
@@ -395,7 +412,7 @@ def emergency_fallback_plan(
         },
         question=question,
         intent=decision.intent,
-        query_signals=query_signals or {},
+        query_signals=signals,
     )
     return RoutePlan(
         decision=decision,

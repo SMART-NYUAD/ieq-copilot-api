@@ -76,6 +76,10 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual(metric_alias, "ieq")
         self.assertEqual(extract_metric_aliases(question), [])
 
+    def test_pick_metric_prefers_first_mention_in_question(self):
+        metric_alias, _ = pick_metric("What is the temperature and CO2 in smart_lab?")
+        self.assertEqual(metric_alias, "temperature")
+
     def test_invariants_block_comparison_without_explicit_second_space(self):
         result = validate_db_execution_invariants(
             question="Compare humidity in smart_lab this morning",
@@ -421,6 +425,90 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
         self.assertIn("tvoc", metrics_used)
+
+    def test_aggregation_single_air_metric_trend_expands_context_pack(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": "smart_lab",
+                    "co2": 430.0,
+                    "pm25": 3.2,
+                    "tvoc": 0.09,
+                    "humidity": 44.8,
+                    "ieq": 82.0,
+                    "reading_count": 120,
+                }
+
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="How has CO2 trended this week in smart_lab?",
+            intent=IntentType.AGGREGATION_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=datetime(2026, 3, 22, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc),
+            window_label="this week",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["co2"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertIn("co2", metrics_used)
+        self.assertIn("pm25", metrics_used)
+        self.assertIn("tvoc", metrics_used)
+
+    def test_current_status_retries_last_six_hours_when_last_hour_empty(self):
+        class _Cursor:
+            def __init__(self):
+                self.fetchone_calls = 0
+
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                self.fetchone_calls += 1
+                if self.fetchone_calls == 1:
+                    return None
+                return {
+                    "lab_space": "smart_lab",
+                    "bucket": datetime(2026, 3, 29, 11, 15, tzinfo=timezone.utc),
+                    "value": 418.0,
+                }
+
+        end = datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc)
+        start = end - timedelta(hours=1)
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="What is the CO2 now in smart_lab?",
+            intent=IntentType.CURRENT_STATUS_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=start,
+            window_end=end,
+            window_label="last 1 hour",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["co2"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "point_lookup")
+        self.assertEqual(result.get("window_label"), "last 6 hours")
+        self.assertIn("hour(s) old", str(result.get("fallback_answer") or ""))
 
     def test_comparison_handler_never_falls_back_to_global_two_labs(self):
         class _Cursor:

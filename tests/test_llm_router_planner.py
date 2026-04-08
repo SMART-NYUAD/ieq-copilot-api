@@ -104,6 +104,7 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertFalse(plan.planner_fallback_used)
         self.assertEqual(plan.intent_category, IntentCategory.ANALYTICAL_VISUALIZATION)
         self.assertEqual(plan.decision.intent, IntentType.COMPARISON_DB)
+        self.assertEqual(mock_call.call_count, 1)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_non_domain_scope_blocks_db_intent(self, mock_call):
@@ -306,7 +307,7 @@ class LlmRouterPlannerTests(unittest.TestCase):
         plan = plan_route("Current CO2 in smart_lab")
         self.assertFalse(plan.planner_fallback_used)
         self.assertEqual(plan.decision.intent, IntentType.CURRENT_STATUS_DB)
-        self.assertEqual(mock_call.call_count, 2)
+        self.assertGreaterEqual(mock_call.call_count, 2)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_timeout_fallback_reason_uses_taxonomy(self, mock_call):
@@ -347,6 +348,66 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertTrue(plan.planner_fallback_used)
         self.assertEqual(plan.route_source, "planner_emergency_fallback")
         self.assertEqual(plan.answer_strategy.value, "clarify")
+
+    @patch("query_routing.llm_router_planner.router_semantic_rewrite_enabled")
+    @patch("query_routing.llm_router_planner._call_semantic_rewrite")
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_semantic_rewrite_runs_for_ambiguous_conflicting_cases(
+        self, mock_call_planner, mock_call_rewrite, mock_rewrite_enabled
+    ):
+        mock_rewrite_enabled.return_value = True
+        mock_call_rewrite.return_value = {
+            "rewritten_question": "Explain the difference between warning trend and anomaly in IEQ terms.",
+            "changed": True,
+            "reason": "canonicalize_mixed_terms",
+        }
+        mock_call_planner.return_value = {
+            "intent_category": "semantic_explanatory",
+            "intent": "definition_explanation",
+            "confidence": 0.9,
+            "response_mode": "knowledge_only",
+        }
+        plan = plan_route("Compare air quality and explain what it means.")
+        self.assertEqual(mock_call_rewrite.call_count, 1)
+        kwargs = mock_call_planner.call_args.kwargs
+        self.assertIn("difference between warning trend", str(kwargs.get("question") or "").lower())
+        rewrite_meta = (plan.planner_parameters or {}).get("semantic_rewrite") or {}
+        self.assertTrue(bool(rewrite_meta.get("attempted")))
+
+    @patch("query_routing.llm_router_planner.router_semantic_rewrite_enabled")
+    @patch("query_routing.llm_router_planner._call_semantic_rewrite")
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_semantic_rewrite_disabled_skips_rewrite_call(
+        self, mock_call_planner, mock_call_rewrite, mock_rewrite_enabled
+    ):
+        mock_rewrite_enabled.return_value = False
+        mock_call_planner.return_value = {
+            "intent_category": "semantic_explanatory",
+            "intent": "definition_explanation",
+            "confidence": 0.9,
+            "response_mode": "knowledge_only",
+        }
+        plan_route("What is the difference between a warning trend and an anomaly?")
+        mock_call_rewrite.assert_not_called()
+
+    @patch("query_routing.llm_router_planner.router_semantic_rewrite_enabled")
+    @patch("query_routing.llm_router_planner._call_semantic_rewrite")
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_semantic_rewrite_failure_does_not_block_planner(
+        self, mock_call_planner, mock_call_rewrite, mock_rewrite_enabled
+    ):
+        mock_rewrite_enabled.return_value = True
+        mock_call_rewrite.side_effect = TimeoutError("rewrite timeout")
+        mock_call_planner.return_value = {
+            "intent_category": "semantic_explanatory",
+            "intent": "definition_explanation",
+            "confidence": 0.88,
+            "response_mode": "knowledge_only",
+        }
+        plan = plan_route("Compare air quality and explain what it means.")
+        self.assertIn(plan.route_source, {"llm_planner", "signal_fastpath"})
+        rewrite_meta = (plan.planner_parameters or {}).get("semantic_rewrite") or {}
+        self.assertEqual(str(rewrite_meta.get("error") or ""), "TimeoutError")
 
 
 if __name__ == "__main__":

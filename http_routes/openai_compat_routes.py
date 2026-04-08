@@ -12,21 +12,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 try:
-    from core_settings import load_settings
     from query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
         get_route_plan,  # compatibility export for tests/mocks
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
-    from query_routing.synthesizer import build_synthesis_context
     from executors.db_query_executor import prepare_db_query, stream_db_query
     from executors.env_query_langchain import (
-        get_knowledge_context_stats,
         stream_answer_env_question,
     )
     from http_routes.query_runtime import (
@@ -38,9 +34,8 @@ try:
         normalize_k,
         normalize_lab_name,
         resolve_agent_stream_runtime,
-        resolve_stream_runtime,
     )
-    from query_routing.query_use_cases import (
+    from query_routing.metadata_builders import (
         build_stream_clarify_metadata,
         build_stream_db_metadata,
         build_stream_knowledge_metadata,
@@ -52,23 +47,23 @@ try:
         persist_turn,
         route_plan_metadata,
     )
+    from http_routes.stream_shared import (
+        attach_agent_stream_metadata as _shared_attach_agent_stream_metadata,
+        prepare_stream_execution_context,
+    )
     from runtime_errors import log_exception, stream_error_payload
 except ImportError:
-    from ..core_settings import load_settings
     from ..query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
         get_route_plan,  # compatibility export for tests/mocks
         query_scope_class,  # compatibility export for tests/mocks
-        resolve_db_followup_memory,  # compatibility export for tests/mocks
         resolve_execution_intent,  # compatibility export for tests/mocks
         should_clarify,  # compatibility export for tests/mocks
         should_use_knowledge_executor,  # compatibility export for tests/mocks
     )
-    from ..query_routing.synthesizer import build_synthesis_context
     from ..executors.db_query_executor import prepare_db_query, stream_db_query
     from ..executors.env_query_langchain import (
-        get_knowledge_context_stats,
         stream_answer_env_question,
     )
     from .query_runtime import (
@@ -80,9 +75,8 @@ except ImportError:
         normalize_k,
         normalize_lab_name,
         resolve_agent_stream_runtime,
-        resolve_stream_runtime,
     )
-    from ..query_routing.query_use_cases import (
+    from ..query_routing.metadata_builders import (
         build_stream_clarify_metadata,
         build_stream_db_metadata,
         build_stream_knowledge_metadata,
@@ -93,6 +87,10 @@ except ImportError:
         attach_conversation_metadata,
         persist_turn,
         route_plan_metadata,
+    )
+    from .stream_shared import (
+        attach_agent_stream_metadata as _shared_attach_agent_stream_metadata,
+        prepare_stream_execution_context,
     )
     from ..runtime_errors import log_exception, stream_error_payload
 
@@ -124,14 +122,7 @@ _ROUTE_TEST_COMPAT = (get_route_plan, query_scope_class, resolve_execution_inten
 
 
 def _attach_agent_stream_metadata(meta: Dict[str, Any], route_plan: Any) -> Dict[str, Any]:
-    merged = dict(meta or {})
-    settings = load_settings()
-    merged["agent_mode"] = "enabled" if bool(getattr(settings, "agentic_mode", False)) else "disabled"
-    merged["agent_action"] = str(getattr(getattr(route_plan, "agent_action", None), "value", "finalize"))
-    merged["tool_name"] = getattr(route_plan, "tool_name", None)
-    merged["expected_observation"] = getattr(route_plan, "expected_observation", None)
-    merged["agent_stream_step_events"] = bool(getattr(settings, "agent_stream_step_events", False))
-    return merged
+    return _shared_attach_agent_stream_metadata(meta, route_plan, include_expected_observation=True)
 
 
 def _extract_last_user_message(messages: List[OpenAIMessage]) -> str:
@@ -235,126 +226,55 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         created = int(time.time())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         model = request.model
-        agent_resolution = await resolve_agent_stream_runtime(
+        stream_ctx = await prepare_stream_execution_context(
             latest_user_question=latest_user_question,
             k=k,
             lab_name=lab_name,
             allow_clarify=normalize_allow_clarify(request.allow_clarify),
             conversation_context=conversation_context,
             endpoint_key="openai_stream",
+            resolve_agent_stream_runtime_fn=resolve_agent_stream_runtime,
             get_route_plan_fn=get_route_plan,
             query_scope_class_fn=query_scope_class,
             should_clarify_fn=should_clarify,
             should_use_knowledge_executor_fn=should_use_knowledge_executor,
             resolve_execution_intent_fn=resolve_execution_intent,
+            fetch_knowledge_stats_fn=fetch_knowledge_stats,
+            fetch_db_context_fn=fetch_db_context,
+            prepare_db_query_fn=prepare_db_query,
+            build_stream_clarify_metadata_fn=build_stream_clarify_metadata,
+            build_stream_knowledge_metadata_fn=build_stream_knowledge_metadata,
+            build_stream_db_metadata_fn=build_stream_db_metadata,
         )
-        runtime = agent_resolution.runtime
-        state = agent_resolution.state
-        agent_step_trace = list(agent_resolution.agent_step_trace or [])
-        tools_called = list(agent_resolution.tools_called or [])
-        agent_finish_reason = str(agent_resolution.finish_reason or "unknown")
-        route_plan = runtime.route_plan
-        decision = runtime.decision
-        should_clarify_response = runtime.should_clarify_response
-        scope_class = runtime.scope_class
-        use_knowledge_executor = runtime.use_knowledge_executor
-        execution_intent = runtime.execution_intent
-        stream_signals = (route_plan.planner_parameters or {}).get("query_signals") or {}
-        suppress_live_scope = bool(stream_signals.get("is_hypothetical_conditional")) and not bool(
-            stream_signals.get("requests_current_measured_data")
-        )
-        active_question = state.effective_question
-        active_lab_name = state.effective_lab
-        effective_question = active_question
-        effective_lab_name = active_lab_name
-        memory_meta = {
-            "applied": bool(state.effective_question != state.original_question or state.effective_lab != lab_name),
-            "carried_lab_name": state.routing_memory.lab_name if state.effective_lab and not lab_name else None,
-            "carried_time_phrase": state.routing_memory.time_phrase if state.effective_question != state.original_question else None,
-            "carried_metric": state.routing_memory.metric if state.effective_question != state.original_question else None,
-        }
+        runtime = stream_ctx.runtime
+        route_plan = stream_ctx.route_plan
+        decision = stream_ctx.decision
+        should_clarify_response = stream_ctx.mode == "clarify"
+        use_knowledge_executor = stream_ctx.mode == "knowledge"
+        execution_intent = stream_ctx.execution_intent
+        agent_step_trace = list(stream_ctx.agent_step_trace or [])
+        tools_called = list(stream_ctx.tools_called or [])
+        agent_finish_reason = stream_ctx.agent_finish_reason
         visualization_type = "none"
         chart = None
-        db_context = None
+        db_context = stream_ctx.db_context
         x_router = {}
         try:
             if should_clarify_response:
-                x_router = build_stream_clarify_metadata(
-                    route_plan=route_plan,
-                    decision=decision,
-                    k=k,
-                    lab_name=lab_name,
-                    resolved_lab_name=active_lab_name,
-                )
-                x_router["memory_carryover_applied"] = bool(memory_meta.get("applied"))
-                x_router["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
-                x_router["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
-                x_router["memory_carried_metric"] = memory_meta.get("carried_metric")
+                x_router = dict(stream_ctx.meta or {})
             elif use_knowledge_executor:
-                knowledge_question = active_question if suppress_live_scope else (
-                    build_synthesis_context(
-                        tool_results=None,
-                        conversation_context=conversation_context,
-                        question=active_question,
-                    )
-                )
-                knowledge_lab_name = None if suppress_live_scope else active_lab_name
-                knowledge_stats = await fetch_knowledge_stats(
-                    knowledge_question,
-                    k,
-                    knowledge_lab_name,
-                )
-                x_router = build_stream_knowledge_metadata(
-                    route_plan=route_plan,
-                    decision=decision,
-                    k=k,
-                    lab_name=lab_name,
-                    resolved_lab_name=knowledge_lab_name,
-                    cards_retrieved=int(knowledge_stats.get("cards_retrieved") or 0),
-                    knowledge_cards_retrieved=int(
-                        knowledge_stats.get("knowledge_cards_retrieved") or 0
-                    ),
-                )
+                x_router = dict(stream_ctx.meta or {})
             else:
-                effective_question = active_question
-                effective_lab_name = active_lab_name
-                db_context = await fetch_db_context(
-                    latest_user_question=effective_question,
-                    execution_intent=execution_intent,
-                    lab_name=effective_lab_name,
-                    planner_parameters=route_plan.planner_parameters,
-                    prepare_db_query_fn=prepare_db_query,
-                )
+                db_context = stream_ctx.db_context
                 visualization_type = db_context.get("visualization_type", "none")
                 chart = db_context.get("chart")
-                if db_context.get("invariant_violation"):
-                    x_router = build_stream_clarify_metadata(
-                        route_plan=route_plan,
-                        decision=decision,
-                        k=k,
-                        lab_name=lab_name,
-                        resolved_lab_name=db_context.get("resolved_lab_name"),
-                        time_window=db_context.get("time_window"),
-                        invariant_violation=db_context.get("invariant_violation"),
-                    )
-                    x_router["execution_intent"] = execution_intent.value
-                    x_router["intent_rerouted_to_db"] = execution_intent != decision.intent
+                if stream_ctx.mode == "db_clarify":
+                    x_router = dict(stream_ctx.meta or {})
                     x_router["db_clarify_text"] = str(db_context.get("fallback_answer") or "")
                     visualization_type = "none"
                     chart = None
                 else:
-                    x_router = build_stream_db_metadata(
-                        route_plan=route_plan,
-                        decision=decision,
-                        execution_intent=execution_intent,
-                        k=k,
-                        lab_name=lab_name,
-                        db_context=db_context,
-                    )
-                    x_router["memory_carryover_applied"] = bool(memory_meta.get("applied"))
-                    x_router["memory_carried_lab_name"] = memory_meta.get("carried_lab_name")
-                    x_router["memory_carried_time_phrase"] = memory_meta.get("carried_time_phrase")
-                    x_router["memory_carried_metric"] = memory_meta.get("carried_metric")
+                    x_router = dict(stream_ctx.meta or {})
         except Exception as exc:
             # Keep streaming functional even if context preparation fails.
             log_exception(exc, scope="openai.stream.prep", extra={"lab_name": lab_name, "k": k})
@@ -440,30 +360,22 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 )
                 x_router["turn_index"] = turn_index
             elif use_knowledge_executor:
-                knowledge_question = active_question if suppress_live_scope else (
-                    build_synthesis_context(
-                        tool_results=None,
-                        conversation_context=conversation_context,
-                        question=active_question,
-                    )
-                )
-                knowledge_lab_name = None if suppress_live_scope else active_lab_name
                 chunk_stream = stream_answer_env_question(
-                    user_question=knowledge_question,
+                    user_question=str(stream_ctx.knowledge_question or ""),
                     k=max(1, min(k, 8)),
-                    space=knowledge_lab_name,
+                    space=stream_ctx.knowledge_lab_name,
                     think=request.think,
                 )
             else:
-                if db_context and db_context.get("invariant_violation"):
+                if stream_ctx.mode == "db_clarify":
                     async def _clarify_chunk_stream():
                         yield str(db_context.get("fallback_answer") or "")
                     chunk_stream = _clarify_chunk_stream()
                 else:
                     chunk_stream = stream_db_query(
-                        question=effective_question,
+                        question=str(stream_ctx.effective_question or ""),
                         intent=execution_intent,
-                        lab_name=effective_lab_name,
+                        lab_name=stream_ctx.effective_lab_name,
                         planner_hints=route_plan.planner_parameters,
                         query_context=db_context,
                         think=request.think,

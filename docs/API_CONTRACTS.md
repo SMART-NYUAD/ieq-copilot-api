@@ -60,7 +60,7 @@ This document defines stable API behavior for clients integrating with the RAG A
 
 `meta` contract note:
 
-- Stream `meta` is produced by shared builders in `query_use_cases.py` and
+- Stream `meta` is produced by shared builders in `metadata_builders.py` and
   evidence-normalized through `evidence/evidence_layer.py`, matching non-stream
   contract semantics.
 

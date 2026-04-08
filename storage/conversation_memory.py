@@ -43,6 +43,20 @@ _FOLLOW_UP_HINTS = (
     "same lab",
     "same space",
 )
+_CLARIFICATION_SELECTION_HINTS = (
+    "data-backed answer",
+    "exact values",
+    "from the database",
+    "high-level conceptual explanation",
+    "conceptual explanation",
+)
+_TOPIC_PHRASES = (
+    "air quality",
+    "indoor air quality",
+    "ieq",
+    "comfort",
+    "comfortable",
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +66,7 @@ class RoutingMemory:
     lab_name: Optional[str] = None
     metric: Optional[str] = None
     time_phrase: Optional[str] = None
+    topic_phrase: Optional[str] = None
     previous_user: str = ""
 
 
@@ -94,16 +109,33 @@ def _latest_value_from_user_lines(user_lines: list[str], extractor) -> Any:
     return None
 
 
+def _extract_topic_phrase(question: str) -> Optional[str]:
+    q = str(question or "").lower()
+    for phrase in _TOPIC_PHRASES:
+        if phrase in q:
+            return phrase
+    return None
+
+
 def _should_apply_memory(question: str, current_signals: Dict[str, Any]) -> bool:
     q = str(question or "").strip().lower()
     if not q:
         return False
     token_count = len([item for item in re.split(r"\s+", q) if item])
     has_followup_hint = any(hint in q for hint in _FOLLOW_UP_HINTS)
+    has_clarification_selection_hint = any(hint in q for hint in _CLARIFICATION_SELECTION_HINTS)
     has_lab_reference = bool(current_signals.get("has_lab_reference"))
     has_time_window_hint = bool(current_signals.get("has_time_window_hint"))
     has_metric_reference = bool(current_signals.get("has_metric_reference"))
     if has_followup_hint:
+        return True
+    # Clarification-choice replies (e.g. "data-backed answer...") should carry
+    # prior lab/time scope even when they are verbose.
+    if has_clarification_selection_hint:
+        return True
+    # Lab-only clarification replies (e.g. "smart_lab") should inherit missing
+    # metric/time context from the immediate prior user turn.
+    if token_count <= 3 and has_lab_reference and not has_time_window_hint and not has_metric_reference:
         return True
     if token_count <= 6 and (has_time_window_hint or has_metric_reference) and not has_lab_reference:
         return True
@@ -124,10 +156,12 @@ def extract_routing_memory(conversation_context: str, current_signals: Dict[str,
     previous_metric = _latest_value_from_user_lines(
         user_lines, lambda text: (_extract_requested_metrics(text) or [None])[0]
     )
+    previous_topic = _latest_value_from_user_lines(user_lines, _extract_topic_phrase)
     return RoutingMemory(
         lab_name=previous_lab,
         metric=previous_metric,
         time_phrase=previous_time,
+        topic_phrase=previous_topic,
         previous_user=previous_user,
     )
 
@@ -156,6 +190,13 @@ def apply_routing_memory(
     carried_time = None
     carried_metric = None
 
+    # If the current short follow-up already names a lab (e.g. "smart_lab"),
+    # promote it to explicit lab scope for downstream DB executor calls.
+    if not effective_lab and has_lab_reference:
+        extracted_current_lab = extract_space_from_question(base_question)
+        if extracted_current_lab:
+            effective_lab = extracted_current_lab
+
     if not effective_lab and not has_lab_reference and memory.lab_name:
         effective_lab = memory.lab_name
         carried_lab = memory.lab_name
@@ -167,6 +208,9 @@ def apply_routing_memory(
     if not has_metric_reference and memory.metric:
         effective_question = f"{effective_question} ({memory.metric})"
         carried_metric = memory.metric
+    elif not has_metric_reference and memory.topic_phrase:
+        effective_question = f"{effective_question} ({memory.topic_phrase})"
+        carried_metric = memory.topic_phrase
 
     applied = bool(carried_lab or carried_time or carried_metric)
     return effective_question, effective_lab, {

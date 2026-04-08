@@ -490,7 +490,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
 
         self.assertEqual(result["metadata"]["critic_status"], "warn")
         self.assertIn("missing_recommendation", result["metadata"]["critic_issues"])
-        self.assertTrue(result["answer"].startswith("Note:"))
+        self.assertEqual(result["answer"], "CO2 average was 650 ppm.")
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
@@ -598,7 +598,10 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["critic_status"], "warn")
         self.assertFalse(result["metadata"]["critic_blocked"])
         self.assertIn("date_consistency_mismatch", result["metadata"]["critic_issues"])
-        self.assertTrue(result["answer"].startswith("Note:"))
+        self.assertEqual(
+            result["answer"],
+            "From Feb 27, 2026, 10:15 AM to Feb 28, 2026, 10:15 AM, IEQ stayed stable.",
+        )
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")
@@ -979,7 +982,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
                 "Previous conversation context (most recent last):\n"
                 "User: What is the air quality there for the last week?\n"
                 "Assistant: I can answer this with measured data, but I need the lab first. "
-                "Which lab should I use (for example: smart_lab, concrete_lab, or eco_lab)?"
+                "Which lab should I use (for example: smart_lab, concrete_lab, or shores_office)?"
             ),
         )
 

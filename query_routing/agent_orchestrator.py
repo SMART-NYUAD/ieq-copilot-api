@@ -129,7 +129,7 @@ def run_agentic_query_loop(
         route_contract = get_route_decision_contract_fn(
             planning_question,
             lab_name,
-            False,
+            allow_clarify,
         )
         final_contract = route_contract
         route_plan = route_contract.route_plan
@@ -157,9 +157,11 @@ def run_agentic_query_loop(
             repeated_action_count = 0
             last_action_signature = action_signature
 
-        if allow_clarify and (
-            action_value == AgentAction.CLARIFY.value or route_contract.executor == RouteExecutor.CLARIFY_GATE
-        ):
+        # Align with stream (`should_clarify_response`): only clarify when the policy
+        # engine selected CLARIFY_GATE. Do not treat planner `agent_action=clarify` as
+        # authoritative — e.g. non_domain forces KNOWLEDGE_QA in route_policy_engine
+        # before clarify checks; honoring agent_action here would bypass that.
+        if allow_clarify and route_contract.executor == RouteExecutor.CLARIFY_GATE:
             finish_reason = "clarify"
             clarify_payload = build_clarify_result_fn(
                 route_plan=route_plan,

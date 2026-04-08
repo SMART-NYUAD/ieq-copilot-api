@@ -23,10 +23,8 @@ try:
     from query_routing.router_signals import extract_query_signals
     from query_routing.router_types import RouteDecisionContract, RouteExecutor
     from query_routing.synthesizer import build_synthesis_context
-    from query_routing.query_use_cases import (
-        build_clarify_result,
-        execute_db_use_case,
-        execute_knowledge_use_case,
+    from query_routing.metadata_builders import (
+        base_route_metadata,
     )
     from query_routing.agent_orchestrator import run_agentic_query_loop
     from query_routing.observability import (
@@ -61,10 +59,8 @@ except ImportError:
     from .router_signals import extract_query_signals
     from .router_types import RouteDecisionContract, RouteExecutor
     from .synthesizer import build_synthesis_context
-    from .query_use_cases import (
-        build_clarify_result,
-        execute_db_use_case,
-        execute_knowledge_use_case,
+    from .metadata_builders import (
+        base_route_metadata,
     )
     from .agent_orchestrator import run_agentic_query_loop
     from .observability import (
@@ -117,16 +113,15 @@ def _strict_mode_enabled() -> bool:
 
 
 def build_non_domain_scope_message(question: str) -> str:
-    normalized_question = str(question or "").strip()
     return (
-        "I focus on Indoor Environmental Quality (IEQ) questions.\n\n"
-        f"Your question ({normalized_question}) appears outside that scope. "
-        "I can help with IEQ status, trends, comparisons, comfort checks, and recommendations "
-        "using metrics like CO2, PM2.5, TVOC, temperature, humidity, noise, light, and IEQ index.\n\n"
-        "Try asking something like:\n"
-        "- What is today's IEQ in smart_lab?\n"
-        "- Is smart_lab comfortable right now?\n"
-        "- Compare CO2 in smart_lab vs concrete_lab this week."
+        "That's a bit outside what I can help with — I'm set up to answer questions about "
+        "indoor environmental quality (IEQ) for the campus spaces.\n\n"
+        "Things I'm good at: air quality, CO2, PM2.5, TVOC, temperature, humidity, noise, lighting, "
+        "comfort checks, trends, and space comparisons.\n\n"
+        "For example, you could ask:\n"
+        "- How's the air quality in smart_lab right now?\n"
+        "- Is smart_lab comfortable today?\n"
+        "- Compare CO2 levels between smart_lab and concrete_lab this week."
     )
 
 
@@ -181,13 +176,180 @@ def build_clarify_prompt(route_plan: RoutePlan) -> str:
     alternatives = [item.value for item in route_plan.secondary_intents]
     if alternatives:
         return (
-            "I can answer this in a few ways. Confirm whether you want "
-            f"{intent} or one of: {', '.join(alternatives)}."
+            f"Just to make sure I answer the right thing — are you looking for {intent}, "
+            f"or something more like {' or '.join(alternatives)}?"
         )
     return (
-        "Quick clarification: do you want (1) a data-backed answer with exact values from the database, "
-        "or (2) a high-level conceptual explanation?"
+        "Just checking — are you looking for actual measured values from the data, "
+        "or more of a general explanation of how things work?"
     )
+
+
+def build_clarify_result(
+    *,
+    route_plan: RoutePlan,
+    decision: Any,
+    k: int,
+    lab_name: Optional[str],
+    clarify_threshold: float,
+    clarify_text: str,
+) -> Dict[str, Any]:
+    metadata = {
+        **base_route_metadata(route_plan, decision),
+        "clarify_threshold": clarify_threshold,
+        "clarification_required": True,
+        "executor": "clarify_gate",
+        "k_requested": k,
+        "lab_name": lab_name,
+        "evidence": build_repaired_evidence(
+            executor="clarify_gate",
+            lab_name=lab_name,
+            reason="clarification_required",
+        ),
+    }
+    return {
+        "answer": clarify_text,
+        "timescale": "clarify",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": metadata,
+        "data": None,
+        "visualization_type": "none",
+        "chart": None,
+    }
+
+
+def _execute_knowledge_path(
+    *,
+    question: str,
+    k: int,
+    lab_name: Optional[str],
+    route_plan: RoutePlan,
+    decision: Any,
+) -> Dict[str, Any]:
+    query_signals = route_plan.planner_parameters.get("query_signals", {})
+    suppress_live_scope = bool(query_signals.get("is_hypothetical_conditional")) and not bool(
+        query_signals.get("requests_current_measured_data")
+    )
+    effective_lab_scope = None if suppress_live_scope else lab_name
+    knowledge_result = answer_env_question_with_metadata(
+        user_question=question,
+        k=max(1, min(k, 8)),
+        space=effective_lab_scope,
+    )
+    answer_text = str(knowledge_result.get("answer") or "")
+    evidence = normalize_evidence(
+        raw=knowledge_result.get("evidence"),
+        executor="knowledge_qa",
+        lab_name=lab_name,
+    )
+    metadata = {
+        **base_route_metadata(route_plan, decision),
+        "clarification_required": False,
+        "executor": "knowledge_qa",
+        "scope_guardrail_applied": False,
+        "execution_intent": decision.intent.value,
+        "intent_rerouted_to_db": False,
+        "k_requested": k,
+        "lab_name": lab_name,
+        "resolved_lab_name": effective_lab_scope,
+        "llm_used": True,
+        "time_window": None,
+        "sources": [],
+        "knowledge_cards_retrieved": int(knowledge_result.get("knowledge_cards_retrieved") or 0),
+        "visualization_type": "none",
+        "evidence": evidence,
+    }
+    return {
+        "answer": answer_text,
+        "timescale": "knowledge",
+        "cards_retrieved": int(knowledge_result.get("cards_retrieved") or 0),
+        "recent_card": False,
+        "metadata": metadata,
+        "data": None,
+        "visualization_type": "none",
+        "chart": None,
+    }
+
+
+def _execute_db_path(
+    *,
+    question: str,
+    k: int,
+    lab_name: Optional[str],
+    route_plan: RoutePlan,
+    decision: Any,
+    execution_intent: IntentType,
+) -> Dict[str, Any]:
+    db_result = run_db_query(
+        question=question,
+        intent=execution_intent,
+        lab_name=lab_name,
+        planner_hints=route_plan.planner_parameters,
+    )
+    if db_result.get("invariant_violation"):
+        invariant = dict(db_result.get("invariant_violation") or {})
+        metadata = {
+            **base_route_metadata(route_plan, decision),
+            "clarification_required": True,
+            "executor": "clarify_gate",
+            "execution_intent": execution_intent.value,
+            "intent_rerouted_to_db": execution_intent != decision.intent,
+            "k_requested": k,
+            "lab_name": lab_name,
+            "resolved_lab_name": db_result.get("resolved_lab_name"),
+            "llm_used": False,
+            "time_window": db_result.get("time_window"),
+            "sources": [],
+            "visualization_type": "none",
+            "db_invariant_violation": invariant,
+            "evidence": db_result.get("evidence"),
+        }
+        return {
+            "answer": str(db_result.get("answer") or ""),
+            "timescale": "clarify",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "metadata": metadata,
+            "data": None,
+            "visualization_type": "none",
+            "chart": None,
+        }
+    evidence = normalize_evidence(
+        raw=db_result.get("evidence"),
+        executor="db_query",
+        lab_name=lab_name,
+    )
+    metadata = {
+        **base_route_metadata(route_plan, decision),
+        "clarification_required": False,
+        "executor": "db_query",
+        "execution_intent": execution_intent.value,
+        "intent_rerouted_to_db": execution_intent != decision.intent,
+        "k_requested": k,
+        "lab_name": lab_name,
+        "resolved_lab_name": db_result.get("resolved_lab_name"),
+        "llm_used": db_result.get("llm_used", False),
+        "time_window": db_result.get("time_window"),
+        "sources": db_result.get("sources", []),
+        "forecast_model": (db_result.get("forecast") or {}).get("model"),
+        "forecast_confidence": (db_result.get("forecast") or {}).get("confidence"),
+        "forecast_confidence_score": (db_result.get("forecast") or {}).get("confidence_score"),
+        "forecast_horizon_hours": (db_result.get("forecast") or {}).get("horizon_hours"),
+        "correlation": db_result.get("correlation"),
+        "visualization_type": db_result.get("visualization_type", "none"),
+        "evidence": evidence,
+    }
+    return {
+        "answer": db_result["answer"],
+        "timescale": db_result["timescale"],
+        "cards_retrieved": int(db_result.get("cards_retrieved") or 0),
+        "recent_card": False,
+        "metadata": metadata,
+        "data": db_result.get("data"),
+        "visualization_type": db_result.get("visualization_type", "none"),
+        "chart": db_result.get("chart"),
+    }
 
 _METRIC_KEYWORDS = (
     "ieq",
@@ -389,6 +551,12 @@ def _has_date_consistency_mismatch(answer: str, metadata: Dict[str, Any]) -> boo
 def _run_answer_critic(question: str, answer: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     issues: list[str] = []
     answer_text = (answer or "").lower()
+    answer_text = (
+        answer_text.replace("co₂", "co2")
+        .replace("pm2.5", "pm25")
+        .replace("pm 2.5", "pm25")
+        .replace("pm 2 5", "pm25")
+    )
     evidence = metadata.get("evidence") or {}
     requested_metrics = _extract_requested_metrics(question)
     if requested_metrics and not any(metric in answer_text for metric in requested_metrics):
@@ -445,8 +613,9 @@ def _apply_critic(result: Dict[str, Any], question: str) -> Dict[str, Any]:
             "Please rephrase with explicit metric and time scope."
         )
     elif critic.get("critic_issues"):
-        issue_list = ", ".join(critic.get("critic_issues") or [])
-        answer = f"Note: This answer may be incomplete ({issue_list}).\n\n{answer}"
+        # Keep critic warnings in metadata, but avoid prepending user-visible
+        # warning banners to answer text.
+        answer = str(result.get("answer") or "")
     result["answer"] = answer
     result["metadata"] = metadata
     return result
@@ -827,14 +996,12 @@ def _execute_query_with_route_contract(
                 question=generation_question,
             )
         )
-        knowledge_result = execute_knowledge_use_case(
+        knowledge_result = _execute_knowledge_path(
             question=knowledge_question,
             k=k,
             lab_name=None if suppress_live_scope else lab_name,
             route_plan=route_plan,
             decision=decision,
-            scope_guardrail_builder=build_non_domain_scope_message,
-            answer_with_metadata_fn=answer_env_question_with_metadata,
         )
         knowledge_meta = dict(knowledge_result.get("metadata") or {})
         knowledge_meta["latest_question_hash"] = route_contract.latest_question_hash
@@ -845,14 +1012,13 @@ def _execute_query_with_route_contract(
         return _attach_observability_snapshot(_apply_critic(result=knowledge_result, question=question))
 
     execution_intent = route_contract.execution_intent
-    db_result = execute_db_use_case(
+    db_result = _execute_db_path(
         question=execution_question,
         k=k,
         lab_name=effective_lab_name,
         route_plan=route_plan,
         decision=decision,
         execution_intent=execution_intent,
-        run_db_query_fn=run_db_query,
     )
     db_meta = dict(db_result.get("metadata") or {})
     db_meta["latest_question_hash"] = route_contract.latest_question_hash

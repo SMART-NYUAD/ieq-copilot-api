@@ -12,6 +12,7 @@ from threading import Lock
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+import httpx
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -46,24 +47,17 @@ except ImportError:
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from card-based retrieval context.
-- First, answer the exact user question in 1-2 lines.
-- For air-quality assessment/summary queries, include:
-  1) overall status in plain language,
-  2) metric interpretation with citations when metrics are present,
-  3) confidence qualifier when key metrics are missing,
-  4) 2-4 practical recommendations.
-- If the question is specifically about risks, lead with the main risk level and top risk drivers (or explicitly state that no major risk is evident from the data) before any broader summary.
-- Recommendations must be grounded in provided context only.
-- Keep wording practical (what occupants should do next), not just descriptive.
+- Answer the user's question directly and naturally.
+- For assessments, give an overall picture, highlight key metrics, note confidence if data is incomplete, and offer practical takeaways.
+- If the question is about risks, lead with the risk level and main drivers.
+- Ground recommendations in what the context actually says.
 """.strip()
 GENERAL_CHAT_RESPONSE_DIRECTIVE = """
-You are a helpful conversational assistant in an IEQ application.
-- You may answer light conversational prompts (for example: greetings, who you are, what you can help with) in a friendly tone.
-- If the user asks an obviously out-of-scope question (for example: sports, finance, coding, geography, weather, politics), do not answer that topic directly.
-- For out-of-scope asks, reply briefly that your focus is Indoor Environmental Quality (IEQ), then redirect with 2-3 suggested IEQ questions.
-- For mixed or borderline asks, give a short bridge response and steer back to IEQ-focused help.
-- Do not invent measured IEQ values, trends, or recommendations unless explicitly asked for measured analysis.
-- Keep responses concise, practical, and human.
+You are a friendly IEQ assistant for a university campus.
+- Answer conversational messages (greetings, questions about what you can do) naturally and warmly.
+- For questions clearly outside IEQ (sports, finance, coding, politics), briefly note that it's outside your scope and offer a relevant IEQ angle if possible.
+- Don't fabricate measured values or recommendations — if someone wants data, route them to ask about a specific space.
+- Be conversational and human; match the energy of the question.
 """.strip()
 
 _TARGET_TZ = timezone(timedelta(hours=4))
@@ -116,7 +110,7 @@ def get_llm_client():
     return ChatOllama(
         base_url=base_url,
         model=model,
-        temperature=0.1,
+        temperature=0.4,
     )
 
 
@@ -251,7 +245,9 @@ def answer_env_question_with_metadata(
     user_question: str, k: int = 5, space: Optional[str] = None
 ) -> Dict[str, Any]:
     if _is_non_domain_question(user_question):
-        answer = get_general_chat_chain().invoke({"question": user_question})
+        messages = get_general_chat_prompt().format_messages(question=user_question)
+        prompt_text = _build_prompt_text_from_messages(messages)
+        answer = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
         evidence = validate_tool_evidence(
             {
                 "evidence_kind": "knowledge_qa",
@@ -273,14 +269,14 @@ def answer_env_question_with_metadata(
         }
 
     context = _build_knowledge_context(user_question=user_question, k=k, space=space)
-    qa_chain = get_qa_chain()
-    answer = qa_chain.invoke(
-        {
-            "question": user_question,
-            "context_label": "Measured room facts with knowledge grounding",
-            "context_data": context["grounded_context"],
-        }
+    qa_prompt = get_qa_prompt()
+    messages = qa_prompt.format_messages(
+        question=user_question,
+        context_label="Measured room facts with knowledge grounding",
+        context_data=context["grounded_context"],
     )
+    prompt_text = _build_prompt_text_from_messages(messages)
+    answer = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
     knowledge_cards = context.get("knowledge_cards") or []
     evidence_sources = []
     for card in knowledge_cards:
@@ -468,6 +464,42 @@ def _extract_thinking_and_response(chunk) -> Tuple[str, str]:
     return thinking_text, response_text
 
 
+def _build_prompt_text_from_messages(messages: List[Any]) -> str:
+    prompt_parts = []
+    for message in messages:
+        role = getattr(message, "type", "user").upper()
+        content = _coerce_chunk_text(getattr(message, "content", ""))
+        prompt_parts.append(f"{role}:\n{content}")
+    return "\n\n".join(prompt_parts)
+
+
+def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Optional[bool]) -> str:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+    api_url = f"{base_url}/api/generate"
+    payload: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt_text,
+        "stream": False,
+        "temperature": temperature,
+    }
+    # Keep parity with stream behavior: never pass think=False explicitly.
+    if think is True:
+        payload["think"] = True
+
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(api_url, json=payload)
+        response.raise_for_status()
+        event = response.json()
+
+    response_text = _coerce_chunk_text(event.get("response"))
+    if think is not False:
+        thinking_text = _coerce_chunk_text(event.get("thinking"))
+        if thinking_text:
+            return f"<think>{thinking_text}</think>{response_text}"
+    return response_text
+
+
 # --------------------------------------------------------------------
 # TOP-LEVEL QUERY FUNCTION
 # --------------------------------------------------------------------
@@ -524,15 +556,7 @@ async def stream_answer_env_question(
     # Build a plain prompt for Ollama /api/generate streaming.
     # This lets us access the new `thinking` field directly and merge it
     # back into response text as <think>...</think> for frontend compatibility.
-    prompt_parts = []
-    for m in messages:
-        role = getattr(m, "type", "user").upper()
-        content = _coerce_chunk_text(getattr(m, "content", ""))
-        prompt_parts.append(f"{role}:\n{content}")
-    prompt_text = "\n\n".join(prompt_parts)
-
-    import os
-    import httpx
+    prompt_text = _build_prompt_text_from_messages(messages)
 
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
@@ -541,7 +565,7 @@ async def stream_answer_env_question(
         "model": model,
         "prompt": prompt_text,
         "stream": True,
-        "temperature": 0.1,
+        "temperature": 0.4,
     }
     # Some model/runtime combos emit more raw reasoning when think=False is passed
     # explicitly. We only pass think=True and use server-side filtering for think=False.

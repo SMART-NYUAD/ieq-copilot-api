@@ -38,7 +38,7 @@ flowchart LR
 | Router planner | `query_routing/llm_router_planner.py` | Builds route plan via LLM JSON contract (or fastpath/fallback) |
 | Policy engine | `query_routing/route_policy_engine.py` | Converts plan to deterministic executor decision (`db_query`, `knowledge_qa`, `clarify_gate`) |
 | Orchestrator | `query_routing/query_orchestrator.py` | Coordinates route plan + contract + branch execution + critic + observability |
-| Use-case layer | `query_routing/query_use_cases.py` | Standardized execution payloads for clarify/knowledge/db paths |
+| Execution layer | `query_routing/query_orchestrator.py` | Route branch execution and standardized payload assembly |
 | DB executor | `executors/db_query_executor.py` + `executors/db_support/*` | Parses query scope, runs SQL branch handlers, optional forecast, LLM rendering/fallback |
 | Knowledge executor | `executors/env_query_langchain.py` | Semantic card retrieval + grounded LLM answer/streaming |
 | Evidence layer | `evidence/evidence_layer.py` | Validates and repairs provenance/evidence envelopes |
@@ -135,7 +135,7 @@ flowchart LR
 4. Final payload is returned (sync JSON or SSE stream).
 
 ### Step 6: Sync/stream metadata parity
-1. Stream metadata now uses shared builders in `query_use_cases.py`:
+1. Stream metadata now uses shared builders in `metadata_builders.py`:
    - `build_stream_clarify_metadata`
    - `build_stream_knowledge_metadata`
    - `build_stream_db_metadata`

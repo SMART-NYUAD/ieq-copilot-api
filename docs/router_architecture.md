@@ -175,7 +175,7 @@ Where metadata appears:
 
 Sync/stream consistency notes:
 
-- Stream metadata is built through shared helpers in `query_use_cases.py`
+- Stream metadata is built through shared helpers in `metadata_builders.py`
   (`build_stream_clarify_metadata`, `build_stream_knowledge_metadata`,
   `build_stream_db_metadata`).
 - Stream evidence is normalized/repaired through `evidence/evidence_layer.py`

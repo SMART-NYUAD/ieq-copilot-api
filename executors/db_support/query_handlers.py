@@ -48,24 +48,57 @@ def _requested_metrics(
     intent: IntentType,
 ) -> List[str]:
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
+    analytical_intents = {
+        IntentType.AGGREGATION_DB,
+        IntentType.COMPARISON_DB,
+        IntentType.ANOMALY_ANALYSIS_DB,
+    }
+    if explicit_metrics and hinted_metrics and len(hinted_metrics) > len(explicit_metrics) and intent in analytical_intents:
+        # When planner explicitly asks for wider analytical context, prefer the
+        # hinted order/pack and keep explicit metrics included.
+        metrics = list(hinted_metrics) + [m for m in explicit_metrics if m not in hinted_metrics]
     if explicit_metrics:
         # For comparison-style air-quality asks (for example: "compare CO2 levels ..."),
         # expand to a core multi-metric pack so responses include PM2.5/TVOC context.
         q = str(question or "").lower()
         explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
+        trend_like_phrase = any(
+            token in q
+            for token in (
+                "trend",
+                "trended",
+                "over time",
+                "this week",
+                "last week",
+                "this month",
+                "last month",
+                "past ",
+                "last ",
+            )
+        )
+        planner_context_expansion = (
+            bool(hinted_metrics)
+            and len(hinted_metrics) > len(explicit_metrics)
+            and intent in analytical_intents
+        )
         if not (
             is_diagnostic_query_text(question)
             or (
-            intent == IntentType.COMPARISON_DB
-            and explicit_air_metric
-            and any(token in q for token in ("compare", "vs", "versus"))
+                intent == IntentType.COMPARISON_DB
+                and explicit_air_metric
+                and any(token in q for token in ("compare", "vs", "versus"))
             )
+            or (
+                intent == IntentType.AGGREGATION_DB
+                and explicit_air_metric
+                and trend_like_phrase
+            )
+            or planner_context_expansion
         ):
             return metrics
     if is_diagnostic_query_text(question):
         required_pack = ["co2", "pm25", "tvoc", "humidity", "temperature", "ieq", "sound", "light"]
-        missing = [m for m in required_pack if m not in metrics]
-        return metrics + missing
+        return required_pack + [m for m in metrics if m not in required_pack]
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
     is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
     if not is_air_quality_query:
@@ -76,6 +109,13 @@ def _requested_metrics(
             and any(token in q for token in ("compare", "vs", "versus"))
         ):
             is_air_quality_query = True
+        elif intent == IntentType.AGGREGATION_DB and len(explicit_metrics) == 1 and any(
+            m in {"co2", "pm25", "tvoc"} for m in explicit_metrics
+        ) and any(
+            token in q
+            for token in ("trend", "over time", "this week", "last week", "this month", "last month", "past ", "last ")
+        ):
+            is_air_quality_query = True
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
@@ -83,8 +123,7 @@ def _requested_metrics(
         if is_comfort_assessment_query
         else ["co2", "pm25", "tvoc", "humidity", "ieq"]
     )
-    missing_core_metrics = [m for m in required_pack if m not in metrics]
-    return metrics + missing_core_metrics
+    return required_pack + [m for m in metrics if m not in required_pack]
 
 
 def _handle_diagnostic(
@@ -275,7 +314,12 @@ def _handle_comparison_multi(
         return None
     if db_parsing.is_baseline_reference_query(question):
         return None
-    compare_metrics = requested_metrics[:4]
+    if db_helpers.is_comfort_assessment_query_text(question):
+        compare_metrics = requested_metrics[:6]
+    elif db_helpers.is_air_quality_query_text(question):
+        compare_metrics = requested_metrics[:5]
+    else:
+        compare_metrics = requested_metrics[:4]
     metric_columns = [
         (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
         for metric in compare_metrics
@@ -621,24 +665,50 @@ def _handle_point_lookup(
         """
         cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
         row = cur.fetchone()
+        active_window_start = window_start
+        active_window_end = window_end
+        active_window_label = window_label
+        window_note = ""
+        if (
+            row is None
+            and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
+        ):
+            fallback_start = window_end - timedelta(hours=6)
+            if fallback_start < window_start:
+                cur.execute(sql, (resolved_lab_name, resolved_lab_name, fallback_start, window_end))
+                row = cur.fetchone()
+                if row is not None:
+                    active_window_start = fallback_start
+                    active_window_end = window_end
+                    active_window_label = "last 6 hours"
+                    bucket = row.get("bucket")
+                    if isinstance(bucket, datetime):
+                        hours_ago = max(0.0, (window_end - bucket).total_seconds() / 3600.0)
+                        window_note = f" Most recent reading is about {hours_ago:.1f} hour(s) old."
         rows = [dict(row)] if row else []
         metric_names = [m for m, _ in metric_columns]
+        fallback_answer = db_helpers.build_multi_metric_aggregation_answer(
+            metric_aliases=metric_names,
+            row=rows[0] if rows else {},
+            window_label=active_window_label,
+        )
+        if window_note:
+            fallback_answer = f"{fallback_answer}{window_note}"
         return {
             "operation_type": "point_lookup_multi_metric",
             "rows": rows,
-            "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
-                metric_aliases=metric_names,
-                row=rows[0] if rows else {},
-                window_label=window_label,
-            ),
+            "fallback_answer": fallback_answer,
             "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
                 metric_aliases=metric_names,
                 unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-                window_label=window_label,
+                window_label=active_window_label,
                 row=rows[0] if rows else {},
             ),
             "metric_alias": metric_names[0],
             "metrics_used": metric_names,
+            "window_start": active_window_start,
+            "window_end": active_window_end,
+            "window_label": active_window_label,
         }
 
     sql = f"""
@@ -652,6 +722,26 @@ def _handle_point_lookup(
     """
     cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
     row = cur.fetchone()
+    active_window_start = window_start
+    active_window_end = window_end
+    active_window_label = window_label
+    window_note = ""
+    if (
+        row is None
+        and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
+    ):
+        fallback_start = window_end - timedelta(hours=6)
+        if fallback_start < window_start:
+            cur.execute(sql, (resolved_lab_name, resolved_lab_name, fallback_start, window_end))
+            row = cur.fetchone()
+            if row is not None:
+                active_window_start = fallback_start
+                active_window_end = window_end
+                active_window_label = "last 6 hours"
+                bucket = row.get("bucket")
+                if isinstance(bucket, datetime):
+                    hours_ago = max(0.0, (window_end - bucket).total_seconds() / 3600.0)
+                    window_note = f" Most recent reading is about {hours_ago:.1f} hour(s) old."
     rows = [dict(row)] if row else []
     trend_sql = f"""
         SELECT bucket, {metric_column} AS value
@@ -662,22 +752,28 @@ def _handle_point_lookup(
         ORDER BY bucket ASC
         LIMIT 500
     """
-    cur.execute(trend_sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
+    cur.execute(trend_sql, (resolved_lab_name, resolved_lab_name, active_window_start, active_window_end))
     trend_rows = [dict(item) for item in cur.fetchall()]
     series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
+    fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, row or {}, active_window_label)
+    if window_note:
+        fallback_answer = f"{fallback_answer}{window_note}"
     return {
         "operation_type": "point_lookup",
         "rows": rows,
-        "fallback_answer": db_helpers.build_point_lookup_answer(metric_alias, row or {}, window_label),
+        "fallback_answer": fallback_answer,
         "chart_payload": db_charts.build_line_chart(
             metric_alias=metric_alias,
             unit=unit,
-            window_label=window_label,
+            window_label=active_window_label,
             series_rows=trend_rows,
             series_name=str(series_name),
             lookback_points=max_chart_lookback_points,
         ),
         "metrics_used": [metric_alias],
+        "window_start": active_window_start,
+        "window_end": active_window_end,
+        "window_label": active_window_label,
     }
 
 

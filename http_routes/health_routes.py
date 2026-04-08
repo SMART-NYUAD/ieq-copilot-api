@@ -62,6 +62,9 @@ async def router_health():
     }
     return {
         "status": "healthy",
+        "router_rollout": {
+            "strategy": "policy_engine_only",
+        },
         "router_mode": {
             "strategy": "policy_engine_only",
         },

@@ -10,8 +10,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 try:
     from executors.db_support import charts as db_charts
+    from executors.db_support import time_windows as db_time_windows
 except ImportError:
     from . import charts as db_charts
+    from . import time_windows as db_time_windows
 
 try:
     from prophet import Prophet
@@ -38,7 +40,6 @@ METRIC_UNIT_MAP = {
 }
 
 MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
-_TARGET_TZ = timezone(timedelta(hours=4))
 
 DB_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from a structured DB query result.
@@ -80,7 +81,9 @@ You are answering a current air-quality point lookup from a structured DB query 
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 - Highlight which space is better/worse for each available metric and by how much.
+- Use `metric_coverage.available_metrics` and `metric_coverage.missing_metrics` from context as source of truth.
 - Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
+- Never claim a metric is missing if it appears in `available_metrics` or has numeric values in rows.
 - Include practical actions only if the user asks for actions or the weaker metric is materially concerning.
 """.strip()
 DB_TOOL_RESPONSE_DIRECTIVE_FORECAST = """
@@ -111,31 +114,15 @@ You are answering a root-cause diagnostic question about IEQ.
 
 
 def to_target_timezone(dt: datetime) -> datetime:
-    normalized = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    return normalized.astimezone(_TARGET_TZ)
+    return db_time_windows.to_target_timezone(dt)
 
 
 def serialize_datetime_iso(dt: datetime) -> str:
-    return to_target_timezone(dt).isoformat()
+    return db_time_windows.serialize_datetime_iso(dt)
 
 
 def serialize_timestamp_value(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return serialize_datetime_iso(value)
-    if isinstance(value, list):
-        return [serialize_timestamp_value(item) for item in value]
-    if isinstance(value, dict):
-        return {k: serialize_timestamp_value(v) for k, v in value.items()}
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return value
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return value
-        return serialize_datetime_iso(parsed)
-    return value
+    return db_time_windows.serialize_timestamp_value(value)
 
 
 def is_air_quality_query_text(question: str) -> bool:
@@ -669,42 +656,11 @@ def metric_unit(metric_alias: str) -> str:
 
 
 def wants_time_series(question: str) -> bool:
-    q = (question or "").lower()
-    hints = (
-        "values",
-        "readings",
-        "data points",
-        "per hour",
-        "hourly",
-        "over time",
-        "trend",
-        "this week",
-        "last week",
-        "this month",
-        "last month",
-        "last ",
-        "past ",
-    )
-    return any(hint in q for hint in hints)
+    return db_time_windows.wants_time_series(question)
 
 
 def wants_forecast(question: str) -> bool:
-    q = (question or "").lower()
-    hints = (
-        "forecast",
-        "predict",
-        "prediction",
-        "project",
-        "projection",
-        "next hour",
-        "next hours",
-        "next day",
-        "next days",
-        "next week",
-        "next month",
-        "tomorrow",
-    )
-    return any(hint in q for hint in hints)
+    return db_time_windows.wants_forecast(question)
 
 
 def topic_matches_card(card: Dict[str, Any], requested_topics: List[str]) -> bool:
@@ -778,26 +734,7 @@ def split_knowledge_cards(cards: Optional[List[Dict[str, Any]]]) -> Tuple[List[D
 
 
 def extract_forecast_horizon_hours(question: str) -> Tuple[int, str]:
-    q = (question or "").lower()
-    week_match = re.search(r"\bnext\s+(\d+)\s+weeks?\b", q)
-    if week_match:
-        weeks = max(1, min(int(week_match.group(1)), 4))
-        return weeks * 24 * 7, f"next {weeks} week(s)"
-    if "next week" in q:
-        return 24 * 7, "next week"
-    day_match = re.search(r"\bnext\s+(\d+)\s+days?\b", q)
-    if day_match:
-        days = max(1, min(int(day_match.group(1)), 31))
-        return days * 24, f"next {days} day(s)"
-    hour_match = re.search(r"\bnext\s+(\d+)\s+hours?\b", q)
-    if hour_match:
-        hours = max(1, min(int(hour_match.group(1)), 24 * 14))
-        return hours, f"next {hours} hour(s)"
-    if "next month" in q:
-        return 24 * 30, "next month"
-    if "tomorrow" in q:
-        return 24, "next 24 hour(s)"
-    return 12, "next 12 hour(s)"
+    return db_time_windows.extract_forecast_horizon_hours(question)
 
 
 def forecast_history_window(
@@ -807,19 +744,13 @@ def forecast_history_window(
     default_end: datetime,
     default_label: str,
 ) -> Tuple[datetime, datetime, str]:
-    if default_label != "last 24 hours":
-        return default_start, default_end, default_label
-    now = datetime.now(_TARGET_TZ)
-    if horizon_hours <= 12:
-        history_hours = 24 * 30
-    elif horizon_hours <= 24:
-        history_hours = 24 * 60
-    elif horizon_hours <= 168:
-        history_hours = 24 * 90
-    else:
-        history_hours = 24 * 120
-    start = now - timedelta(hours=history_hours)
-    return start, now, f"last {history_hours} hours (auto history for forecast)"
+    return db_time_windows.forecast_history_window(
+        question=question,
+        horizon_hours=horizon_hours,
+        default_start=default_start,
+        default_end=default_end,
+        default_label=default_label,
+    )
 
 
 def build_forecast_from_rows(series_rows: List[Dict[str, Any]], horizon_hours: int) -> Optional[Dict[str, Any]]:
@@ -882,7 +813,7 @@ def build_forecast_from_rows(series_rows: List[Dict[str, Any]], horizon_hours: i
     confidence = "high" if confidence_score >= 0.75 else "medium" if confidence_score >= 0.45 else "low"
     forecast_points: List[Dict[str, Any]] = []
     for _, row in forecast_rows.iterrows():
-        bucket_dt = row["ds"].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(_TARGET_TZ)
+        bucket_dt = row["ds"].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
         forecast_points.append(
             {
                 "bucket": bucket_dt,
@@ -891,8 +822,12 @@ def build_forecast_from_rows(series_rows: List[Dict[str, Any]], horizon_hours: i
                 "upper": round(float(row["yhat_upper"]), 4),
             }
         )
-    history_start = history_df["ds"].iloc[0].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(_TARGET_TZ)
-    history_end = history_df["ds"].iloc[-1].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(_TARGET_TZ)
+    history_start = (
+        history_df["ds"].iloc[0].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
+    )
+    history_end = (
+        history_df["ds"].iloc[-1].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
+    )
     return {
         "model": "meta_prophet",
         "confidence": confidence,

@@ -6,7 +6,7 @@ DB executor to keep query preparation logic cohesive and reusable.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import calendar
 import re
 import time
@@ -15,9 +15,11 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     from query_routing.intent_classifier import IntentType
     from storage.postgres_client import get_cursor
+    from executors.db_support import time_windows as db_time_windows
 except ImportError:
     from ...query_routing.intent_classifier import IntentType
     from ...storage.postgres_client import get_cursor
+    from . import time_windows as db_time_windows
 
 
 METRIC_COLUMN_MAP = {
@@ -79,14 +81,14 @@ _DEICTIC_SCOPE_HINTS = (
     " same space",
 )
 
-_TARGET_TZ = timezone(timedelta(hours=4))
-_TARGET_TZ_LABEL = "GMT+4"
 _CONVERSATION_CONTEXT_MARKER = "\n\nprevious conversation context"
 _TIME_HINT_RE = re.compile(
     r"\b("
-    r"today|yesterday|this week|last week|this month|last month|"
+    r"today|yesterday|tomorrow|this week|last week|this month|last month|"
     r"last\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"past\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"next\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"next\s+(hour|day|week|month)|"
     r"\d{4}-\d{1,2}-\d{1,2}|"
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
     r"january|february|march|april|june|july|august|september|october|november|december)"
@@ -271,9 +273,13 @@ def extract_space_from_question(question: str) -> Optional[str]:
 def pick_metric(question: str) -> Tuple[str, str]:
     q = question.lower()
     q = re.sub(r"pm\s*2\.?\s*5", "pm2.5", q)
+    first_match: Optional[Tuple[int, str, str]] = None
     for alias, column in METRIC_COLUMN_MAP.items():
-        if re.search(rf"\b{re.escape(alias)}\b", q):
-            return alias, column
+        match = re.search(rf"\b{re.escape(alias)}\b", q)
+        if match and (first_match is None or match.start() < first_match[0]):
+            first_match = (match.start(), alias, column)
+    if first_match is not None:
+        return first_match[1], first_match[2]
     return "ieq", "index_value"
 
 
@@ -530,7 +536,7 @@ def _cap_window_end_at_now(start: datetime, end: datetime, now: datetime) -> dat
 
 def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
     q = _latest_user_question(question).lower()
-    now = datetime.now(_TARGET_TZ)
+    now = datetime.now(db_time_windows.TARGET_TZ)
     month_names = [m.lower() for m in calendar.month_name if m]
     month_abbr = [m.lower() for m in calendar.month_abbr if m]
     month_lookup = {name: idx + 1 for idx, name in enumerate(month_names)}
@@ -545,7 +551,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month = month_lookup[day_month_match.group(2)]
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            start = datetime(year, month, day, tzinfo=_TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -558,7 +564,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         day = int(month_day_match.group(2))
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            start = datetime(year, month, day, tzinfo=_TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -570,7 +576,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month = int(iso_match.group(2))
         day = int(iso_match.group(3))
         try:
-            start = datetime(year, month, day, tzinfo=_TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -582,9 +588,9 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month_token = month_match.group(1)
         month = month_lookup[month_token]
         year = _resolve_year_for_month(month, explicit_year, now)
-        start = datetime(year, month, 1, tzinfo=_TARGET_TZ)
-        month_end = datetime(year + 1, 1, 1, tzinfo=_TARGET_TZ) if month == 12 else datetime(
-            year, month + 1, 1, tzinfo=_TARGET_TZ
+        start = datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+        month_end = datetime(year + 1, 1, 1, tzinfo=db_time_windows.TARGET_TZ) if month == 12 else datetime(
+            year, month + 1, 1, tzinfo=db_time_windows.TARGET_TZ
         )
         end = _cap_window_end_at_now(start, month_end, now)
         return start, end, start.strftime("%B %Y")
@@ -645,76 +651,23 @@ def default_window_hours_for_intent(intent: IntentType) -> int:
 
 
 def format_display_datetime(dt: datetime) -> str:
-    rendered = dt.astimezone(_TARGET_TZ).strftime(f"%b %d, %Y, %I:%M %p {_TARGET_TZ_LABEL}")
-    rendered = re.sub(r"^([A-Za-z]{3}) 0(\d),", r"\1 \2,", rendered)
-    rendered = re.sub(r", 0(\d):", r", \1:", rendered)
-    return rendered
+    return db_time_windows.format_display_datetime(dt)
 
 
 def format_display_window_bounds(window_start: datetime, window_end: datetime) -> Tuple[str, str]:
-    return format_display_datetime(window_start), format_display_datetime(window_end)
+    return db_time_windows.format_display_window_bounds(window_start, window_end)
 
 
 def wants_time_series(question: str) -> bool:
-    q = (question or "").lower()
-    hints = (
-        "values",
-        "readings",
-        "data points",
-        "per hour",
-        "hourly",
-        "over time",
-        "trend",
-        "this week",
-        "last week",
-        "this month",
-        "last month",
-        "last ",
-        "past ",
-    )
-    return any(hint in q for hint in hints)
+    return db_time_windows.wants_time_series(question)
 
 
 def wants_forecast(question: str) -> bool:
-    q = (question or "").lower()
-    hints = (
-        "forecast",
-        "predict",
-        "prediction",
-        "project",
-        "projection",
-        "next hour",
-        "next hours",
-        "next day",
-        "next days",
-        "next week",
-        "next month",
-        "tomorrow",
-    )
-    return any(hint in q for hint in hints)
+    return db_time_windows.wants_forecast(question)
 
 
 def extract_forecast_horizon_hours(question: str) -> Tuple[int, str]:
-    q = (question or "").lower()
-    week_match = re.search(r"\bnext\s+(\d+)\s+weeks?\b", q)
-    if week_match:
-        weeks = max(1, min(int(week_match.group(1)), 4))
-        return weeks * 24 * 7, f"next {weeks} week(s)"
-    if "next week" in q:
-        return 24 * 7, "next week"
-    day_match = re.search(r"\bnext\s+(\d+)\s+days?\b", q)
-    if day_match:
-        days = max(1, min(int(day_match.group(1)), 31))
-        return days * 24, f"next {days} day(s)"
-    hour_match = re.search(r"\bnext\s+(\d+)\s+hours?\b", q)
-    if hour_match:
-        hours = max(1, min(int(hour_match.group(1)), 24 * 14))
-        return hours, f"next {hours} hour(s)"
-    if "next month" in q:
-        return 24 * 30, "next month"
-    if "tomorrow" in q:
-        return 24, "next 24 hour(s)"
-    return 12, "next 12 hour(s)"
+    return db_time_windows.extract_forecast_horizon_hours(question)
 
 
 def forecast_history_window(
@@ -724,17 +677,11 @@ def forecast_history_window(
     default_end: datetime,
     default_label: str,
 ) -> Tuple[datetime, datetime, str]:
-    if default_label != "last 24 hours":
-        return default_start, default_end, default_label
-    now = datetime.now(_TARGET_TZ)
-    if horizon_hours <= 12:
-        history_hours = 24 * 30
-    elif horizon_hours <= 24:
-        history_hours = 24 * 60
-    elif horizon_hours <= 168:
-        history_hours = 24 * 90
-    else:
-        history_hours = 24 * 120
-    start = now - timedelta(hours=history_hours)
-    return start, now, f"last {history_hours} hours (auto history for forecast)"
+    return db_time_windows.forecast_history_window(
+        question=question,
+        horizon_hours=horizon_hours,
+        default_start=default_start,
+        default_end=default_end,
+        default_label=default_label,
+    )
 
