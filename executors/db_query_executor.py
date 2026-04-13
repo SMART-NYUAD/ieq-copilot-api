@@ -566,7 +566,7 @@ def prepare_db_query(
             "rows": [],
             "payload": [],
             "fallback_answer": _clarify_text_for_invariant_violation(invariant),
-            "timescale": None,
+            "timescale": "clarify",
             "clarify_reason": "scope_underspecified",
             "time_window": {
                 "label": window_label,

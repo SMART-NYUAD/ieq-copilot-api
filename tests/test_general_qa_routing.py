@@ -50,7 +50,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertEqual(plan.planner_parameters.get("response_mode"), "knowledge_only")
         self.assertTrue(plan.planner_parameters.get("query_signals", {}).get("is_general_knowledge_question"))
         self.assertFalse(plan.planner_parameters.get("query_signals", {}).get("asks_for_db_facts"))
-        mock_call.assert_not_called()
+        self.assertGreaterEqual(mock_call.call_count, 1)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_planner_accepts_explicit_response_mode(self, mock_call):
@@ -67,7 +67,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         }
         plan = plan_route("Explain IEQ comfort bands.")
         self.assertEqual(plan.planner_parameters.get("response_mode"), "knowledge_only")
-        mock_call.assert_not_called()
+        self.assertGreaterEqual(mock_call.call_count, 1)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_definition_question_with_default_lab_hint_stays_knowledge_mode(self, mock_call):
@@ -86,7 +86,7 @@ class GeneralQaRoutingTests(unittest.TestCase):
         signals = plan.planner_parameters.get("query_signals", {})
         self.assertTrue(signals.get("is_general_knowledge_question"))
         self.assertFalse(signals.get("asks_for_db_facts"))
-        mock_call.assert_not_called()
+        self.assertGreaterEqual(mock_call.call_count, 1)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_comfort_question_in_specific_lab_forces_db_facts_signal(self, mock_call):
@@ -167,8 +167,13 @@ class GeneralQaRoutingTests(unittest.TestCase):
             planner_raw={},
             planner_parameters={
                 "response_mode": "knowledge_only",
+                "needs_measured_data": True,
+                "has_explicit_scope": True,
+                "resolved_lab_name": "smart_lab",
                 "query_signals": {"asks_for_db_facts": True},
             },
+            has_explicit_scope=True,
+            resolved_lab_name="smart_lab",
         )
         mock_run_db.return_value = {
             "answer": "Scoped grounded answer",
@@ -215,8 +220,13 @@ class GeneralQaRoutingTests(unittest.TestCase):
             planner_raw={},
             planner_parameters={
                 "response_mode": "knowledge_only",
+                "needs_measured_data": True,
+                "has_explicit_scope": True,
+                "resolved_lab_name": "smart_lab",
                 "query_signals": {"asks_for_db_facts": True, "is_comfort_assessment_phrase": True},
             },
+            has_explicit_scope=True,
+            resolved_lab_name="smart_lab",
         )
         mock_run_db.return_value = {
             "answer": "Comfort assessment from measured facts",
@@ -1173,6 +1183,13 @@ class GeneralQaRoutingTests(unittest.TestCase):
         self.assertTrue(bool(signals.get("is_general_knowledge_question")))
         self.assertEqual(signals.get("query_scope_class"), "ambiguous")
         self.assertFalse(bool(signals.get("asks_for_db_facts")))
+
+    def test_query_signals_detect_shores_office_as_explicit_scope(self):
+        question = "Give me a full picture of air quality in shores_office right now"
+        signals = extract_query_signals(question, lab_name=None)
+        self.assertTrue(bool(signals.get("has_lab_reference")))
+        self.assertTrue(bool(signals.get("requests_current_measured_data")))
+        self.assertIn("shores_office", signals.get("lab_candidates") or [])
 
     @patch("query_routing.query_orchestrator.run_db_query")
     @patch("query_routing.query_orchestrator.get_route_plan")

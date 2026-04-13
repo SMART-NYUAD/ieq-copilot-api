@@ -17,11 +17,21 @@ except ImportError:
 
 
 _METRIC_TOKEN_RE = re.compile(
-    r"\b(pm\s*2\.?\s*5|pm2\.?5|pm25|co2|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b"
+    r"\b("
+    r"pm\s*2\.?\s*5|pm2\.?5|pm25|particulate\s+matter|"
+    r"co2|carbon\s*dioxide|"
+    r"tvoc|voc|volatile\s+organic\s+compounds?|"
+    r"temperature|temp|thermal\s+comfort|"
+    r"humidity|relative\s+humidity|"
+    r"light|lux|illuminance|"
+    r"sound|noise|decibel|db\b|"
+    r"ieq|indoor\s+environmental\s+quality"
+    r")\b"
 )
 _TIME_WINDOW_HINT_RE = re.compile(
     r"\b("
     r"this week|last week|this month|last month|today|yesterday|tomorrow|"
+    r"recently|lately|throughout\s+(today|the\s+day|the\s+week|the\s+month)|"
     r"last\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"past\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"next\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
@@ -60,12 +70,16 @@ _GENERAL_QA_HINTS = (
 )
 _KNOWLEDGE_DOMAIN_HINTS = (
     "ieq",
+    "indoor environmental quality",
     "air quality",
     "indoor air quality",
     "co2",
+    "carbon dioxide",
     "pm2.5",
     "pm25",
+    "particulate matter",
     "tvoc",
+    "volatile organic compounds",
     "humidity",
     "ventilation",
 )
@@ -77,8 +91,8 @@ _IEQ_CONCEPTUAL_HINTS = (
     "spike",
     "threshold breach",
 )
-_EXPLICIT_LAB_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
-_NATURAL_LAB_TOKEN_RE = re.compile(r"\b([a-z0-9]+)\s+lab\b")
+_EXPLICIT_SCOPE_TOKEN_RE = re.compile(r"\b([a-z0-9]+_(?:lab|office|room|space))\b")
+_NATURAL_SCOPE_TOKEN_RE = re.compile(r"\b([a-z0-9]+)\s+(lab|office|room|space)\b")
 _COMPARE_ONE_WORD_RE = re.compile(
     r"\bcompare\s+([a-z0-9]{3,})\s+(?:vs|versus|and|with)\s+([a-z0-9]{3,})\b"
 )
@@ -129,6 +143,13 @@ _DB_SCOPE_HINTS = (
     "average",
     "avg",
     "trend",
+    "changed",
+    "change",
+    "variation",
+    "varies",
+    "throughout",
+    "across",
+    "over the",
     "during",
     "between",
     "over",
@@ -208,10 +229,10 @@ def _extract_lab_candidates(question: str, lab_name: Optional[str]) -> list[str]
     if lab_name and str(lab_name).strip():
         _push(str(lab_name))
 
-    for match in _EXPLICIT_LAB_TOKEN_RE.finditer(q):
+    for match in _EXPLICIT_SCOPE_TOKEN_RE.finditer(q):
         _push(match.group(1))
-    for match in _NATURAL_LAB_TOKEN_RE.finditer(q):
-        _push(f"{match.group(1)}_lab")
+    for match in _NATURAL_SCOPE_TOKEN_RE.finditer(q):
+        _push(f"{match.group(1)}_{match.group(2)}")
         _push(match.group(1))
     for match in _COMPARE_ONE_WORD_RE.finditer(q):
         left = match.group(1)
@@ -236,10 +257,10 @@ def _extract_explicit_labs_from_question(question: str) -> list[str]:
         if normalized and normalized not in explicit:
             explicit.append(normalized)
 
-    for match in _EXPLICIT_LAB_TOKEN_RE.finditer(q):
+    for match in _EXPLICIT_SCOPE_TOKEN_RE.finditer(q):
         _push(match.group(1))
-    for match in _NATURAL_LAB_TOKEN_RE.finditer(q):
-        _push(f"{match.group(1)}_lab")
+    for match in _NATURAL_SCOPE_TOKEN_RE.finditer(q):
+        _push(f"{match.group(1)}_{match.group(2)}")
     return explicit
 
 
@@ -248,7 +269,8 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     q = latest_question.lower()
     lab_candidates = _extract_lab_candidates(question=question, lab_name=lab_name)
     has_lab_reference = len(lab_candidates) > 0 or (
-        "_lab" in q or re.search(r"\b[a-z0-9]+\s+lab\b", q) is not None
+        re.search(r"\b[a-z0-9]+_(?:lab|office|room|space)\b", q) is not None
+        or re.search(r"\b[a-z0-9]+\s+(?:lab|office|room|space)\b", q) is not None
     )
     has_time_window_hint = bool(_TIME_WINDOW_HINT_RE.search(q))
     has_metric_reference = bool(_METRIC_TOKEN_RE.search(q))

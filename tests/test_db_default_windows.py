@@ -510,6 +510,179 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual(result.get("window_label"), "last 6 hours")
         self.assertIn("hour(s) old", str(result.get("fallback_answer") or ""))
 
+    def test_point_lookup_explicit_multi_metric_latest_uses_multi_snapshot(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": "smart_lab",
+                    "bucket": datetime(2026, 3, 29, 11, 55, tzinfo=timezone.utc),
+                    "co2": 422.0,
+                    "pm25": 2.1,
+                    "tvoc": 0.08,
+                }
+
+        end = datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc)
+        start = end - timedelta(hours=1)
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="What are the latest readings for CO2, PM2.5, and TVOC in smart_lab?",
+            intent=IntentType.POINT_LOOKUP_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=start,
+            window_end=end,
+            window_label="last 1 hour",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["co2", "pm25", "tvoc"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "point_lookup_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertIn("co2", metrics_used)
+        self.assertIn("pm25", metrics_used)
+        self.assertIn("tvoc", metrics_used)
+
+    def test_point_lookup_last_week_single_metric_returns_window_aggregation(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return [
+                    {
+                        "lab_space": "smart_lab",
+                        "avg_value": 6.5,
+                        "min_value": 1.1,
+                        "max_value": 12.2,
+                        "reading_count": 240,
+                    }
+                ]
+
+            def fetchone(self):
+                return None
+
+        start = datetime(2026, 3, 22, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="How was PM2.5 in smart_lab last week?",
+            intent=IntentType.POINT_LOOKUP_DB,
+            metric_alias="pm25",
+            metric_column="pm25_avg",
+            unit="ug/m3",
+            window_start=start,
+            window_end=end,
+            window_label="last week",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=["pm25"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation")
+        self.assertIn("average", str(result.get("fallback_answer") or "").lower())
+
+    def test_complete_assessment_request_uses_full_environment_metric_pack(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": "smart_lab",
+                    "ieq": 79.4,
+                    "co2": 413.6,
+                    "pm25": 2.0,
+                    "tvoc": 0.09,
+                    "humidity": 42.0,
+                    "temperature": 23.4,
+                    "sound": 46.0,
+                    "light": 380.0,
+                    "reading_count": 24,
+                }
+
+        start = datetime(2026, 4, 8, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 4, 9, 0, 0, tzinfo=timezone.utc)
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="give me a complete assessment of the smart lab",
+            intent=IntentType.AGGREGATION_DB,
+            metric_alias="ieq",
+            metric_column="index_value",
+            unit="index",
+            window_start=start,
+            window_end=end,
+            window_label="last 24 hours",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=[],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertEqual(
+            metrics_used[:8],
+            ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"],
+        )
+
+    def test_comfort_assessment_pack_includes_sound_and_light(self):
+        class _Cursor:
+            def execute(self, _sql, _params):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": "smart_lab",
+                    "ieq": 80.1,
+                    "temperature": 23.7,
+                    "humidity": 43.4,
+                    "co2": 420.2,
+                    "pm25": 2.4,
+                    "tvoc": 0.09,
+                    "sound": 47.2,
+                    "light": 410.0,
+                    "reading_count": 24,
+                }
+
+        start = datetime(2026, 4, 8, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 4, 9, 0, 0, tzinfo=timezone.utc)
+        result = execute_intent_query(
+            cur=_Cursor(),
+            question="Is smart_lab comfortable right now?",
+            intent=IntentType.AGGREGATION_DB,
+            metric_alias="ieq",
+            metric_column="index_value",
+            unit="index",
+            window_start=start,
+            window_end=end,
+            window_label="last 24 hours",
+            resolved_lab_name="smart_lab",
+            compared_spaces=[],
+            explicit_metrics=[],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertIn("sound", metrics_used)
+        self.assertIn("light", metrics_used)
+
     def test_comparison_handler_never_falls_back_to_global_two_labs(self):
         class _Cursor:
             def execute(self, _sql, _params):

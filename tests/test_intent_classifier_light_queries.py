@@ -69,5 +69,20 @@ class IntentClassifierLightQueryTests(unittest.TestCase):
         self.assertFalse(bool(signals.get("asks_for_db_facts")))
         self.assertEqual(str(signals.get("query_scope_class") or ""), "ambiguous")
 
+    def test_complex_wording_routes_to_aggregation_db(self):
+        decision = classify_intent(
+            "Can you walk me through how indoor air quality has been shifting throughout today in smart lab?"
+        )
+        self.assertEqual(decision.intent, IntentType.AGGREGATION_DB)
+
+    def test_natural_metric_alias_is_detected_as_metric_reference(self):
+        signals = extract_query_signals(
+            "How has carbon dioxide been varying lately in smart lab?",
+            lab_name=None,
+        )
+        self.assertTrue(bool(signals.get("has_metric_reference")))
+        self.assertTrue(bool(signals.get("has_time_window_hint")))
+        self.assertTrue(bool(signals.get("asks_for_db_facts")))
+
 if __name__ == "__main__":
     unittest.main()

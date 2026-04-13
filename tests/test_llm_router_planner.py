@@ -216,7 +216,28 @@ class LlmRouterPlannerTests(unittest.TestCase):
         )
         self.assertTrue(params.get("needs_cards"))
         self.assertEqual(params.get("card_topics"), ["definitions", "metric_explanations"])
-        self.assertEqual(params.get("max_cards"), 4)
+        self.assertEqual(params.get("max_cards"), 2)
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_plan_route_carries_planner_scope_fields(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "analytical_visualization",
+            "intent": "comparison_db",
+            "confidence": 0.91,
+            "reason": "scoped_comparison",
+            "response_mode": "db",
+            "needs_measured_data": True,
+            "has_explicit_scope": True,
+            "resolved_lab": "smart_lab",
+            "resolved_metrics": ["co2", "pm25"],
+            "clarify_reason": None,
+        }
+        plan = plan_route("Compare CO2 and PM2.5 in smart_lab this week")
+        self.assertTrue(bool(plan.planner_parameters.get("needs_measured_data")))
+        self.assertTrue(bool(plan.has_explicit_scope))
+        self.assertEqual(plan.resolved_lab_name, "smart_lab")
+        self.assertEqual(plan.resolved_metrics, ("co2", "pm25"))
+        self.assertIsNone(plan.clarify_reason)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_fallback_routes_match_prompt_examples(self, mock_call):
@@ -294,6 +315,32 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertIsNone(plan.decomposition_template)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_date_specific_fact_query_is_not_treated_as_forecast_without_forecast_words(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "prediction",
+            "intent": "forecast_db",
+            "confidence": 1.0,
+            "reason": "future_time",
+        }
+
+        plan = plan_route("what is the ieq at 8 am 2026, April 4")
+        self.assertEqual(plan.decision.intent, IntentType.POINT_LOOKUP_DB)
+        self.assertEqual(plan.intent_category, IntentCategory.STRUCTURED_FACTUAL_DB)
+        self.assertEqual(plan.planner_parameters.get("clarify_reason"), "no_lab")
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_forecast_wording_keeps_forecast_intent_for_timestamp_query(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "prediction",
+            "intent": "forecast_db",
+            "confidence": 0.96,
+            "reason": "forecast_requested",
+        }
+
+        plan = plan_route("Predict IEQ at 8 AM on April 4, 2026 in smart_lab")
+        self.assertEqual(plan.decision.intent, IntentType.FORECAST_DB)
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
     def test_invalid_planner_json_attempts_repair_before_fallback(self, mock_call):
         mock_call.side_effect = [
             ValueError("missing_json_object"),
@@ -326,7 +373,19 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertIn("planner_error:parse_error", reason)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
-    def test_signal_fastpath_bypasses_planner_for_general_knowledge(self, mock_call):
+    def test_signal_fastpath_bypasses_planner_for_identity_question(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "semantic_explanatory",
+            "intent": "definition_explanation",
+            "confidence": 0.9,
+            "response_mode": "knowledge_only",
+        }
+        plan = plan_route("Who are you?")
+        self.assertEqual(plan.route_source, "signal_fastpath")
+        self.assertEqual(mock_call.call_count, 0)
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_general_non_domain_question_no_longer_fastpaths(self, mock_call):
         mock_call.return_value = {
             "intent_category": "semantic_explanatory",
             "intent": "definition_explanation",
@@ -334,8 +393,8 @@ class LlmRouterPlannerTests(unittest.TestCase):
             "response_mode": "knowledge_only",
         }
         plan = plan_route("What day is today?")
-        self.assertEqual(plan.route_source, "signal_fastpath")
-        self.assertEqual(mock_call.call_count, 0)
+        self.assertEqual(plan.route_source, "llm_planner")
+        self.assertEqual(mock_call.call_count, 1)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_planner_unavailable_uses_rule_fallback(self, mock_call):

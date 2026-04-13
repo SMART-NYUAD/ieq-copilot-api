@@ -92,6 +92,21 @@ _METRIC_PATTERNS = {
     "sound": re.compile(r"\b(sound|noise)\b"),
     "light": re.compile(r"\b(light|lux)\b"),
 }
+_FORECAST_LEXICAL_RE = re.compile(r"\b(forecast|predict|prediction|project|projection|future|next|tomorrow)\b")
+_DATE_ISO_RE = re.compile(r"\b(19|20)\d{2}-\d{1,2}-\d{1,2}\b")
+_MONTH_DAY_YEAR_RE = re.compile(
+    r"\b("
+    r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
+    r"january|february|march|april|june|july|august|september|october|november|december"
+    r")\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*|\s+)(?:19|20)\d{2}\b"
+)
+_YEAR_MONTH_DAY_RE = re.compile(
+    r"\b(19|20)\d{2}\s*,?\s*("
+    r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
+    r"january|february|march|april|june|july|august|september|october|november|december"
+    r")\s+\d{1,2}(?:st|nd|rd|th)?\b"
+)
+_TIME_OF_DAY_RE = re.compile(r"\b(?:at\s*)?(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:am|pm)\b|\b(?:[01]?\d|2[0-3]):[0-5]\d\b")
 
 
 def _normalize_goal_coverage(raw_plan: Dict[str, Any]) -> tuple[str, ...]:
@@ -106,6 +121,47 @@ def _normalize_goal_coverage(raw_plan: Dict[str, Any]) -> tuple[str, ...]:
     return tuple(goals)
 
 
+def _is_explicit_forecast_request(question: str) -> bool:
+    q = str(question or "").lower()
+    return _FORECAST_LEXICAL_RE.search(q) is not None
+
+
+def _has_absolute_date_reference(question: str) -> bool:
+    q = str(question or "").lower()
+    return (
+        _DATE_ISO_RE.search(q) is not None
+        or _MONTH_DAY_YEAR_RE.search(q) is not None
+        or _YEAR_MONTH_DAY_RE.search(q) is not None
+    )
+
+
+def _has_specific_timestamp_reference(question: str) -> bool:
+    q = str(question or "").lower()
+    return _has_absolute_date_reference(q) and _TIME_OF_DAY_RE.search(q) is not None
+
+
+def _apply_classification_guardrails(
+    *,
+    raw_classification: Dict[str, Any],
+    question: str,
+) -> Dict[str, Any]:
+    adjusted = dict(raw_classification or {})
+    intent = str(adjusted.get("intent") or "").strip().lower()
+    if intent == IntentType.FORECAST_DB.value and not _is_explicit_forecast_request(question):
+        if _has_absolute_date_reference(question):
+            adjusted["intent"] = IntentType.POINT_LOOKUP_DB.value
+            adjusted["intent_category"] = IntentCategory.STRUCTURED_FACTUAL_DB.value
+            try:
+                conf = float(adjusted.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            adjusted["confidence"] = max(0.6, min(0.9, conf))
+            reason = str(adjusted.get("reason") or "").strip()
+            suffix = "guardrail:date_fact_not_forecast"
+            adjusted["reason"] = f"{reason}; {suffix}" if reason else suffix
+    return adjusted
+
+
 def _build_router_prompt(
     question: str,
     lab_name: Optional[str],
@@ -118,6 +174,7 @@ def _build_router_prompt(
         "Focus on the user question first, then use deterministic hints as secondary guidance.\n"
         "Deterministic hints can be noisy and are for confidence calibration, not intent override.\n"
         "Task: classify only. Return ONLY JSON keys: intent_category, intent, confidence, reason.\n"
+        "You may also return: needs_measured_data, has_explicit_scope, resolved_lab, resolved_metrics, clarify_reason.\n"
         "confidence must be between 0 and 1.\n"
         "Do not include markdown or extra text.\n\n"
         f"Allowed intent values: [{allowed_intents}]\n"
@@ -127,6 +184,7 @@ def _build_router_prompt(
         "- if query_scope_class=non_domain, do NOT choose any DB intent.\n"
         "- if query_scope_class=domain, DB intents are allowed.\n"
         "- if query_scope_class=ambiguous, choose best intent and lower confidence when uncertain.\n\n"
+        "Deterministic query signals are advisory only, and you may disagree if user wording supports a better route.\n\n"
         "Routing examples for diagnostic questions (prefer aggregation_db with a full metric pack when measured DB scope is explicit):\n"
         "- \"which metric is driving poor IEQ\" -> aggregation_db, structured_factual_db,\n"
         "  metrics_priority: [co2, pm25, tvoc, humidity, temperature, ieq, sound, light]\n"
@@ -183,6 +241,11 @@ def _normalize_classification(raw_classification: Dict[str, Any]) -> Dict[str, A
         "intent": raw_classification.get("intent"),
         "confidence": raw_classification.get("confidence"),
         "reason": raw_classification.get("reason"),
+        "needs_measured_data": raw_classification.get("needs_measured_data"),
+        "has_explicit_scope": raw_classification.get("has_explicit_scope"),
+        "resolved_lab": raw_classification.get("resolved_lab"),
+        "resolved_metrics": raw_classification.get("resolved_metrics"),
+        "clarify_reason": raw_classification.get("clarify_reason"),
     }
     return normalized
 
@@ -247,6 +310,16 @@ def _build_plan_defaults_from_classification(
         )
     else:
         metrics_priority = ["ieq"]
+    clarify_reason = None
+    if (
+        intent in {IntentType.POINT_LOOKUP_DB.value, IntentType.CURRENT_STATUS_DB.value}
+        and bool(query_signals.get("has_metric_reference"))
+        and bool(query_signals.get("has_time_window_hint"))
+        and not bool(query_signals.get("has_lab_reference"))
+        and _has_specific_timestamp_reference(question)
+    ):
+        clarify_reason = "no_lab"
+
     return {
         "strategy": "direct",
         "action": "finalize",
@@ -255,6 +328,7 @@ def _build_plan_defaults_from_classification(
         "card_topics": ["definitions", "metric_explanations"] if response_mode == "knowledge_only" else ["metric_explanations"],
         "max_cards": 2,
         "metrics_priority": metrics_priority,
+        "clarify_reason": clarify_reason,
     }
 
 
@@ -300,6 +374,11 @@ def _merge_planning_fields(
         "needs_cards",
         "card_topics",
         "max_cards",
+        "needs_measured_data",
+        "has_explicit_scope",
+        "resolved_lab",
+        "resolved_metrics",
+        "clarify_reason",
     }
     uncertain_override_keys = {
         "strategy",
@@ -346,7 +425,7 @@ def _build_repair_prompt(
         f"Validation error: {validation_error}\n"
         "Re-answer with ONLY valid JSON and no extra text.\n"
         "Required keys: intent_category, intent, confidence.\n"
-        "Optional keys: reason, strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage.\n\n"
+        "Optional keys: reason, strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage, needs_measured_data, has_explicit_scope, resolved_lab, resolved_metrics, clarify_reason.\n\n"
         f"Previous output: {prior_response}\n\n"
         + _build_router_prompt(
             question=question,
@@ -369,7 +448,7 @@ def _build_planning_prompt(
         "You are in planning step after classification is already decided.\n"
         "Do not change classification. Keep intent_category, intent, confidence, reason from the provided classification.\n"
         "Return ONLY JSON with required keys: intent_category, intent, confidence.\n"
-        "You may add optional planning keys only: strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage, metrics_priority, response_mode, needs_cards, card_topics, max_cards.\n"
+        "You may add optional planning keys only: strategy, secondary_intents, action, tool_name, tool_arguments, expected_observation, enough_evidence, goal_coverage, metrics_priority, response_mode, needs_cards, card_topics, max_cards, needs_measured_data, has_explicit_scope, resolved_lab, resolved_metrics, clarify_reason.\n"
         "Prefer concise plans. Use clarify only when scope is genuinely underspecified.\n\n"
         f"Classification (fixed): {classification_json}\n"
         f"Deterministic query signals: {signals_json}\n"
@@ -450,6 +529,18 @@ def _call_router_planner(
                 "maxItems": 5,
             },
             "max_cards": {"type": "integer", "minimum": 1, "maximum": 4},
+            "needs_measured_data": {"type": "boolean"},
+            "has_explicit_scope": {"type": "boolean"},
+            "resolved_lab": {"type": ["string", "null"]},
+            "resolved_metrics": {
+                "type": "array",
+                "maxItems": 7,
+                "items": {"type": "string", "enum": sorted(list(ALLOWED_PLANNER_METRICS))},
+            },
+            "clarify_reason": {
+                "type": ["string", "null"],
+                "enum": ["no_lab", "no_second_lab", "ambiguous_intent", None],
+            },
         },
         "additionalProperties": False,
     }
@@ -616,6 +707,16 @@ def _build_success_plan(
     enough_evidence_raw = raw_plan.get("enough_evidence")
     enough_evidence = bool(enough_evidence_raw) if isinstance(enough_evidence_raw, bool) else None
     goal_coverage = _normalize_goal_coverage(raw_plan)
+    resolved_metrics = tuple(planner_parameters.get("resolved_metrics") or ())
+    has_explicit_scope = bool(planner_parameters.get("has_explicit_scope"))
+    clarify_reason_raw = str(planner_parameters.get("clarify_reason") or "").strip().lower()
+    clarify_reason = clarify_reason_raw if clarify_reason_raw else None
+    resolved_lab_raw = planner_parameters.get("resolved_lab_name")
+    resolved_lab_name = (
+        str(resolved_lab_raw).strip().lower()
+        if isinstance(resolved_lab_raw, str) and str(resolved_lab_raw).strip()
+        else None
+    )
     if template:
         planner_parameters["decomposition_template"] = template.value
     return RoutePlan(
@@ -636,22 +737,16 @@ def _build_success_plan(
         expected_observation=expected_observation,
         enough_evidence=enough_evidence,
         goal_coverage=goal_coverage,
+        has_explicit_scope=has_explicit_scope,
+        resolved_metrics=resolved_metrics,
+        clarify_reason=clarify_reason,
+        resolved_lab_name=resolved_lab_name,
     )
 
 
 def _should_fastpath_knowledge_route(query_signals: Dict[str, Any]) -> bool:
-    scope_class = str(query_signals.get("query_scope_class") or "").strip().lower()
-    if scope_class == QueryScopeClass.NON_DOMAIN.value:
-        return True
-    if bool(query_signals.get("is_hypothetical_conditional")) and not bool(
-        query_signals.get("requests_current_measured_data")
-    ):
-        return True
-    # Conceptual/general-knowledge asks without DB-facts requirement do not need
-    # an extra planner LLM round-trip.
-    if bool(query_signals.get("is_general_knowledge_question")) and not bool(query_signals.get("asks_for_db_facts")):
-        return True
-    return False
+    # Phase-2: keep fastpath only for greeting/identity style messages.
+    return bool(query_signals.get("is_social_identity_query"))
 
 
 def _build_fastpath_knowledge_plan(
@@ -742,6 +837,10 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
             calibrated_classification = _calibrate_intent_confidence(
                 raw_plan=normalized_classification,
                 query_signals=query_signals,
+            )
+            calibrated_classification = _apply_classification_guardrails(
+                raw_classification=calibrated_classification,
+                question=effective_question,
             )
             deterministic_plan = _build_plan_defaults_from_classification(
                 raw_classification=calibrated_classification,

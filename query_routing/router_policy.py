@@ -85,6 +85,7 @@ DB_INTENTS = {
     IntentType.ANOMALY_ANALYSIS_DB,
     IntentType.FORECAST_DB,
 }
+ALLOWED_CLARIFY_REASONS = {"no_lab", "no_second_lab", "ambiguous_intent"}
 
 
 def _coarsen_rule_confidence(score: float) -> float:
@@ -290,12 +291,48 @@ def normalize_planner_parameters(raw_plan: Dict[str, Any], question: str, intent
         if required_air_pack:
             cleaned = required_air_pack + [m for m in cleaned if m not in required_air_pack]
 
+    raw_needs_measured = raw_plan.get("needs_measured_data")
+    if isinstance(raw_needs_measured, bool):
+        needs_measured_data = raw_needs_measured
+    else:
+        needs_measured_data = response_mode == "db" or bool(signals.get("asks_for_db_facts"))
+
+    raw_has_explicit_scope = raw_plan.get("has_explicit_scope")
+    if isinstance(raw_has_explicit_scope, bool):
+        has_explicit_scope = raw_has_explicit_scope
+    else:
+        has_explicit_scope = bool(signals.get("has_lab_reference")) or bool(signals.get("has_time_window_hint"))
+
+    raw_resolved_lab = raw_plan.get("resolved_lab")
+    if isinstance(raw_resolved_lab, str) and raw_resolved_lab.strip():
+        resolved_lab_name = raw_resolved_lab.strip().lower()
+    elif isinstance(raw_plan.get("resolved_lab_name"), str) and str(raw_plan.get("resolved_lab_name") or "").strip():
+        resolved_lab_name = str(raw_plan.get("resolved_lab_name") or "").strip().lower()
+    else:
+        resolved_lab_name = None
+
+    raw_resolved_metrics = raw_plan.get("resolved_metrics")
+    resolved_metrics: list[str] = []
+    if isinstance(raw_resolved_metrics, list):
+        for item in raw_resolved_metrics:
+            metric = str(item or "").strip().lower().replace(" ", "_")
+            if metric in ALLOWED_PLANNER_METRICS and metric not in resolved_metrics:
+                resolved_metrics.append(metric)
+
+    raw_clarify_reason = str(raw_plan.get("clarify_reason") or "").strip().lower()
+    clarify_reason = raw_clarify_reason if raw_clarify_reason in ALLOWED_CLARIFY_REASONS else None
+
     return {
         "metrics_priority": cleaned,
         "response_mode": response_mode,
         "needs_cards": needs_cards,
         "card_topics": topics,
         "max_cards": max_cards,
+        "needs_measured_data": needs_measured_data,
+        "has_explicit_scope": has_explicit_scope,
+        "resolved_lab_name": resolved_lab_name,
+        "resolved_metrics": resolved_metrics,
+        "clarify_reason": clarify_reason,
         "query_signals": signals,
     }
 

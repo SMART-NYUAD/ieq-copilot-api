@@ -68,6 +68,10 @@ class RoutePlan:
     expected_observation: Optional[str] = None
     enough_evidence: Optional[bool] = None
     goal_coverage: Tuple[str, ...] = field(default_factory=tuple)
+    has_explicit_scope: bool = False
+    resolved_metrics: Tuple[str, ...] = field(default_factory=tuple)
+    clarify_reason: Optional[str] = None
+    resolved_lab_name: Optional[str] = None
 
 
 @dataclass(frozen=True)

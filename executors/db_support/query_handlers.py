@@ -41,12 +41,77 @@ def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
     }
 
 
+def _is_current_snapshot_query(question: str) -> bool:
+    q = str(question or "").lower()
+    current_tokens = (
+        "current",
+        "now",
+        "right now",
+        "at this moment",
+        "latest",
+        "most recent",
+    )
+    snapshot_nouns = (
+        "reading",
+        "readings",
+        "value",
+        "values",
+        "level",
+        "levels",
+        "measurement",
+        "measurements",
+        "status",
+    )
+    return any(token in q for token in current_tokens) or any(noun in q for noun in snapshot_nouns)
+
+
+def _is_historical_window_summary_query(question: str, window_label: str, window_start: datetime, window_end: datetime) -> bool:
+    q = str(question or "").lower()
+    label = str(window_label or "").lower()
+    currentness_tokens = (
+        "current",
+        "now",
+        "right now",
+        "at this moment",
+        "latest",
+        "most recent",
+    )
+    if any(token in q for token in currentness_tokens):
+        return False
+    if any(token in label for token in ("last week", "this week", "last month", "this month", "yesterday", "today")):
+        return True
+    if any(token in q for token in ("last week", "this week", "last month", "this month", "yesterday", "today", "past ", "last ")):
+        return True
+    try:
+        window_hours = max(0.0, (window_end - window_start).total_seconds() / 3600.0)
+    except Exception:
+        window_hours = 0.0
+    return window_hours >= 12.0
+
+
+def _is_full_assessment_query(question: str) -> bool:
+    q = str(question or "").lower()
+    full_assessment_tokens = (
+        "complete assessment",
+        "full assessment",
+        "full picture",
+        "everything you have",
+        "environmental assessment",
+    )
+    return any(token in q for token in full_assessment_tokens)
+
+
 def _requested_metrics(
     question: str,
     explicit_metrics: List[str],
     hinted_metrics: List[str],
     intent: IntentType,
 ) -> List[str]:
+    q = str(question or "").lower()
+    if _is_full_assessment_query(question):
+        full_pack = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"]
+        return full_pack
+
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
     analytical_intents = {
         IntentType.AGGREGATION_DB,
@@ -60,7 +125,6 @@ def _requested_metrics(
     if explicit_metrics:
         # For comparison-style air-quality asks (for example: "compare CO2 levels ..."),
         # expand to a core multi-metric pack so responses include PM2.5/TVOC context.
-        q = str(question or "").lower()
         explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
         trend_like_phrase = any(
             token in q
@@ -119,7 +183,7 @@ def _requested_metrics(
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
-        ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc"]
+        ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound", "light"]
         if is_comfort_assessment_query
         else ["co2", "pm25", "tvoc", "humidity", "ieq"]
     )
@@ -315,7 +379,7 @@ def _handle_comparison_multi(
     if db_parsing.is_baseline_reference_query(question):
         return None
     if db_helpers.is_comfort_assessment_query_text(question):
-        compare_metrics = requested_metrics[:6]
+        compare_metrics = requested_metrics[:8]
     elif db_helpers.is_air_quality_query_text(question):
         compare_metrics = requested_metrics[:5]
     else:
@@ -553,8 +617,10 @@ def _handle_aggregation_multi(
 ) -> Optional[Dict[str, Any]]:
     if not (intent == IntentType.AGGREGATION_DB and len(requested_metrics) >= 2 and len(compared_spaces) < 2):
         return None
-    if db_helpers.is_comfort_assessment_query_text(question):
-        selected_metrics = requested_metrics[:6]
+    if _is_full_assessment_query(question):
+        selected_metrics = requested_metrics[:8]
+    elif db_helpers.is_comfort_assessment_query_text(question):
+        selected_metrics = requested_metrics[:8]
     elif db_helpers.is_air_quality_query_text(question):
         selected_metrics = requested_metrics[:5]
     else:
@@ -633,13 +699,113 @@ def _handle_point_lookup(
 ) -> Optional[Dict[str, Any]]:
     if intent not in {IntentType.POINT_LOOKUP_DB, IntentType.CURRENT_STATUS_DB}:
         return None
+    current_snapshot_query = _is_current_snapshot_query(question)
+    historical_summary_query = _is_historical_window_summary_query(
+        question=question,
+        window_label=window_label,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    if historical_summary_query and intent == IntentType.POINT_LOOKUP_DB:
+        if len(requested_metrics) >= 2:
+            if db_helpers.is_comfort_assessment_query_text(question):
+                selected_metrics = requested_metrics[:8]
+            else:
+                selected_metrics = requested_metrics[:6]
+            metric_columns = [
+                (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
+                for metric in selected_metrics
+                if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+            ]
+            if len(metric_columns) < 1:
+                return {
+                    "operation_type": "aggregation_multi_metric",
+                    "rows": [],
+                    "fallback_answer": "I couldn't map requested metrics for window analysis.",
+                    "chart_payload": db_charts.empty_chart(),
+                    "metrics_used": [],
+                }
+            select_metrics_sql = ", ".join(
+                [
+                    (
+                        f"AVG({column}) AS {metric}, "
+                        f"MIN({column}) AS {metric}_min, "
+                        f"MAX({column}) AS {metric}_max, "
+                        f"STDDEV_POP({column}) AS {metric}_stddev"
+                    )
+                    for metric, column in metric_columns
+                ]
+            )
+            sql = f"""
+                SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+                FROM lab_ieq_final
+                WHERE bucket >= %s
+                  AND bucket < %s
+                  AND (%s IS NULL OR lab_space = %s)
+                GROUP BY lab_space
+                ORDER BY reading_count DESC
+                LIMIT 1
+            """
+            cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+            row = cur.fetchone()
+            rows = [dict(row)] if row else []
+            metric_names = [m for m, _ in metric_columns]
+            return {
+                "operation_type": "aggregation_multi_metric",
+                "rows": rows,
+                "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
+                    metric_aliases=metric_names,
+                    row=rows[0] if rows else {},
+                    window_label=window_label,
+                ),
+                "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
+                    metric_aliases=metric_names,
+                    unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
+                    window_label=window_label,
+                    row=rows[0] if rows else {},
+                ),
+                "metric_alias": metric_names[0],
+                "metrics_used": metric_names,
+            }
+
+        sql = f"""
+            SELECT lab_space,
+                   AVG({metric_column}) AS avg_value,
+                   MIN({metric_column}) AS min_value,
+                   MAX({metric_column}) AS max_value,
+                   COUNT(*) AS reading_count
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+              AND (%s IS NULL OR lab_space = %s)
+            GROUP BY lab_space
+            ORDER BY avg_value DESC
+            LIMIT 10
+        """
+        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+        rows = [dict(row) for row in cur.fetchall()]
+        return {
+            "operation_type": "aggregation",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
+            "chart_payload": db_charts.build_bar_chart(
+                metric_alias=metric_alias,
+                unit=unit,
+                window_label=window_label,
+                rows=rows,
+                value_key="avg_value",
+            ),
+            "metrics_used": [metric_alias],
+        }
+
     is_multi = (
         db_helpers.is_air_quality_query_text(question)
         or db_helpers.is_comfort_assessment_query_text(question)
         or db_helpers.is_issue_triage_query_text(question)
+        or (len(requested_metrics) >= 2 and current_snapshot_query)
     )
     if is_multi:
-        selected_metrics = requested_metrics[:6] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
+        selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
         metric_columns = [
             (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
             for metric in selected_metrics

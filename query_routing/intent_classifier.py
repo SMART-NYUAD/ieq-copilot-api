@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Dict, Tuple
+from typing import Dict, Set, Tuple
 
 
 class IntentType(str, Enum):
@@ -85,6 +85,123 @@ _DUAL_SPACE_TOKEN_RE = re.compile(
     r"\b([a-z0-9]+(?:_[a-z0-9]+)+)\b.*\b(?:and|vs|versus|with|against)\b.*\b([a-z0-9]+(?:_[a-z0-9]+)+)\b"
 )
 
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_CHAR_CLEAN_RE = re.compile(r"[^a-z0-9]")
+_STOP_WORDS = {
+    "a",
+    "an",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "to",
+    "for",
+    "in",
+    "on",
+    "of",
+    "and",
+    "or",
+    "with",
+    "about",
+    "me",
+    "please",
+    "could",
+    "would",
+    "can",
+    "you",
+    "tell",
+    "show",
+}
+_SEMANTIC_INTENT_PROTOTYPES: Dict[IntentType, Tuple[str, ...]] = {
+    IntentType.DEFINITION_EXPLANATION: (
+        "explain what this metric means",
+        "how should i interpret this air quality reading",
+        "definition of ieq and co2",
+        "what is the meaning of tvoc",
+    ),
+    IntentType.CURRENT_STATUS_DB: (
+        "what is the current co2 in smart lab",
+        "latest humidity reading in concrete lab",
+        "how is air quality in smart lab right now",
+        "give me current pm25 level",
+    ),
+    IntentType.AGGREGATION_DB: (
+        "trend of co2 over the afternoon",
+        "average pm25 in smart lab this week",
+        "how did humidity change throughout today",
+        "summarize recent air quality pattern",
+    ),
+    IntentType.COMPARISON_DB: (
+        "compare co2 between smart lab and concrete lab",
+        "which lab had lower pm25 this week",
+        "difference in humidity across two labs",
+        "how do readings differ between spaces",
+    ),
+    IntentType.ANOMALY_ANALYSIS_DB: (
+        "identify unusual spikes in co2",
+        "find abnormal air quality behavior",
+        "detect outliers in pm25 trend",
+        "what seems wrong with readings",
+    ),
+    IntentType.FORECAST_DB: (
+        "predict co2 for next 24 hours",
+        "forecast air quality tomorrow",
+        "project humidity trend for next day",
+        "what will pm25 be later",
+    ),
+}
+
+
+def _stem_token(token: str) -> str:
+    if len(token) > 5 and token.endswith("ies"):
+        return token[:-3] + "y"
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(token) > 4 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def _tokenize_for_similarity(text: str) -> Set[str]:
+    tokens: Set[str] = set()
+    for raw in _TOKEN_SPLIT_RE.split(str(text or "").lower()):
+        token = _stem_token(raw.strip())
+        if not token or token in _STOP_WORDS or len(token) < 2:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _char_trigrams(text: str) -> Set[str]:
+    cleaned = _CHAR_CLEAN_RE.sub("", str(text or "").lower())
+    if len(cleaned) < 3:
+        return {cleaned} if cleaned else set()
+    return {cleaned[idx : idx + 3] for idx in range(len(cleaned) - 2)}
+
+
+def _semantic_similarity(left: str, right: str) -> float:
+    left_tokens = _tokenize_for_similarity(left)
+    right_tokens = _tokenize_for_similarity(right)
+    token_union = left_tokens | right_tokens
+    token_overlap = (len(left_tokens & right_tokens) / len(token_union)) if token_union else 0.0
+    left_grams = _char_trigrams(left)
+    right_grams = _char_trigrams(right)
+    gram_union = left_grams | right_grams
+    gram_overlap = (len(left_grams & right_grams) / len(gram_union)) if gram_union else 0.0
+    return 0.65 * token_overlap + 0.35 * gram_overlap
+
+
+def _semantic_intent_scores(question: str) -> Dict[IntentType, float]:
+    scores: Dict[IntentType, float] = {}
+    for intent, prototypes in _SEMANTIC_INTENT_PROTOTYPES.items():
+        best = 0.0
+        for sample in prototypes:
+            best = max(best, _semantic_similarity(question, sample))
+        if best > 0.0:
+            scores[intent] = round(best, 4)
+    return scores
+
 
 def _rank_intent_candidates(
     *,
@@ -106,6 +223,7 @@ def _rank_intent_candidates(
     metric_strength: float,
     scope_strength: float,
     diagnostic_strength: float,
+    semantic_scores: Dict[IntentType, float],
 ) -> Tuple[Tuple[IntentType, float], ...]:
     scores: Dict[IntentType, float] = {intent: 0.0 for intent in IntentType}
 
@@ -151,6 +269,8 @@ def _rank_intent_candidates(
         scores[IntentType.CURRENT_STATUS_DB] += 0.2
     if not asks_for_db_facts and scope_strength < 0.2:
         scores[IntentType.DEFINITION_EXPLANATION] += 0.25
+    for semantic_intent, semantic_score in semantic_scores.items():
+        scores[semantic_intent] += 0.42 * float(semantic_score)
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     top_ranked = [(intent, round(score, 4)) for intent, score in ranked[:4] if score > 0.0]
     return tuple(top_ranked)
@@ -215,6 +335,7 @@ def classify_intent(question: str) -> RouteDecision:
     metric_strength = float(signals.get("metric_signal_strength") or 0.0)
     scope_strength = float(signals.get("scope_signal_strength") or 0.0)
     diagnostic_strength = float(signals.get("diagnostic_signal_strength") or 0.0)
+    semantic_scores = _semantic_intent_scores(question)
     ranked = _rank_intent_candidates(
         has_anomaly=has_anomaly,
         has_trend=has_trend,
@@ -234,6 +355,7 @@ def classify_intent(question: str) -> RouteDecision:
         metric_strength=metric_strength,
         scope_strength=scope_strength,
         diagnostic_strength=diagnostic_strength,
+        semantic_scores=semantic_scores,
     )
     anomaly_scope_evidence = (
         has_time_window
@@ -306,6 +428,58 @@ def classify_intent(question: str) -> RouteDecision:
 
     if has_metric and re.search(r"\b(now|latest|current)\b", text):
         return _decision(IntentType.CURRENT_STATUS_DB, 0.72, "metric_with_recentness_word", ranked)
+
+    semantic_top_intent = IntentType.DEFINITION_EXPLANATION
+    semantic_top_score = 0.0
+    for candidate_intent, candidate_score in semantic_scores.items():
+        if candidate_score > semantic_top_score:
+            semantic_top_intent = candidate_intent
+            semantic_top_score = float(candidate_score)
+
+    if semantic_top_score >= 0.5:
+        semantic_db_unscoped = (
+            semantic_top_intent
+            in {
+                IntentType.CURRENT_STATUS_DB,
+                IntentType.POINT_LOOKUP_DB,
+                IntentType.AGGREGATION_DB,
+                IntentType.COMPARISON_DB,
+                IntentType.ANOMALY_ANALYSIS_DB,
+                IntentType.FORECAST_DB,
+            }
+            and not asks_for_db_facts
+            and not has_lab_reference
+            and not has_time_window
+        )
+        if semantic_db_unscoped:
+            return _decision(
+                IntentType.DEFINITION_EXPLANATION,
+                min(0.78, 0.56 + 0.2 * semantic_top_score),
+                "semantic_unscoped_db_like",
+                ranked,
+            )
+        if semantic_top_intent in {
+            IntentType.CURRENT_STATUS_DB,
+            IntentType.AGGREGATION_DB,
+            IntentType.COMPARISON_DB,
+            IntentType.ANOMALY_ANALYSIS_DB,
+            IntentType.FORECAST_DB,
+        }:
+            if asks_for_db_facts or has_lab_reference or has_time_window or has_metric:
+                return _decision(
+                    semantic_top_intent,
+                    min(0.84, 0.58 + 0.28 * semantic_top_score),
+                    "semantic_phrase_match_db",
+                    ranked,
+                )
+        else:
+            return _decision(
+                semantic_top_intent,
+                min(0.8, 0.55 + 0.28 * semantic_top_score),
+                "semantic_phrase_match",
+                ranked,
+            )
+
     if asks_for_db_facts and not has_definition_phrase:
         # Generic measured-scope fallback defaults to aggregation.
         return _decision(IntentType.AGGREGATION_DB, 0.7, "db_scope_signal", ranked)
