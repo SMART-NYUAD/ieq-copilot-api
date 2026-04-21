@@ -133,7 +133,7 @@ class LlmRouterPlannerTests(unittest.TestCase):
     def test_plan_route_invalid_output_falls_back(self, mock_call):
         mock_call.return_value = {
             "intent_category": "prediction",
-            "intent": "definition_explanation",
+            "intent": "not_a_valid_intent",
             "confidence": 0.5,
             "reason": "bad_alignment",
             "metrics_priority": ["ieq"],
@@ -148,6 +148,22 @@ class LlmRouterPlannerTests(unittest.TestCase):
         self.assertTrue(plan.planner_fallback_used)
         self.assertEqual(plan.route_source, "planner_rule_fallback")
         self.assertIn("planner_error", str(plan.planner_fallback_reason or ""))
+
+    @patch("query_routing.llm_router_planner._call_router_planner")
+    def test_plan_route_coerces_mismatched_category_from_intent(self, mock_call):
+        mock_call.return_value = {
+            "intent_category": "analytical_visualization",
+            "intent": "aggregation_db",
+            "confidence": 0.85,
+            "reason": "time_window_change_query",
+        }
+
+        plan = plan_route("What changed in indoor air quality over the last 6 hours?")
+
+        self.assertEqual(plan.route_source, "llm_planner")
+        self.assertFalse(plan.planner_fallback_used)
+        self.assertEqual(plan.decision.intent, IntentType.AGGREGATION_DB)
+        self.assertEqual(plan.intent_category, IntentCategory.STRUCTURED_FACTUAL_DB)
 
     @patch("query_routing.llm_router_planner._call_router_planner")
     def test_plan_route_timeout_falls_back(self, mock_call):

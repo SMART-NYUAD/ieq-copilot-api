@@ -183,7 +183,10 @@ def normalize_plan(raw_plan: Dict[str, Any]) -> Tuple[IntentCategory, RouteDecis
 
     allowed = ALLOWED_CATEGORY_INTENTS.get(category, set())
     if intent not in allowed:
-        raise ValueError(f"intent_category_mismatch:{category.value}:{intent.value}")
+        # Planner models occasionally emit a valid intent with a mismatched
+        # intent_category label. Treat intent as source of truth and coerce the
+        # category rather than hard-failing into rule fallback.
+        category = CATEGORY_BY_INTENT.get(intent, IntentCategory.SEMANTIC_EXPLANATORY)
 
     try:
         confidence = float(raw_confidence)

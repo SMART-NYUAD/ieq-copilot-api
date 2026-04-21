@@ -80,6 +80,20 @@ _DEICTIC_SCOPE_HINTS = (
     " same lab",
     " same space",
 )
+_GLOBAL_SCOPE_HINTS = (
+    "all labs",
+    "all lab spaces",
+    "across all labs",
+    "across labs",
+    "all spaces",
+    "across all spaces",
+    "across spaces",
+    "all rooms",
+    "across all rooms",
+    "every lab",
+    "every space",
+    "all_labs",
+)
 
 _CONVERSATION_CONTEXT_MARKER = "\n\nprevious conversation context"
 _TIME_HINT_RE = re.compile(
@@ -417,16 +431,26 @@ def validate_db_execution_invariants(
             rf"\bat\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
         )
         has_prepositional_lab_scope = any(re.search(pattern, q) is not None for pattern in scope_patterns)
+    has_global_scope_hint = any(token in q for token in _GLOBAL_SCOPE_HINTS)
     lab_justified = (
-        resolved_lab_name is None
+        bool(resolved_lab_name)
         or bool(has_lab_hint)
         or bool(request_lab_name)
         or has_prepositional_lab_scope
         or has_explicit_second_space
-        or (generic_air_quality_query and resolved_lab_name is not None)
+        or has_global_scope_hint
     )
     if has_deictic_scope_hint and resolved_lab_name is None and not request_lab_name:
         # Pronoun-style scope ("there"/"same room") should not fan out globally.
+        lab_justified = False
+    if (
+        not has_global_scope_hint
+        and resolved_lab_name is None
+        and not has_lab_hint
+        and not request_lab_name
+    ):
+        # For measured DB queries, require explicit lab scope unless user asks
+        # for an explicit global scope (e.g. "across all labs").
         lab_justified = False
     if (
         intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
@@ -534,6 +558,17 @@ def _cap_window_end_at_now(start: datetime, end: datetime, now: datetime) -> dat
     return end
 
 
+def _month_start(year: int, month: int) -> datetime:
+    return datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+
+
+def _shift_month(year: int, month: int, delta_months: int) -> Tuple[int, int]:
+    absolute = (year * 12 + (month - 1)) + delta_months
+    shifted_year = absolute // 12
+    shifted_month = (absolute % 12) + 1
+    return shifted_year, shifted_month
+
+
 def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
     q = _latest_user_question(question).lower()
     now = datetime.now(db_time_windows.TARGET_TZ)
@@ -607,6 +642,21 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
     if day_match:
         days = max(1, min(int(day_match.group(2)), 366))
         return now - timedelta(days=days), now, f"last {days} days"
+
+    if "last month" in q:
+        this_month_start = _month_start(now.year, now.month)
+        prev_year, prev_month = _shift_month(now.year, now.month, -1)
+        prev_month_start = _month_start(prev_year, prev_month)
+        return prev_month_start, this_month_start, "last month"
+    if "this month" in q:
+        this_month_start = _month_start(now.year, now.month)
+        return this_month_start, now, "this month"
+    months_match = re.search(r"\b(last|past)\s+(\d+)\s+months?\b", q)
+    if months_match:
+        months = max(1, min(int(months_match.group(2)), 12))
+        start_year, start_month = _shift_month(now.year, now.month, -months)
+        start = _month_start(start_year, start_month)
+        return start, now, f"last {months} months"
 
     if "last week" in q:
         start_of_week = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)

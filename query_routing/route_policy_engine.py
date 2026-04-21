@@ -121,9 +121,18 @@ def _needs_measured_data(route_plan: RoutePlan, scope_class: str) -> bool:
         return declared
     if bool(signals.get("is_general_knowledge_question")):
         return False
+    if bool(signals.get("asks_for_db_facts")):
+        return True
     if bool(signals.get("requests_current_measured_data")):
         return True
     return False
+
+
+def _is_hypothetical_without_live_scope(route_plan: RoutePlan) -> bool:
+    signals = _query_signals(route_plan)
+    return bool(signals.get("is_hypothetical_conditional")) and not bool(
+        signals.get("requests_current_measured_data")
+    )
 
 
 def _resolve_execution_intent(decision_intent: IntentType, executor: RouteExecutor) -> IntentType:
@@ -182,6 +191,22 @@ def _choose_executor(
     if bool(signals.get("is_general_knowledge_question")) and not needs_measured_data:
         trace.append("general_knowledge_without_scope_forces_knowledge")
         return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+
+    if _is_hypothetical_without_live_scope(route_plan) and not needs_measured_data:
+        trace.append("hypothetical_without_live_scope_forces_knowledge")
+        response_mode = str((route_plan.planner_parameters or {}).get("response_mode") or "").strip().lower()
+        if response_mode == "knowledge_only":
+            trace.append("planner_knowledge_mode")
+        return RouteExecutor.KNOWLEDGE_QA, False, tuple(trace)
+
+    if (
+        bool(signals.get("is_baseline_reference_query"))
+        and bool(signals.get("single_explicit_lab_with_baseline_reference"))
+        and not bool(signals.get("has_explicit_second_space"))
+    ):
+        trace.append("single_lab_baseline_forces_db")
+        trace.append("measured_scope_forces_db")
+        return RouteExecutor.DB_QUERY, True, tuple(trace)
 
     if needs_measured_data:
         trace.append("measured_scope_forces_db")

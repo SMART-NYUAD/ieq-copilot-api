@@ -209,6 +209,49 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertIn("lab_scope_not_justified", result["violations"])
 
+    def test_invariants_block_aggregation_without_lab_scope_even_with_time_window(self):
+        result = validate_db_execution_invariants(
+            question="What changed in indoor air quality over the last 6 hours?",
+            intent=IntentType.AGGREGATION_DB,
+            selected_metric="ieq",
+            resolved_lab_name=None,
+            request_lab_name=None,
+            explicit_metrics=[],
+            hinted_metrics=["ieq", "co2", "pm25"],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": True,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("lab_scope_not_justified", result["violations"])
+
+    def test_invariants_allow_aggregation_when_global_scope_explicit(self):
+        result = validate_db_execution_invariants(
+            question="What changed in indoor air quality across all labs over the last 6 hours?",
+            intent=IntentType.AGGREGATION_DB,
+            selected_metric="ieq",
+            resolved_lab_name=None,
+            request_lab_name=None,
+            explicit_metrics=[],
+            hinted_metrics=["ieq", "co2", "pm25"],
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": True,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertTrue(result["allowed"])
+
     def test_prepare_db_query_returns_lab_first_clarification_when_lab_missing(self):
         result = prepare_db_query(
             question="Would you say it's good the air quality there?",
@@ -220,6 +263,24 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "has_db_scope_phrase": False,
                     "has_metric_reference": False,
                     "has_time_window_hint": False,
+                    "has_lab_reference": False,
+                }
+            },
+        )
+        self.assertEqual(result.get("timescale"), "clarify")
+        self.assertIn("need the lab first", str(result.get("fallback_answer") or "").lower())
+
+    def test_prepare_db_query_returns_clarification_for_missing_lab_on_air_quality_window(self):
+        result = prepare_db_query(
+            question="What changed in indoor air quality over the last 6 hours?",
+            intent=IntentType.AGGREGATION_DB,
+            lab_name=None,
+            planner_hints={
+                "query_signals": {
+                    "asks_for_db_facts": True,
+                    "has_db_scope_phrase": True,
+                    "has_metric_reference": False,
+                    "has_time_window_hint": True,
                     "has_lab_reference": False,
                 }
             },
@@ -466,6 +527,96 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
         self.assertIn("tvoc", metrics_used)
+
+    def test_aggregation_multi_metric_without_lab_uses_all_labs_scope(self):
+        class _Cursor:
+            def __init__(self):
+                self.last_params = None
+
+            def execute(self, _sql, params):
+                self.last_params = params
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": None,
+                    "co2": 430.0,
+                    "pm25": 3.2,
+                    "tvoc": 0.09,
+                    "humidity": 44.8,
+                    "ieq": 82.0,
+                    "reading_count": 120,
+                }
+
+        cur = _Cursor()
+        result = execute_intent_query(
+            cur=cur,
+            question="What changed in indoor air quality over the last 6 hours?",
+            intent=IntentType.AGGREGATION_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=datetime(2026, 3, 22, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 22, 6, 0, tzinfo=timezone.utc),
+            window_label="last 6 hours",
+            resolved_lab_name=None,
+            compared_spaces=[],
+            explicit_metrics=["co2"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
+        self.assertEqual(len(cur.last_params or ()), 2)
+        self.assertIn("all_labs", str(result.get("fallback_answer") or ""))
+        series = (((result.get("chart_payload") or {}).get("chart") or {}).get("series") or [])
+        self.assertEqual((series[0] or {}).get("name"), "all_labs")
+
+    def test_point_lookup_historical_multi_metric_without_lab_uses_all_labs_scope(self):
+        class _Cursor:
+            def __init__(self):
+                self.last_params = None
+
+            def execute(self, _sql, params):
+                self.last_params = params
+                return None
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return {
+                    "lab_space": None,
+                    "co2": 425.0,
+                    "pm25": 2.8,
+                    "bucket": datetime(2026, 3, 22, 5, 55, tzinfo=timezone.utc),
+                    "reading_count": 84,
+                }
+
+        cur = _Cursor()
+        result = execute_intent_query(
+            cur=cur,
+            question="How was indoor air quality over the last 6 hours?",
+            intent=IntentType.POINT_LOOKUP_DB,
+            metric_alias="co2",
+            metric_column="co2_avg",
+            unit="ppm",
+            window_start=datetime(2026, 3, 22, 0, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 3, 22, 6, 0, tzinfo=timezone.utc),
+            window_label="last 6 hours",
+            resolved_lab_name=None,
+            compared_spaces=[],
+            explicit_metrics=["co2", "pm25"],
+            hinted_metrics=[],
+            max_chart_lookback_points=0,
+        )
+        self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
+        self.assertEqual(len(cur.last_params or ()), 2)
+        self.assertIn("all_labs", str(result.get("fallback_answer") or ""))
+        series = (((result.get("chart_payload") or {}).get("chart") or {}).get("series") or [])
+        self.assertEqual((series[0] or {}).get("name"), "all_labs")
 
     def test_current_status_retries_last_six_hours_when_last_hour_empty(self):
         class _Cursor:

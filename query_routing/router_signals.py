@@ -170,10 +170,22 @@ _GREETING_ONLY_RE = re.compile(
 _GENERAL_CONVERSATION_QUESTION_RE = re.compile(
     r"^\s*(?:who|what|when|where|why|how|can|could|would|is|are|do|does|did)\b"
 )
+_DEFINITIONAL_QUERY_RE = re.compile(
+    r"\b("
+    r"what\s+is|what\s+does|what\s+are|what\s+do|"
+    r"meaning\s+of|define|definition|explain|"
+    r"what\s+do\s+you\s+mean|tell\s+me\s+about"
+    r")\b"
+)
+_SCOPED_LOCATION_RE = re.compile(
+    r"\bin\s+(?:[a-z0-9]+_(?:lab|office|room|space)|[a-z0-9]+\s+(?:lab|office|room|space))\b"
+)
 
 
 def _is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
+    if _DEFINITIONAL_QUERY_RE.search(q):
+        return False
     issue_hints = ("issue", "issues", "problem", "problems", "anything wrong", "wrong")
     currentness_hints = ("right now", "now", "current", "currently", "latest", "today", "at this moment")
     if any(hint in q for hint in issue_hints) and (
@@ -298,7 +310,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     has_non_comparison_scope = (
         has_time_window_hint
         or has_lab_reference
-        or re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is not None
+        or _SCOPED_LOCATION_RE.search(q) is not None
     )
     measured_scope_request = (
         requests_current_measured_data
@@ -363,7 +375,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
     explicit_scope_intent = (
         has_time_window_hint
         or any(hint in q for hint in _COMPARISON_HINTS)
-        or re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is not None
+        or _SCOPED_LOCATION_RE.search(q) is not None
     )
     if query_scope_class == QueryScopeClass.AMBIGUOUS.value and explicit_scope_intent and has_domain_anchor:
         if has_non_comparison_scope:
@@ -372,7 +384,7 @@ def extract_query_signals(question: str, lab_name: Optional[str] = None) -> Dict
         any(hint in q for hint in _COMPARISON_HINTS)
         and not has_lab_reference
         and not has_time_window_hint
-        and re.search(r"\bin\s+[a-z0-9_ ]+\b", q) is None
+        and _SCOPED_LOCATION_RE.search(q) is None
     ):
         asks_for_db_facts = False
     if is_hypothetical_conditional and not requests_current_measured_data and not (has_lab_reference and has_metric_reference):

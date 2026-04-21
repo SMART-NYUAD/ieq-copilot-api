@@ -291,14 +291,12 @@ def _build_plan_defaults_from_classification(
 ) -> Dict[str, Any]:
     intent = str(raw_classification.get("intent") or "").strip().lower()
     scope = str(query_signals.get("query_scope_class") or "").strip().lower()
-    asks_db = bool(query_signals.get("asks_for_db_facts"))
-    is_general_knowledge = bool(query_signals.get("is_general_knowledge_question"))
     is_diagnostic = bool(query_signals.get("is_diagnostic_phrase"))
+    # Planner-first defaulting: classify intent first, use deterministic signals
+    # as secondary hints rather than primary response-mode selectors.
     if scope == QueryScopeClass.NON_DOMAIN.value:
         response_mode = "knowledge_only"
-    elif asks_db:
-        response_mode = "db"
-    elif intent in {IntentType.DEFINITION_EXPLANATION.value, IntentType.UNKNOWN_FALLBACK.value} and is_general_knowledge:
+    elif intent in {IntentType.DEFINITION_EXPLANATION.value, IntentType.UNKNOWN_FALLBACK.value}:
         response_mode = "knowledge_only"
     else:
         response_mode = "db"

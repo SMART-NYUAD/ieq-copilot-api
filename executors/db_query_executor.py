@@ -51,6 +51,14 @@ try:
     from http_schemas import validate_tool_evidence
 except ImportError:
     from ..http_schemas import validate_tool_evidence
+try:
+    from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+except ImportError:
+    from ..evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+try:
+    from storage.guideline_store import get_thresholds_for_metrics
+except ImportError:
+    from ..storage.guideline_store import get_thresholds_for_metrics
 
 
 METRIC_UNIT_MAP = {
@@ -485,6 +493,41 @@ def _infer_metrics_from_rows(rows: List[Dict[str, Any]], fallback_metric: str) -
     return inferred
 
 
+def _collect_citation_metrics(
+    *,
+    question: str,
+    metric_alias: str,
+    metrics_used: Optional[List[str]] = None,
+    rows: Optional[List[Dict[str, Any]]] = None,
+    context_payload: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """
+    Build a robust metric list for guideline/citation retrieval.
+    """
+    collected: List[str] = []
+    for metric in list(metrics_used or []):
+        token = str(metric or "").strip().lower()
+        if token and token not in collected:
+            collected.append(token)
+
+    for metric in _infer_metrics_from_rows(rows=rows or [], fallback_metric=metric_alias):
+        token = str(metric or "").strip().lower()
+        if token and token not in collected:
+            collected.append(token)
+
+    payload_coverage = dict((context_payload or {}).get("metric_coverage") or {})
+    for metric in list(payload_coverage.get("available_metrics") or []):
+        token = str(metric or "").strip().lower()
+        if token and token not in collected:
+            collected.append(token)
+
+    if _is_air_quality_query_text(question):
+        for metric in ("co2", "pm25", "tvoc", "humidity", "ieq"):
+            if metric not in collected:
+                collected.append(metric)
+    return collected
+
+
 def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
     violations = list(invariant.get("violations") or [])
     if "lab_scope_not_justified" in violations:
@@ -524,8 +567,10 @@ def prepare_db_query(
     intent: IntentType,
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     query_text = str(question or "").strip()
+    guideline_records = list(guideline_records or [])
     metric_alias, metric_column = db_parsing.pick_metric(query_text)
     explicit_metrics = db_parsing.extract_metric_aliases(query_text)
     hinted_metrics = db_parsing.planner_metrics(planner_hints)
@@ -559,6 +604,8 @@ def prepare_db_query(
         planner_hints=planner_hints,
     )
     if not bool(invariant.get("allowed")):
+        if not guideline_records and metric_alias:
+            guideline_records = get_thresholds_for_metrics([metric_alias])
         return {
             "intent": intent,
             "metric_alias": metric_alias,
@@ -578,6 +625,7 @@ def prepare_db_query(
             "resolved_lab_name": resolved_lab_name,
             "forecast": None,
             "knowledge_cards": [],
+            "guideline_records": guideline_records,
             "cards_retrieved": 0,
             "correlation": None,
             "sources": [],
@@ -611,6 +659,15 @@ def prepare_db_query(
     correlation_data = branch_result.get("correlation_data")
     metric_alias = str(branch_result.get("metric_alias") or metric_alias)
     metrics_used = list(branch_result.get("metrics_used") or [metric_alias])
+    if not guideline_records:
+        citation_metrics = _collect_citation_metrics(
+            question=query_text,
+            metric_alias=metric_alias,
+            metrics_used=metrics_used,
+            rows=rows,
+            context_payload=None,
+        )
+        guideline_records = get_thresholds_for_metrics(citation_metrics)
     requested_window_start = window_start
     requested_window_end = window_end
     requested_window_label = window_label
@@ -694,6 +751,7 @@ def prepare_db_query(
         "resolved_lab_name": resolved_lab_name,
         "forecast": forecast_data,
         "knowledge_cards": knowledge_cards,
+        "guideline_records": guideline_records,
         "cards_retrieved": len(knowledge_cards),
         "correlation": correlation_data,
         "sources": _build_db_sources(
@@ -737,7 +795,8 @@ def _render_db_answer_with_llm(
     forecast: Optional[Dict[str, Any]] = None,
     correlation: Optional[Dict[str, Any]] = None,
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
-) -> Tuple[str, bool]:
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[str, bool, List[Dict[str, Any]]]:
     llm_rows = rows
     row_summary: Dict[str, Any] = {}
     if intent == IntentType.FORECAST_DB and forecast:
@@ -774,12 +833,15 @@ def _render_db_answer_with_llm(
                 "correlation": correlation.get("correlation"),
                 "row_count": correlation.get("row_count"),
             }
+    effective_guideline_records = list(guideline_records or [])
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
     interpretation_cards, guardrails = _split_knowledge_cards(knowledge_cards)
     context_data = build_grounded_context_sections(
         measured_room_facts=payload,
         backend_semantic_state=None,
         knowledge_cards=interpretation_cards,
         communication_guardrails=guardrails,
+        numbered_sources_block=numbered_sources_block,
     )
     prompt_template = get_shared_prompt_template(
         response_directive=_db_response_directive(intent, question=question)
@@ -793,10 +855,10 @@ def _render_db_answer_with_llm(
         prompt_text = _build_prompt_text_from_messages(messages)
         text = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
         if text:
-            return text, True
+            return text, True, indexed_sources
     except Exception:
         pass
-    return str(fallback_answer or ""), False
+    return str(fallback_answer or ""), False, indexed_sources
 
 
 def run_db_query(
@@ -804,6 +866,7 @@ def run_db_query(
     intent: IntentType,
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict:
     query_text = str(question or "").strip()
     context = prepare_db_query(
@@ -811,11 +874,14 @@ def run_db_query(
         intent=intent,
         lab_name=lab_name,
         planner_hints=planner_hints,
+        guideline_records=guideline_records,
     )
     invariant_violation = context.get("invariant_violation")
     if invariant_violation:
         return {
             "answer": str(context.get("fallback_answer") or ""),
+            "footnotes": [],
+            "indexed_sources": [],
             "data": [],
             "cards_retrieved": 0,
             "forecast": None,
@@ -842,7 +908,7 @@ def run_db_query(
                 }
             ),
         }
-    answer, llm_used = _render_db_answer_with_llm(
+    answer, llm_used, indexed_sources = _render_db_answer_with_llm(
         question=query_text,
         intent=intent,
         metric_alias=context["metric_alias"],
@@ -853,6 +919,12 @@ def run_db_query(
         forecast=context.get("forecast"),
         correlation=context.get("correlation"),
         knowledge_cards=context.get("knowledge_cards"),
+        guideline_records=context.get("guideline_records"),
+    )
+    resolved_answer, footnotes = process_answer_citations(
+        answer_text=answer,
+        guideline_records=list(context.get("guideline_records") or []),
+        indexed_sources=indexed_sources,
     )
     confidence_notes: List[str] = []
     if not llm_used:
@@ -895,7 +967,9 @@ def run_db_query(
     )
 
     return {
-        "answer": answer,
+        "answer": resolved_answer,
+        "footnotes": footnotes,
+        "indexed_sources": indexed_sources,
         "data": context["rows"],
         "cards_retrieved": int(context.get("cards_retrieved") or 0),
         "forecast": context.get("forecast"),
@@ -918,6 +992,7 @@ async def stream_db_query(
     planner_hints: Optional[Dict[str, Any]] = None,
     query_context: Optional[Dict[str, Any]] = None,
     think: Optional[bool] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncIterator[str]:
     query_text = str(question or "").strip()
     context = query_context or prepare_db_query(
@@ -925,12 +1000,29 @@ async def stream_db_query(
         intent=intent,
         lab_name=lab_name,
         planner_hints=planner_hints,
+        guideline_records=guideline_records,
     )
     if context.get("invariant_violation"):
         yield str(context.get("fallback_answer") or "")
         return
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
+    source_metrics: List[str] = []
+    for src in list(context.get("sources") or []):
+        for metric in list(src.get("metrics_used") or []):
+            token = str(metric or "").strip().lower()
+            if token and token not in source_metrics:
+                source_metrics.append(token)
+    citation_metrics = _collect_citation_metrics(
+        question=query_text,
+        metric_alias=str(context.get("metric_alias") or "ieq"),
+        metrics_used=source_metrics,
+        rows=list(context.get("rows") or []),
+        context_payload=dict(context.get("payload") or {}),
+    )
+    guideline_records = get_thresholds_for_metrics(citation_metrics)
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
+    context["indexed_sources"] = indexed_sources
 
     prompt_template = get_shared_prompt_template(
         response_directive=_db_response_directive(intent, question=query_text)
@@ -941,6 +1033,7 @@ async def stream_db_query(
         backend_semantic_state=None,
         knowledge_cards=interpretation_cards,
         communication_guardrails=guardrails,
+        numbered_sources_block=numbered_sources_block,
     )
     messages = prompt_template.format_messages(
         question=query_text,

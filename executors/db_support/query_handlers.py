@@ -649,17 +649,26 @@ def _handle_aggregation_multi(
             for metric, column in metric_columns
         ]
     )
-    sql = f"""
-        SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-        FROM lab_ieq_final
-        WHERE bucket >= %s
-          AND bucket < %s
-          AND (%s IS NULL OR lab_space = %s)
-        GROUP BY lab_space
-        ORDER BY reading_count DESC
-        LIMIT 1
-    """
-    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+    if resolved_lab_name:
+        sql = f"""
+            SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+              AND lab_space = %s
+            GROUP BY lab_space
+            ORDER BY reading_count DESC
+            LIMIT 1
+        """
+        cur.execute(sql, (window_start, window_end, resolved_lab_name))
+    else:
+        sql = f"""
+            SELECT 'all_labs' AS lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+            FROM lab_ieq_final
+            WHERE bucket >= %s
+              AND bucket < %s
+        """
+        cur.execute(sql, (window_start, window_end))
     row = cur.fetchone()
     rows = [dict(row)] if row else []
     metric_names = [m for m, _ in metric_columns]
@@ -736,17 +745,26 @@ def _handle_point_lookup(
                     for metric, column in metric_columns
                 ]
             )
-            sql = f"""
-                SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-                FROM lab_ieq_final
-                WHERE bucket >= %s
-                  AND bucket < %s
-                  AND (%s IS NULL OR lab_space = %s)
-                GROUP BY lab_space
-                ORDER BY reading_count DESC
-                LIMIT 1
-            """
-            cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
+            if resolved_lab_name:
+                sql = f"""
+                    SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+                    FROM lab_ieq_final
+                    WHERE bucket >= %s
+                      AND bucket < %s
+                      AND lab_space = %s
+                    GROUP BY lab_space
+                    ORDER BY reading_count DESC
+                    LIMIT 1
+                """
+                cur.execute(sql, (window_start, window_end, resolved_lab_name))
+            else:
+                sql = f"""
+                    SELECT 'all_labs' AS lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
+                    FROM lab_ieq_final
+                    WHERE bucket >= %s
+                      AND bucket < %s
+                """
+                cur.execute(sql, (window_start, window_end))
             row = cur.fetchone()
             rows = [dict(row)] if row else []
             metric_names = [m for m, _ in metric_columns]

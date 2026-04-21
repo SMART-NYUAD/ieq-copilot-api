@@ -12,6 +12,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 try:
+    from evidence.citation_processor import (
+        build_numbered_sources_block,
+        extract_citation_indices_from_answer,
+    )
     from query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
@@ -23,6 +27,7 @@ try:
     )
     from executors.db_query_executor import prepare_db_query, stream_db_query
     from executors.env_query_langchain import (
+        get_guideline_records_for_question,
         stream_answer_env_question,
     )
     from http_routes.query_runtime import (
@@ -53,6 +58,10 @@ try:
     )
     from runtime_errors import log_exception, stream_error_payload
 except ImportError:
+    from ..evidence.citation_processor import (
+        build_numbered_sources_block,
+        extract_citation_indices_from_answer,
+    )
     from ..query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
@@ -64,6 +73,7 @@ except ImportError:
     )
     from ..executors.db_query_executor import prepare_db_query, stream_db_query
     from ..executors.env_query_langchain import (
+        get_guideline_records_for_question,
         stream_answer_env_question,
     )
     from .query_runtime import (
@@ -138,6 +148,8 @@ def _build_non_stream_response(
     query_metadata: Dict[str, Any],
     chart: Optional[Dict[str, Any]] = None,
     visualization_type: Optional[str] = "none",
+    footnotes: Optional[List[Dict[str, Any]]] = None,
+    citation_sources: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     created = int(time.time())
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -164,6 +176,8 @@ def _build_non_stream_response(
         "x_router": query_metadata,
         "x_visualization_type": visualization_type or "none",
         "x_chart": chart,
+        "x_footnotes": list(footnotes or []),
+        "x_citation_sources": list(citation_sources or []),
     }
 
 
@@ -217,6 +231,8 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 query_metadata=query_metadata,
                 chart=result.get("chart"),
                 visualization_type=result.get("visualization_type", "none"),
+                footnotes=list(result.get("footnotes") or []),
+                citation_sources=list(result.get("citation_sources") or result.get("indexed_sources") or []),
             )
         except Exception as exc:
             code = log_exception(exc, scope="openai.non_stream")
@@ -259,15 +275,29 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
         chart = None
         db_context = stream_ctx.db_context
         x_router = {}
+        citation_sources: List[Dict[str, Any]] = []
+        knowledge_guideline_records: List[Dict[str, Any]] = []
         try:
             if should_clarify_response:
                 x_router = dict(stream_ctx.meta or {})
             elif use_knowledge_executor:
                 x_router = dict(stream_ctx.meta or {})
+                knowledge_guideline_records = await run_in_threadpool(
+                    get_guideline_records_for_question,
+                    str(stream_ctx.effective_question or latest_user_question),
+                    3,
+                )
+                _, citation_sources = build_numbered_sources_block(knowledge_guideline_records)
             else:
                 db_context = stream_ctx.db_context
                 visualization_type = db_context.get("visualization_type", "none")
                 chart = db_context.get("chart")
+                citation_sources = list((db_context or {}).get("indexed_sources") or [])
+                if not citation_sources:
+                    _, citation_sources = build_numbered_sources_block(
+                        list((db_context or {}).get("guideline_records") or [])
+                    )
+                    db_context["indexed_sources"] = citation_sources
                 if stream_ctx.mode == "db_clarify":
                     x_router = dict(stream_ctx.meta or {})
                     x_router["db_clarify_text"] = str(db_context.get("fallback_answer") or "")
@@ -310,6 +340,7 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 "x_router": x_router,
                 "x_visualization_type": visualization_type,
                 "x_chart": chart,
+                "x_citation_sources": citation_sources,
                 "choices": [
                     {
                         "index": 0,
@@ -360,11 +391,14 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                 )
                 x_router["turn_index"] = turn_index
             elif use_knowledge_executor:
+                knowledge_indexed_sources: List[Dict[str, Any]] = []
                 chunk_stream = stream_answer_env_question(
                     user_question=str(stream_ctx.knowledge_question or ""),
                     k=max(1, min(k, 8)),
                     space=stream_ctx.knowledge_lab_name,
                     think=request.think,
+                    guideline_records=knowledge_guideline_records,
+                    indexed_sources_out=knowledge_indexed_sources,
                 )
             else:
                 if stream_ctx.mode == "db_clarify":
@@ -382,6 +416,7 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     )
 
             streamed_answer = ""
+            footnotes: List[Dict[str, Any]] = []
             if not should_clarify_response:
                 async for chunk_text in chunk_stream:
                     if not chunk_text:
@@ -401,6 +436,33 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                         ],
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
+
+                if use_knowledge_executor:
+                    footnotes = extract_citation_indices_from_answer(
+                        answer_text=streamed_answer,
+                        indexed_sources=knowledge_indexed_sources or citation_sources,
+                    )
+                else:
+                    footnotes = extract_citation_indices_from_answer(
+                        answer_text=streamed_answer,
+                        indexed_sources=citation_sources,
+                    )
+                if footnotes:
+                    footnote_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "x_footnotes": footnotes,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(footnote_chunk)}\n\n"
 
                 turn_index = persist_turn(
                     conversation_id=normalized_conversation_id,

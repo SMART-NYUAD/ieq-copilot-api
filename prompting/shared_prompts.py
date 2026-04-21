@@ -7,20 +7,25 @@ from langchain_core.prompts import ChatPromptTemplate
 
 
 GUIDELINE_CITATIONS = """
-Use these citation tags in brackets after quantitative statements (do NOT mention source names directly):
+Use retrieved citation records as the source of truth for all threshold claims.
+Do not rely on memorized standards or hardcoded bands.
 
-- [PM25] PM2.5 bands: <=9 good, <=35.4 moderate, <=55.4 unhealthy_sensitive, <=125.4 unhealthy, <=225.4 very_unhealthy, >225.4 hazardous (ug/m3)
-- [CO2] CO2 bands: <=599 good, <=999 moderate, <=1449 polluted, <=2499 very_polluted, >2499 severely_polluted (ppm)
-- [TVOC] TVOC bands: <=0.087 good, <=0.261 moderate, <=0.66 polluted, <=2.2 very_polluted, >2.2 severely_polluted (ppm)
-- [HUM] Humidity bands: <=15 very_uncomfortable, <=35 slightly_uncomfortable, <=65 comfortable, <=87 slightly_uncomfortable_high, >87 very_uncomfortable_high (%)
-- [TEMP] Temperature bands: <=11 very_uncomfortable, <=20 slightly_uncomfortable, <=29 comfortable, <=39 slightly_uncomfortable_high, >39 very_uncomfortable_high (degC)
-- [LUX] Illuminance bands: <=249 calm_light, <=499 average_illumination, <=749 bright_light, <=999 very_bright, >999 extremely_bright (lux)
-- [NOISE] Noise bands: <=39 quiet, <=59 average, <=79 loud, <=119 harmful, >119 dangerous (dB)
-- [IEQ] IEQ index bands: <=25 low, <=50 moderate, <=75 medium, >75 high (higher is better overall indoor environmental quality)
-- [IIAQ] IIAQ = 100 - max(PPD_PM25, PPD_VOC, PPD_CO2)
-- [ITC] ITC = 100 - PPD_thermal
-- [IAC] IAC is derived from noise with comfort decay above 35 dB
-- [IIL] IIL is derived from lux with peak comfort around 300-500 lux
+CITATION AND COMPLIANCE GUARDRAILS:
+1. If "## Citation Sources" is present, only cite thresholds/claims from that list.
+2. If no "## Citation Sources" are present, do not emit [N] citations.
+3. Never invent standards, section references, or citation numbers.
+4. Never claim "ASHRAE 62.1 requires CO2 below 1000 ppm" (or any fixed CO2 ppm limit).
+   This claim is false. ASHRAE 62.1 specifies ventilation rates, not a CO2 concentration threshold.
+5. For CO2 ppm threshold classification, use a valid threshold source from Citation Sources
+   (for example RESET Air Grade A) and cite that source index [N].
+6. If asked about ASHRAE + CO2 ppm limits, explicitly correct the misconception:
+   "ASHRAE 62.1 does not define a CO2 ppm limit; it defines ventilation requirements."
+7. Distinguish source tiers in language:
+   - regulatory: normative threshold/compliance language
+   - research: "research suggests"/"studies indicate" language
+   - internal: explicitly label as internal system metric/model
+8. Do not present internal IEQ index/sub-index scores as external standards.
+9. If context lacks a threshold for a claim, say the threshold is unavailable in provided sources.
 """
 
 
@@ -37,16 +42,26 @@ Grounding rules:
 - When General Knowledge Policy says `allow_general_knowledge=true` and grounded data is insufficient, you may draw on general knowledge for educational explanations — but avoid citing specific numeric thresholds or making compliance/operational claims from memory.
 - Do not forecast or predict values unless a `forecast` block is present in the context.
 
-Guideline bands and citations:
+Guideline thresholds and citation rules:
 {GUIDELINE_CITATIONS}
-- You may use these citation tags (e.g. [CO2], [PM25]) when classifying a metric value — but only append them when they genuinely add clarity, not on every number.
+
+When citing a threshold or claim from the Citation Sources section:
+- Insert [N] immediately after the claim, before punctuation
+- Use the number from the Citation Sources list
+- Example: "CO2 exceeds RESET Air Grade A (1,000 ppm) [1]."
+- Example: "Research suggests cognitive effects above 1,000 ppm [2]."
+- Never cite a number not in the Citation Sources list
+- Never add a References section — the system handles this
+- If no Citation Sources are provided, do not add any [N] markers
 
 Style:
 - Be conversational and natural. Adapt your tone to the question — a quick factual question deserves a short direct answer, not a structured report.
+- Keep the tone warm, supportive, and human while remaining accurate and compliant.
+- Prefer natural, compassionate phrasing over clinical/policy-heavy wording unless the user explicitly asks for formal compliance language.
 - If the user asks for "risk(s)", focus on concrete risks, likely drivers, and practical mitigation actions.
 - Write for non-technical occupants: plain language, no jargon, focus on what people would actually notice or feel.
 - Let the response length match the complexity of the question. Simple questions get concise answers; detailed assessments can be longer.
-- Use emojis sparingly where they genuinely aid readability (e.g. ✅, ⚠️, 🌡️, 💧).
+- Light emoji usage is encouraged when it improves readability and tone; target 0-4 relevant emojis per response (e.g. ✅, ⚠️, 🌡️, 💧, 🌬️).
 - Format times in a human-friendly way (e.g. "Mon DD, YYYY, HH:MM AM/PM"). If `display_start` / `display_end` are provided, use those exact strings.
 - If the user asks for a chart/graph, do not say you can't show visuals — assume the frontend renders them and interpret the data.
 - For assessments, include practical next-step guidance and actionable recommendations grounded in the data.
@@ -82,6 +97,8 @@ def build_grounded_context_sections(
     backend_semantic_state: Any = None,
     knowledge_cards: Optional[Iterable[Any]] = None,
     communication_guardrails: Optional[Iterable[Any]] = None,
+    guideline_records: Optional[Iterable[Any]] = None,
+    numbered_sources_block: Optional[str] = None,
     allow_general_knowledge: bool = False,
 ) -> str:
     """Build a labeled grounded-context string shared by DB and card paths."""
@@ -94,6 +111,25 @@ def build_grounded_context_sections(
         "## Backend Semantic State",
         _stringify_section(backend_semantic_state),
         "",
+    ]
+
+    # Pre-numbered source list is preferred for stable streaming citations.
+    if numbered_sources_block:
+        sections += [
+            "## Citation Sources",
+            numbered_sources_block,
+            "",
+        ]
+    elif guideline_records:
+        raw_records = list(guideline_records)
+        if raw_records:
+            sections += [
+                "## Applicable Guidelines and Standards",
+                _stringify_section(raw_records),
+                "",
+            ]
+
+    sections += [
         "## Knowledge Interpretation Cards",
         _stringify_section(knowledge_cards),
         "",
@@ -107,11 +143,9 @@ def build_grounded_context_sections(
                 "allowed_scope": [
                     "broad concept definitions",
                     "simple educational framing",
-                    "conversational rephrasing",
                 ],
                 "disallowed_scope": [
                     "numeric thresholds from memory",
-                    "site-specific operational claims from memory",
                     "ungrounded risk/compliance judgments",
                 ],
             }

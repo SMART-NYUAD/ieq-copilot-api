@@ -44,6 +44,14 @@ try:
     from query_routing.router_signals import extract_query_signals
 except ImportError:
     from ..query_routing.router_signals import extract_query_signals
+try:
+    from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+except ImportError:
+    from ..evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+try:
+    from storage.guideline_store import search_guideline_records, wants_guideline_detail
+except ImportError:
+    from ..storage.guideline_store import search_guideline_records, wants_guideline_detail
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from card-based retrieval context.
@@ -199,10 +207,18 @@ def _prune_knowledge_context_cache(now: float) -> None:
         _KNOWLEDGE_CONTEXT_CACHE.pop(oldest_key, None)
 
 
-def _build_knowledge_context_uncached(user_question: str, k: int = 5, space: Optional[str] = None) -> Dict[str, Any]:
+def _build_knowledge_context_uncached(
+    user_question: str,
+    k: int = 5,
+    space: Optional[str] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     knowledge_cards = search_knowledge_cards(user_question, k=max(3, min(5, k)))
     grounded_context = build_card_grounded_context(
-        [], knowledge_cards, allow_general_knowledge=True
+        [],
+        knowledge_cards,
+        allow_general_knowledge=True,
+        guideline_records=guideline_records,
     )
     return {
         "knowledge_cards": knowledge_cards,
@@ -210,11 +226,21 @@ def _build_knowledge_context_uncached(user_question: str, k: int = 5, space: Opt
     }
 
 
-def _build_knowledge_context(user_question: str, k: int = 5, space: Optional[str] = None) -> Dict[str, Any]:
+def _build_knowledge_context(
+    user_question: str,
+    k: int = 5,
+    space: Optional[str] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     key = _knowledge_context_cache_key(user_question=user_question, k=k, space=space)
     ttl_seconds = _knowledge_context_cache_ttl_seconds()
     if ttl_seconds <= 0:
-        return _build_knowledge_context_uncached(user_question=user_question, k=k, space=space)
+        return _build_knowledge_context_uncached(
+            user_question=user_question,
+            k=k,
+            space=space,
+            guideline_records=guideline_records,
+        )
 
     now = time.monotonic()
     with _KNOWLEDGE_CONTEXT_CACHE_LOCK:
@@ -222,7 +248,12 @@ def _build_knowledge_context(user_question: str, k: int = 5, space: Optional[str
         if cached and cached[0] > now:
             return cached[1]
 
-    context = _build_knowledge_context_uncached(user_question=user_question, k=k, space=space)
+    context = _build_knowledge_context_uncached(
+        user_question=user_question,
+        k=k,
+        space=space,
+        guideline_records=guideline_records,
+    )
     expires_at = now + ttl_seconds
     with _KNOWLEDGE_CONTEXT_CACHE_LOCK:
         _KNOWLEDGE_CONTEXT_CACHE[key] = (expires_at, context)
@@ -241,9 +272,26 @@ def get_knowledge_context_stats(user_question: str, k: int = 5, space: Optional[
     }
 
 
+def get_guideline_records_for_question(
+    user_question: str,
+    k: int = 3,
+) -> List[Dict[str, Any]]:
+    if not wants_guideline_detail(user_question):
+        return []
+    return search_guideline_records(question=user_question, k=max(1, int(k or 3)))
+
+
 def answer_env_question_with_metadata(
-    user_question: str, k: int = 5, space: Optional[str] = None
+    user_question: str,
+    k: int = 5,
+    space: Optional[str] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    effective_guideline_records = list(guideline_records or [])
+    if wants_guideline_detail(user_question):
+        searched_guidelines = search_guideline_records(question=user_question, k=3)
+        if searched_guidelines:
+            effective_guideline_records = searched_guidelines
     if _is_non_domain_question(user_question):
         messages = get_general_chat_prompt().format_messages(question=user_question)
         prompt_text = _build_prompt_text_from_messages(messages)
@@ -263,20 +311,41 @@ def answer_env_question_with_metadata(
         )
         return {
             "answer": answer,
+            "footnotes": [],
+            "indexed_sources": [],
             "cards_retrieved": 0,
             "knowledge_cards_retrieved": 0,
+            "guideline_records": [],
             "evidence": evidence,
         }
 
-    context = _build_knowledge_context(user_question=user_question, k=k, space=space)
+    context = _build_knowledge_context(
+        user_question=user_question,
+        k=k,
+        space=space,
+        guideline_records=effective_guideline_records,
+    )
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
+    grounded_context = build_grounded_context_sections(
+        measured_room_facts=[],
+        backend_semantic_state=None,
+        knowledge_cards=context.get("knowledge_cards", []),
+        numbered_sources_block=numbered_sources_block,
+        allow_general_knowledge=True,
+    )
     qa_prompt = get_qa_prompt()
     messages = qa_prompt.format_messages(
         question=user_question,
         context_label="Measured room facts with knowledge grounding",
-        context_data=context["grounded_context"],
+        context_data=grounded_context,
     )
     prompt_text = _build_prompt_text_from_messages(messages)
     answer = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
+    resolved_answer, footnotes = process_answer_citations(
+        answer_text=answer,
+        guideline_records=effective_guideline_records,
+        indexed_sources=indexed_sources,
+    )
     knowledge_cards = context.get("knowledge_cards") or []
     evidence_sources = []
     for card in knowledge_cards:
@@ -306,9 +375,12 @@ def answer_env_question_with_metadata(
         }
     )
     return {
-        "answer": answer,
+        "answer": resolved_answer,
+        "footnotes": footnotes,
+        "indexed_sources": indexed_sources,
         "cards_retrieved": int(len(knowledge_cards)),
         "knowledge_cards_retrieved": int(len(knowledge_cards)),
+        "guideline_records": effective_guideline_records,
         "evidence": evidence,
     }
 
@@ -338,6 +410,7 @@ def build_card_grounded_context(
     cards: List[Dict[str, Any]],
     knowledge_cards: List[Dict[str, Any]],
     allow_general_knowledge: bool = False,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Format measured room facts and knowledge guidance into labeled sections."""
     measured_room_facts = []
@@ -358,6 +431,7 @@ def build_card_grounded_context(
         backend_semantic_state=None,
         knowledge_cards=interpretation_cards,
         communication_guardrails=guardrails,
+        guideline_records=guideline_records,
         allow_general_knowledge=allow_general_knowledge,
     )
 
@@ -504,7 +578,12 @@ def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Option
 # TOP-LEVEL QUERY FUNCTION
 # --------------------------------------------------------------------
 
-def answer_env_question(user_question: str, k: int = 5, space: Optional[str] = None) -> str:
+def answer_env_question(
+    user_question: str,
+    k: int = 5,
+    space: Optional[str] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """
     Answer a user question about indoor air quality using knowledge cards.
     
@@ -516,7 +595,12 @@ def answer_env_question(user_question: str, k: int = 5, space: Optional[str] = N
     Returns:
         Answer string from the LLM
     """
-    result = answer_env_question_with_metadata(user_question=user_question, k=k, space=space)
+    result = answer_env_question_with_metadata(
+        user_question=user_question,
+        k=k,
+        space=space,
+        guideline_records=guideline_records,
+    )
     return str(result.get("answer") or "")
 
 
@@ -525,6 +609,8 @@ async def stream_answer_env_question(
     k: int = 5,
     space: Optional[str] = None,
     think: Optional[bool] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+    indexed_sources_out: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncIterator[str]:
     """
     Stream answer tokens for a user question.
@@ -537,6 +623,15 @@ async def stream_answer_env_question(
     Yields:
         Token/text chunks from the LLM as they are generated
     """
+    effective_guideline_records = list(guideline_records or [])
+    if wants_guideline_detail(user_question):
+        searched_guidelines = search_guideline_records(question=user_question, k=3)
+        if searched_guidelines:
+            effective_guideline_records = searched_guidelines
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
+    if indexed_sources_out is not None:
+        indexed_sources_out.extend(indexed_sources)
+
     if _is_non_domain_question(user_question):
         messages = get_general_chat_prompt().format_messages(question=user_question)
     else:
@@ -544,13 +639,20 @@ async def stream_answer_env_question(
             user_question=user_question,
             k=k,
             space=space,
+            guideline_records=[],
         )
-        grounded_context = str(context.get("grounded_context") or "")
+        grounded_context = build_grounded_context_sections(
+            measured_room_facts=[],
+            backend_semantic_state=None,
+            knowledge_cards=context.get("knowledge_cards", []),
+            numbered_sources_block=numbered_sources_block,
+            allow_general_knowledge=True,
+        )
         qa_prompt = get_qa_prompt()
         messages = qa_prompt.format_messages(
             question=user_question,
             context_label="Measured room facts with knowledge grounding",
-            context_data=grounded_context,
+            context_data=str(grounded_context or ""),
         )
 
     # Build a plain prompt for Ollama /api/generate streaming.

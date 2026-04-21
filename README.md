@@ -251,6 +251,7 @@ Event types:
 
 - `meta`: route and retrieval metadata
 - `token`: streamed text chunks
+- `citations`: final list of sources actually cited in answer
 - `done`: completion marker
 - `error`: error payload
 
@@ -324,6 +325,35 @@ OpenAI compatibility notes:
   - non-stream: `chat.completion`
   - stream: `chat.completion.chunk` SSE + `[DONE]`
 - Includes `x_router` metadata in non-stream responses so route/debug info is preserved.
+- Includes `x_citation_sources` in non-stream responses and first stream chunk.
+
+### Citation Sources in Streaming
+
+When the query involves IEQ thresholds or standards, the `meta`
+event includes a `citation_sources` array:
+
+```json
+{
+  "citation_sources": [
+    {
+      "index": 1,
+      "source_label": "RESET Air Standard v2.1",
+      "section_ref": "Section 4: Performance Thresholds",
+      "citation_tier": "regulatory",
+      "source_url": "https://reset.build/standard/air"
+    }
+  ]
+}
+```
+
+Tokens may include inline citation markers like `[1]`, `[2]`
+that correspond to the `index` values in `citation_sources`.
+
+The `citations` event (emitted after all tokens) contains only
+the sources that were actually cited in the answer.
+
+Frontend rendering: replace `[N]` with a superscript that links to
+or highlights the corresponding source.
 
 ## How DB Time Parsing Works
 

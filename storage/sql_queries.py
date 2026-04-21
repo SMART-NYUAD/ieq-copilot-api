@@ -22,3 +22,17 @@ ORDER BY e.embedding <=> %s::vector
 LIMIT %s
 """
 
+
+GUIDELINE_SEMANTIC_SQL = """
+    SELECT id, source_key, source_label, source_url,
+           section_ref, publication_year, metric,
+           citation_tier, claim_text, threshold_value,
+           threshold_type, threshold_unit, threshold_condition,
+           caveat_text,
+           1 - (embedding <=> %s::vector) AS similarity
+    FROM env_guideline_records
+    WHERE is_active = TRUE
+    ORDER BY embedding <=> %s::vector
+    LIMIT %s
+"""
+

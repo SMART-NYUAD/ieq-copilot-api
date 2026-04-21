@@ -9,6 +9,10 @@ from fastapi.responses import StreamingResponse
 
 try:
     from http_schemas import QueryRequest, QueryResponse
+    from evidence.citation_processor import (
+        build_numbered_sources_block,
+        extract_citation_indices_from_answer,
+    )
     from query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
@@ -22,6 +26,7 @@ try:
     from executors.db_query_executor import prepare_db_query, stream_db_query
     from executors.db_support.response_helpers import serialize_timestamp_value
     from executors.env_query_langchain import (
+        get_guideline_records_for_question,
         stream_answer_env_question,
     )
     from query_routing.metadata_builders import (
@@ -53,6 +58,10 @@ try:
     from runtime_errors import log_exception, stream_error_payload
 except ImportError:
     from ..http_schemas import QueryRequest, QueryResponse
+    from ..evidence.citation_processor import (
+        build_numbered_sources_block,
+        extract_citation_indices_from_answer,
+    )
     from ..query_routing.query_orchestrator import (
         build_clarify_prompt,
         execute_query,  # compatibility export for tests/mocks
@@ -66,6 +75,7 @@ except ImportError:
     from ..executors.db_query_executor import prepare_db_query, stream_db_query
     from ..executors.db_support.response_helpers import serialize_timestamp_value
     from ..executors.env_query_langchain import (
+        get_guideline_records_for_question,
         stream_answer_env_question,
     )
     from ..query_routing.metadata_builders import (
@@ -261,6 +271,8 @@ async def query_cards(request: QueryRequest):
             metadata=metadata,
             visualization_type=result.get("visualization_type", "none"),
             chart=result.get("chart"),
+            footnotes=list(result.get("footnotes") or []),
+            citation_sources=list(result.get("citation_sources") or result.get("indexed_sources") or []),
         )
     except Exception as exc:
         code = log_exception(exc, scope="query.non_stream")
@@ -352,6 +364,24 @@ async def query_cards_stream(request: QueryRequest):
 
     async def event_generator():
         try:
+            db_context = stream_ctx.db_context or {}
+            db_indexed_sources = list(db_context.get("indexed_sources") or [])
+            if not db_indexed_sources:
+                _, db_indexed_sources = build_numbered_sources_block(
+                    list(db_context.get("guideline_records") or [])
+                )
+                db_context["indexed_sources"] = db_indexed_sources
+            knowledge_indexed_sources = []
+            effective_meta_sources = db_indexed_sources
+            knowledge_guideline_records = []
+            if use_knowledge_executor:
+                knowledge_guideline_records = await run_in_threadpool(
+                    get_guideline_records_for_question,
+                    str(stream_ctx.effective_question or latest_user_question),
+                    3,
+                )
+                _, effective_meta_sources = build_numbered_sources_block(knowledge_guideline_records)
+
             if use_knowledge_executor:
                 meta = dict(stream_ctx.meta or {})
                 meta = attach_conversation_metadata(
@@ -366,6 +396,7 @@ async def query_cards_stream(request: QueryRequest):
                 meta["tools_called"] = tools_called
                 meta["agent_steps"] = int(len(agent_step_trace))
                 meta["agent_finish_reason"] = agent_finish_reason
+                meta["citation_sources"] = effective_meta_sources
                 yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
                 if bool(meta.get("agent_stream_step_events")):
                     for step_payload in agent_step_trace:
@@ -375,11 +406,19 @@ async def query_cards_stream(request: QueryRequest):
                     user_question=str(stream_ctx.knowledge_question or ""),
                     k=max(1, min(k, 8)),
                     space=stream_ctx.knowledge_lab_name,
+                    guideline_records=knowledge_guideline_records,
+                    indexed_sources_out=knowledge_indexed_sources,
                 ):
                     assembled_answer += chunk or ""
                     lines = (chunk or "").splitlines() or [""]
                     payload = "\n".join([f"data: {line}" for line in lines])
                     yield f"event: token\n{payload}\n\n"
+                used_sources = extract_citation_indices_from_answer(
+                    answer_text=assembled_answer,
+                    indexed_sources=knowledge_indexed_sources or effective_meta_sources,
+                )
+                if used_sources:
+                    yield f"event: citations\ndata: {json.dumps(used_sources)}\n\n"
                 turn_index = persist_turn(
                     conversation_id=normalized_conversation_id,
                     question=question,
@@ -393,7 +432,6 @@ async def query_cards_stream(request: QueryRequest):
                 yield "event: done\ndata: [DONE]\n\n"
                 return
 
-            db_context = stream_ctx.db_context or {}
             if stream_ctx.mode == "db_clarify":
                 meta = dict(stream_ctx.meta or {})
                 meta = attach_conversation_metadata(
@@ -441,6 +479,7 @@ async def query_cards_stream(request: QueryRequest):
             meta["tools_called"] = tools_called
             meta["agent_steps"] = int(len(agent_step_trace))
             meta["agent_finish_reason"] = agent_finish_reason
+            meta["citation_sources"] = db_indexed_sources
             yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
             if bool(meta.get("agent_stream_step_events")):
                 for step_payload in agent_step_trace:
@@ -458,6 +497,12 @@ async def query_cards_stream(request: QueryRequest):
                 lines = (chunk or "").splitlines() or [""]
                 payload = "\n".join([f"data: {line}" for line in lines])
                 yield f"event: token\n{payload}\n\n"
+            used_sources = extract_citation_indices_from_answer(
+                answer_text=assembled_answer,
+                indexed_sources=db_indexed_sources,
+            )
+            if used_sources:
+                yield f"event: citations\ndata: {json.dumps(used_sources)}\n\n"
 
             turn_index = persist_turn(
                 conversation_id=normalized_conversation_id,

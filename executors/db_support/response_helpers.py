@@ -44,6 +44,7 @@ MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requ
 DB_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from a structured DB query result.
 - First, answer the exact user question directly before additional detail.
+- Keep the tone warm and personable: write like a helpful IEQ teammate, not a strict compliance report.
 - For air-quality assessment/summary queries, include:
   1) overall status,
   2) metric-by-metric interpretation,
@@ -62,6 +63,7 @@ You are answering from a structured DB query result.
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = """
 You are answering a point lookup from a structured DB query result.
 - Lead with the current/latest value requested.
+- Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Give a short plain-language interpretation with unit and citation-style classification if available.
 - Keep it concise (one short paragraph + up to 2 bullets).
 - If value is missing, say it clearly and suggest the nearest useful fallback window.
@@ -69,6 +71,7 @@ You are answering a point lookup from a structured DB query result.
 DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = """
 You are answering a current air-quality point lookup from a structured DB query result.
 - First, directly answer the exact question asked.
+- Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Provide an overall current air-quality status in plain language.
 - Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, TVOC, humidity, and IEQ when present).
 - Explain what occupants would likely notice/feel.
@@ -81,6 +84,7 @@ You are answering a current air-quality point lookup from a structured DB query 
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 - Highlight which space is better/worse for each available metric and by how much.
+- Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Use `metric_coverage.available_metrics` and `metric_coverage.missing_metrics` from context as source of truth.
 - Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
 - Never claim a metric is missing if it appears in `available_metrics` or has numeric values in rows.
@@ -110,6 +114,98 @@ You are answering a root-cause diagnostic question about IEQ.
 - Do NOT say data is unavailable if correlation_analysis is present in context.
 - Do NOT say "I cannot identify" if rows were returned - analyze what is there.
 - End with 2-3 targeted actions specific to the identified driver(s).
+""".strip()
+
+CITATION_FORMAT_INSTRUCTION = """
+CITATION REQUIREMENT — FOLLOW EXACTLY:
+When classifying a measured value against a threshold, insert a citation marker
+immediately after the claim.
+
+Use this format: [N]
+Where N is the source index from the "## Citation Sources" context section.
+
+Examples of correct citation:
+  "CO2 at 1,450 ppm exceeds RESET Air Grade A (1,000 ppm) [1]."
+  "PM2.5 exceeds the EPA daily threshold [2]."
+  "Research suggests cognitive decline above 1,000 ppm [3]."
+  "The IEQ score indicates medium quality [4]."
+
+Rules:
+1. ONLY use citation indices that appear in the
+   "## Citation Sources" section. Never invent an index.
+2. Place the marker directly after the specific claim,
+   before punctuation where possible.
+3. If the same source supports multiple claims, reuse the same index.
+4. Do NOT add a References or Footnotes section at the end.
+   The system handles reference rendering automatically.
+5. If no guideline records are in context, do not add
+   any citation markers.
+6. For metric-by-metric air-quality assessments:
+   - every metric claim with a numeric value (CO2, PM2.5, TVOC, humidity, IEQ)
+     MUST include at least one [N] if that metric has a source in Citation Sources.
+7. Never cite ASHRAE 62.1 as a CO2 ppm threshold source.
+   For CO2 ppm limits/classification, cite RESET/research/internal sources only.
+8. For IEQ index classifications, cite the internal IEQ source [N] when available.
+""".strip()
+
+FRIENDLY_TONE_INSTRUCTION = """
+TONE AND READABILITY:
+- Keep wording friendly, supportive, and human while staying evidence-grounded.
+- Prefer natural conversational phrasing over rigid policy/report language.
+- When risk is low, allow brief reassuring phrasing; when risk is elevated, stay calm and constructive.
+- You may use light emoji usage (1-3 relevant emojis per response) when it genuinely improves readability
+  (for example: ✅, ⚠️, 🌡️, 💧, 🌬️).
+- Do not overuse emojis, and never use emojis in place of concrete evidence or recommendations.
+""".strip()
+
+DB_TOOL_RESPONSE_DIRECTIVE = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_FORECAST = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_FORECAST}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
+""".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = f"""
+{DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC}
+
+{FRIENDLY_TONE_INSTRUCTION}
+
+{CITATION_FORMAT_INSTRUCTION}
 """.strip()
 
 
@@ -894,7 +990,10 @@ def build_multi_metric_bar_chart(
 def build_multi_metric_aggregation_answer(metric_aliases: List[str], row: Dict[str, Any], window_label: str) -> str:
     if not row:
         return f"I couldn't find metric data for {window_label}."
-    lab = row.get("lab_space", "selected scope")
+    lab_raw = row.get("lab_space")
+    lab = str(lab_raw).strip() if lab_raw is not None else ""
+    if not lab:
+        lab = "all_labs"
     parts: List[str] = []
     for metric in metric_aliases:
         value = row.get(metric)
@@ -915,13 +1014,17 @@ def build_multi_metric_snapshot_chart(
         if value is None:
             continue
         points.append({"x": metric, "y": float(value), "unit": unit_by_metric.get(metric, "value")})
+    lab_raw = row.get("lab_space")
+    series_name = str(lab_raw).strip() if lab_raw is not None else ""
+    if not series_name:
+        series_name = "all_labs"
     return {
         "visualization_type": "bar",
         "chart": {
             "title": f"Air-quality metric snapshot ({window_label})",
             "x_label": "metric",
             "y_label": "value",
-            "series": [{"name": str(row.get("lab_space", "selected_scope")), "points": points}],
+            "series": [{"name": series_name, "points": points}],
         },
     }
 

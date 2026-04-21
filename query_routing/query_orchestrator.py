@@ -190,6 +190,8 @@ def build_clarify_result(
     }
     return {
         "answer": clarify_text,
+        "footnotes": [],
+        "citation_sources": [],
         "timescale": "clarify",
         "cards_retrieved": 0,
         "recent_card": False,
@@ -243,6 +245,8 @@ def _execute_knowledge_path(
     }
     return {
         "answer": answer_text,
+        "footnotes": list(knowledge_result.get("footnotes") or []),
+        "citation_sources": list(knowledge_result.get("indexed_sources") or []),
         "timescale": "knowledge",
         "cards_retrieved": int(knowledge_result.get("cards_retrieved") or 0),
         "recent_card": False,
@@ -288,6 +292,8 @@ def _execute_db_path(
         }
         return {
             "answer": str(db_result.get("answer") or ""),
+            "footnotes": list(db_result.get("footnotes") or []),
+            "citation_sources": list(db_result.get("indexed_sources") or []),
             "timescale": "clarify",
             "cards_retrieved": 0,
             "recent_card": False,
@@ -323,6 +329,8 @@ def _execute_db_path(
     }
     return {
         "answer": db_result["answer"],
+        "footnotes": list(db_result.get("footnotes") or []),
+        "citation_sources": list(db_result.get("indexed_sources") or []),
         "timescale": db_result["timescale"],
         "cards_retrieved": int(db_result.get("cards_retrieved") or 0),
         "recent_card": False,
@@ -499,6 +507,8 @@ def _execute_decomposed_query(
         )
         return {
             "answer": db_result["answer"],
+            "footnotes": list(db_result.get("footnotes") or []),
+            "citation_sources": list(db_result.get("indexed_sources") or []),
             "timescale": db_result["timescale"],
             "cards_retrieved": int(db_result.get("cards_retrieved") or 0),
             "recent_card": False,
@@ -636,6 +646,8 @@ def _execute_decomposed_query(
     }
     return {
         "answer": merged_answer,
+        "footnotes": list(primary_result.get("footnotes") or []),
+        "citation_sources": list(primary_result.get("indexed_sources") or []),
         "timescale": primary_result.get("timescale", "1hour"),
         "cards_retrieved": int(primary_result.get("cards_retrieved") or 0)
         + int(secondary_result.get("cards_retrieved") or 0),
