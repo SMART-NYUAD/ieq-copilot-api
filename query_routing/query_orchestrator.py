@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 try:
     from executors.db_query_executor import run_db_query, stream_db_query
-    from executors.env_query_langchain import (
+    from executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
     )
@@ -16,7 +16,7 @@ try:
     from storage.conversation_memory import apply_routing_memory, extract_routing_memory
 except ImportError:
     from ..executors.db_query_executor import run_db_query, stream_db_query
-    from ..executors.env_query_langchain import (
+    from ..executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
     )

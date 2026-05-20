@@ -23,13 +23,13 @@ except ImportError:
     from .metric_registry import metric_unit as _registry_metric_unit
 
 try:
-    from executors.env_query_langchain import (
+    from executors.knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
         search_knowledge_cards,
     )
 except ImportError:
-    from ..executors.env_query_langchain import (
+    from .knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
         search_knowledge_cards,

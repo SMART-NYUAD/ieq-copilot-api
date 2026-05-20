@@ -18,7 +18,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from prompting.shared_prompts import SHARED_SYSTEM_PROMPT, build_grounded_context_sections
-from executors.env_query_langchain import build_card_grounded_context, search_knowledge_cards
+from executors.knowledge_executor import build_card_grounded_context, search_knowledge_cards
 from executors.db_query_executor import _build_db_payload
 from executors.db_support.response_helpers import db_response_directive, is_air_quality_query_text
 from knowledge_cards.loader import KnowledgeCardValidationError, normalize_card
@@ -124,8 +124,8 @@ class KnowledgeCardTests(unittest.TestCase):
         self.assertIn("2026-03-28T14:15:28+04:00", rendered)
         self.assertIn("2026-03-28T15:15:28+04:00", rendered)
 
-    @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.get_cursor")
+    @patch("executors.knowledge_executor.embed_texts")
+    @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_prefers_explanations_for_definition_query(
         self,
         mock_get_cursor,
@@ -165,8 +165,8 @@ class KnowledgeCardTests(unittest.TestCase):
         result = search_knowledge_cards("what does pm2.5 mean", k=2)
         self.assertEqual(result[0]["card_type"], "explanation")
 
-    @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.get_cursor")
+    @patch("executors.knowledge_executor.embed_texts")
+    @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_can_return_interpretation_for_assessment_query(
         self,
         mock_get_cursor,
@@ -206,8 +206,8 @@ class KnowledgeCardTests(unittest.TestCase):
         result = search_knowledge_cards("is 28 ug/m3 pm2.5 okay", k=2)
         self.assertEqual(result[0]["card_type"], "interpretation")
 
-    @patch("executors.env_query_langchain.embed_texts")
-    @patch("executors.env_query_langchain.get_cursor")
+    @patch("executors.knowledge_executor.embed_texts")
+    @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_keeps_caveat_for_health_risk_queries(
         self,
         mock_get_cursor,
