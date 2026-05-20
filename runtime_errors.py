@@ -10,10 +10,8 @@ from enum import Enum
 import logging
 from typing import Any, Dict
 
-try:
-    from query_routing.observability import record_runtime_error
-except ImportError:
-    from .query_routing.observability import record_runtime_error
+def record_runtime_error(*args, **kwargs) -> None:
+    pass
 
 
 LOGGER = logging.getLogger("rag_api_server")

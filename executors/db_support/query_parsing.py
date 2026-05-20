@@ -16,42 +16,12 @@ try:
     from query_routing.intent_classifier import IntentType
     from storage.postgres_client import get_cursor
     from executors.db_support import time_windows as db_time_windows
+    from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 except ImportError:
     from ...query_routing.intent_classifier import IntentType
     from ...storage.postgres_client import get_cursor
     from . import time_windows as db_time_windows
-
-
-METRIC_COLUMN_MAP = {
-    "pm25": "pm25_avg",
-    "pm2.5": "pm25_avg",
-    "pm 2.5": "pm25_avg",
-    "pm 2 5": "pm25_avg",
-    "co2": "co2_avg",
-    "tvoc": "voc_avg",
-    "voc": "voc_avg",
-    "temperature": "temp_avg",
-    "temp": "temp_avg",
-    "humidity": "humidity_avg",
-    "light": "light_avg",
-    "lux": "light_avg",
-    "sound": "sound_avg",
-    "noise": "sound_avg",
-    "ieq": "index_value",
-    "index": "index_value",
-}
-
-CANONICAL_METRIC_COLUMN_MAP = {
-    "air_contribution": "contri_air",
-    "pm25": "pm25_avg",
-    "co2": "co2_avg",
-    "tvoc": "voc_avg",
-    "temperature": "temp_avg",
-    "humidity": "humidity_avg",
-    "light": "light_avg",
-    "sound": "sound_avg",
-    "ieq": "index_value",
-}
+    from ..metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 
 _SPACE_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
 _CORRELATION_HINTS = (

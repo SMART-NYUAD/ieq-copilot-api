@@ -41,10 +41,6 @@ try:
 except ImportError:
     from ..http_schemas import validate_tool_evidence
 try:
-    from query_routing.router_signals import extract_query_signals
-except ImportError:
-    from ..query_routing.router_signals import extract_query_signals
-try:
     from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 except ImportError:
     from ..evidence.citation_processor import build_numbered_sources_block, process_answer_citations
@@ -465,11 +461,7 @@ def get_general_chat_chain():
 
 
 def _is_non_domain_question(user_question: str) -> bool:
-    try:
-        signals = extract_query_signals(user_question)
-    except Exception:
-        return False
-    return str(signals.get("query_scope_class") or "").strip().lower() == "non_domain"
+    return False
 
 
 def _coerce_chunk_text(value) -> str:

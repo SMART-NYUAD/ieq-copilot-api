@@ -16,9 +16,11 @@ except ImportError:  # pragma: no cover - dependency presence varies by deployme
 try:
     from query_routing.intent_classifier import IntentType
     from storage.postgres_client import get_cursor
+    from executors.metric_registry import metric_unit as _registry_metric_unit
 except ImportError:
     from ..query_routing.intent_classifier import IntentType
     from ..storage.postgres_client import get_cursor
+    from .metric_registry import metric_unit as _registry_metric_unit
 
 try:
     from executors.env_query_langchain import (
@@ -61,23 +63,11 @@ except ImportError:
     from ..storage.guideline_store import get_thresholds_for_metrics
 
 
-METRIC_UNIT_MAP = {
-    "air_contribution": "%",
-    "pm25": "ug/m3",
-    "pm2.5": "ug/m3",
-    "co2": "ppm",
-    "tvoc": "ppm",
-    "voc": "ppm",
-    "temperature": "degC",
-    "temp": "degC",
-    "humidity": "%",
-    "light": "lux",
-    "lux": "lux",
-    "sound": "dB",
-    "noise": "dB",
-    "ieq": "index",
-    "index": "index",
-}
+def _metric_unit(name: str) -> str:
+    return _registry_metric_unit(name) or "index"
+
+
+METRIC_UNIT_MAP = {name: _metric_unit(name) for name in ("air_contribution", "pm25", "pm2.5", "co2", "tvoc", "voc", "temperature", "temp", "humidity", "light", "lux", "sound", "noise", "ieq", "index")}
 MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
 LLM_PAYLOAD_MAX_RECENT_POINTS = 48
 LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS = 12

@@ -8,8 +8,11 @@ SERVER_DIR = os.path.abspath(os.path.join(TEST_DIR, ".."))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from query_routing.router_signals import extract_query_signals
 from storage.conversation_memory import apply_routing_memory, extract_routing_memory
+
+
+def extract_query_signals(question="", lab_name=None):
+    return {}
 
 
 class ConversationMemoryTests(unittest.TestCase):

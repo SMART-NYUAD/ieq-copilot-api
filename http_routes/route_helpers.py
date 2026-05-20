@@ -1,26 +1,12 @@
-"""Shared helpers for HTTP route adapters.
-
-This module centralizes repeated route-layer mechanics so endpoint files can
-focus on transport specifics instead of metadata and conversation plumbing.
-"""
+"""Shared helpers for HTTP route adapters."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
 try:
-    from query_routing.metadata_builders import (
-        attach_conversation_metadata as shared_attach_conversation_metadata,
-        attach_policy_metadata as shared_attach_policy_metadata,
-        route_plan_metadata as shared_route_plan_metadata,
-    )
     from storage.conversation_store import append_conversation_turn, build_compact_context
 except ImportError:
-    from ..query_routing.metadata_builders import (
-        attach_conversation_metadata as shared_attach_conversation_metadata,
-        attach_policy_metadata as shared_attach_policy_metadata,
-        route_plan_metadata as shared_route_plan_metadata,
-    )
     from ..storage.conversation_store import append_conversation_turn, build_compact_context
 
 
@@ -35,7 +21,6 @@ def build_query_inputs(
     question: str,
     conversation_id: Optional[str],
 ) -> Tuple[str, Optional[str], str, bool]:
-    """Split latest question and conversation context for deterministic routing."""
     normalized_conversation_id, context_block = build_compact_context(conversation_id)
     if context_block:
         return str(question or "").strip(), normalized_conversation_id, context_block, True
@@ -43,26 +28,12 @@ def build_query_inputs(
 
 
 def persist_turn(conversation_id: Optional[str], question: str, answer: str) -> Optional[int]:
-    """Persist one conversation turn if a conversation id is provided."""
     if not conversation_id:
         return None
     return append_conversation_turn(
         conversation_id=conversation_id,
         user_message=question,
         assistant_message=answer,
-    )
-
-
-def route_plan_metadata(
-    route_plan: Any,
-    *,
-    include_decomposition_template: bool = True,
-    query_scope_override: Optional[str] = None,
-) -> Dict[str, Any]:
-    return shared_route_plan_metadata(
-        route_plan=route_plan,
-        include_decomposition_template=include_decomposition_template,
-        query_scope_override=query_scope_override,
     )
 
 
@@ -73,14 +44,23 @@ def attach_conversation_metadata(
     conversation_context_applied: bool,
     turn_index: Optional[int],
 ) -> Dict[str, Any]:
-    return shared_attach_conversation_metadata(
-        metadata=metadata,
-        conversation_id=conversation_id,
-        conversation_context_applied=conversation_context_applied,
-        turn_index=turn_index,
-    )
+    meta = dict(metadata)
+    meta["conversation_id"] = conversation_id
+    meta["conversation_context_applied"] = conversation_context_applied
+    meta["turn_index"] = turn_index
+    return meta
 
 
 def attach_policy_metadata(metadata: Dict[str, Any], route_contract: Optional[Any]) -> Dict[str, Any]:
-    return shared_attach_policy_metadata(metadata=metadata, route_contract=route_contract)
+    return dict(metadata)
 
+
+def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
+    if route_plan is None:
+        return {}
+    meta: Dict[str, Any] = {}
+    for attr in ("intent", "confidence", "lab_name", "second_lab_name", "metrics", "time_phrase", "model", "fallback_used"):
+        val = getattr(route_plan, attr, None)
+        if val is not None:
+            meta[attr] = val.value if hasattr(val, "value") else val
+    return meta
