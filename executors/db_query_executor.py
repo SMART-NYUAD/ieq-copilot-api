@@ -15,11 +15,9 @@ except ImportError:  # pragma: no cover - dependency presence varies by deployme
 
 try:
     from query_routing.intent_classifier import IntentType
-    from storage.postgres_client import get_cursor
     from executors.metric_registry import metric_unit as _registry_metric_unit
 except ImportError:
     from ..query_routing.intent_classifier import IntentType
-    from ..storage.postgres_client import get_cursor
     from .metric_registry import metric_unit as _registry_metric_unit
 
 try:
@@ -623,23 +621,21 @@ def prepare_db_query(
             "chart": None,
             "invariant_violation": invariant,
         }
-    with get_cursor(real_dict=True) as cur:
-        branch_result = db_handlers.execute_intent_query(
-            cur=cur,
-            question=query_text,
-            intent=intent,
-            metric_alias=metric_alias,
-            metric_column=metric_column,
-            unit=unit,
-            window_start=window_start,
-            window_end=window_end,
-            window_label=window_label,
-            resolved_lab_name=resolved_lab_name,
-            compared_spaces=compared_spaces,
-            explicit_metrics=explicit_metrics,
-            hinted_metrics=hinted_metrics,
-            max_chart_lookback_points=MAX_CHART_LOOKBACK_POINTS,
-        )
+    branch_result = db_handlers.execute_intent_query(
+        question=query_text,
+        intent=intent,
+        metric_alias=metric_alias,
+        metric_column=metric_column,
+        unit=unit,
+        window_start=window_start,
+        window_end=window_end,
+        window_label=window_label,
+        resolved_lab_name=resolved_lab_name,
+        compared_spaces=compared_spaces,
+        explicit_metrics=explicit_metrics,
+        hinted_metrics=hinted_metrics,
+        max_chart_lookback_points=MAX_CHART_LOOKBACK_POINTS,
+    )
 
     operation_type = str(branch_result["operation_type"])
     rows = list(branch_result["rows"])

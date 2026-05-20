@@ -1,0 +1,313 @@
+"""HTTP client for the Smart CRG REST API — replaces direct DB queries."""
+
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+
+API_BASE_URL = "https://api.smart-crg.com"
+
+# Sensor metrics available via /metrics/{type}/agg-summary
+_SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature"}
+# "sound" in this codebase == "noise" in the API
+_SOUND_ALIASES = {"sound", "noise"}
+# Score metrics available via /indoor-data?type=...
+_SCORE_METRIC_MAP: Dict[str, str] = {
+    "ieq": "IEQ",
+    "iaq": "IAQ",
+    "itc": "ITC",
+    "iac": "IAC",
+    "iil": "IIL",
+}
+
+
+def _api_sensor_slug(metric: str) -> Optional[str]:
+    """Return the API sensor slug or None if this metric is not a sensor type."""
+    m = metric.lower()
+    if m in _SENSOR_METRICS:
+        return m
+    if m in _SOUND_ALIASES:
+        return "noise"
+    return None
+
+
+def _score_type(metric: str) -> Optional[str]:
+    """Return the API score type string (IEQ, IAQ, …) or None."""
+    return _SCORE_METRIC_MAP.get(metric.lower())
+
+
+def window_hours_from_datetimes(window_start: datetime, window_end: Optional[datetime] = None) -> int:
+    """Convert absolute datetime window to hours-back-from-now for the API.
+
+    Uses the later of (now, window_end) as the reference so that historical
+    windows request enough lookback from the API to cover the full range.
+    """
+    now = datetime.now(tz=timezone.utc)
+    ref = max(now, window_end.replace(tzinfo=timezone.utc) if window_end and not window_end.tzinfo else (window_end or now))
+    start = window_start if window_start.tzinfo else window_start.replace(tzinfo=timezone.utc)
+    delta = ref - start
+    return max(1, math.ceil(delta.total_seconds() / 3600))
+
+
+# ---------------------------------------------------------------------------
+# Low-level API calls
+# ---------------------------------------------------------------------------
+
+def fetch_spaces() -> List[Dict[str, Any]]:
+    """GET /spaces/ — returns list of space dicts."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/spaces/", headers={"accept": "application/json"})
+            resp.raise_for_status()
+            return list(resp.json().get("spaces") or [])
+    except Exception:
+        return []
+
+
+def fetch_space_metrics(slug: str) -> Optional[Dict[str, Any]]:
+    """GET /spaces/{slug}/metrics — returns the space dict with avg_metrics and ieq."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{API_BASE_URL}/spaces/{slug}/metrics",
+                headers={"accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success"):
+                return (data.get("data") or {}).get("space")
+    except Exception:
+        pass
+    return None
+
+
+def fetch_metric_agg_summary(
+    slug: str,
+    metric: str,
+    window_hours: int,
+    interval_hours: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """GET /spaces/{slug}/metrics/{metric}/agg-summary — returns data dict."""
+    api_slug = _api_sensor_slug(metric)
+    if not api_slug:
+        return None
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"{API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/agg-summary",
+                params={"window_hours": window_hours, "interval_hours": interval_hours},
+                headers={"accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success"):
+                return data.get("data")
+    except Exception:
+        pass
+    return None
+
+
+def fetch_indoor_data(
+    slug: str,
+    score_type: str,
+    interval: int = 1,
+    timeframe: int = 48,
+) -> Optional[Dict[str, Any]]:
+    """GET /spaces/{slug}/indoor-data — returns data dict."""
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"{API_BASE_URL}/spaces/{slug}/indoor-data",
+                params={"type": score_type, "interval": interval, "timeframe": timeframe},
+                headers={"accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success"):
+                return data.get("data")
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Row-format conversion helpers
+# ---------------------------------------------------------------------------
+
+def fetch_timeseries_rows(
+    slug: str,
+    metric: str,
+    window_hours: int,
+    interval_hours: int = 1,
+) -> List[Dict[str, Any]]:
+    """Fetch hourly rows as [{"lab_space", "bucket", "value"}, …] newest-first → oldest-first."""
+    api_slug = _api_sensor_slug(metric)
+    score = _score_type(metric)
+    rows: List[Dict[str, Any]] = []
+    if api_slug:
+        data = fetch_metric_agg_summary(slug, metric, window_hours, interval_hours)
+        if data:
+            rows = [
+                {"lab_space": slug, "bucket": item["timestamp"], "value": item["agg_value"]}
+                for item in (data.get("aggregate_readings") or [])
+            ]
+    elif score:
+        data = fetch_indoor_data(slug, score, interval=interval_hours, timeframe=window_hours)
+        if data:
+            rows = [
+                {"lab_space": slug, "bucket": item["bucket"], "value": item["value"]}
+                for item in (data.get("readings") or [])
+            ]
+    # Ensure ascending bucket order (API returns newest-first for some endpoints)
+    rows.sort(key=lambda r: str(r.get("bucket") or ""))
+    return rows
+
+
+def fetch_aggregation_row(
+    slug: str,
+    metric: str,
+    window_hours: int,
+) -> Optional[Dict[str, Any]]:
+    """Fetch aggregated {avg_value, min_value, max_value, reading_count} for one metric."""
+    api_slug = _api_sensor_slug(metric)
+    score = _score_type(metric)
+    if api_slug:
+        data = fetch_metric_agg_summary(slug, metric, window_hours)
+        if not data:
+            return None
+        readings = data.get("aggregate_readings") or []
+        return {
+            "lab_space": slug,
+            "avg_value": data.get("avg_agg_value"),
+            "min_value": data.get("min_agg_value"),
+            "max_value": data.get("max_agg_value"),
+            "reading_count": len(readings),
+        }
+    elif score:
+        data = fetch_indoor_data(slug, score, timeframe=window_hours)
+        if not data:
+            return None
+        values = [r["value"] for r in (data.get("readings") or []) if r.get("value") is not None]
+        if not values:
+            return None
+        return {
+            "lab_space": slug,
+            "avg_value": sum(values) / len(values),
+            "min_value": min(values),
+            "max_value": max(values),
+            "reading_count": len(values),
+        }
+    return None
+
+
+def fetch_multi_metric_point_row(slug: str, metrics: List[str]) -> Dict[str, Any]:
+    """Return a single row with the latest average for each metric using /metrics endpoint."""
+    row: Dict[str, Any] = {"lab_space": slug}
+    space = fetch_space_metrics(slug)
+    if not space:
+        return row
+    avg_by_type = {m["type"]: m["avg_value"] for m in (space.get("avg_metrics") or [])}
+    row["bucket"] = space.get("last_updated")
+    row["ieq"] = (space.get("ieq") or {}).get("score")
+    for metric in metrics:
+        api_slug = _api_sensor_slug(metric)
+        score = _score_type(metric)
+        if api_slug:
+            row[metric] = avg_by_type.get(api_slug)
+        elif score and metric == "ieq":
+            pass  # already set above
+        elif score:
+            # ITC/IAC/IAQ/IIL not in /metrics, skip (data comes from indoor-data endpoint)
+            row[metric] = None
+    return row
+
+
+def fetch_multi_metric_agg_row(
+    slug: str,
+    metrics: List[str],
+    window_hours: int,
+) -> Dict[str, Any]:
+    """Return a row with avg/min/max/stddev_placeholder for each metric."""
+    row: Dict[str, Any] = {"lab_space": slug, "reading_count": 0}
+    for metric in metrics:
+        agg = fetch_aggregation_row(slug, metric, window_hours)
+        if agg:
+            row[metric] = agg.get("avg_value")
+            row[f"{metric}_min"] = agg.get("min_value")
+            row[f"{metric}_max"] = agg.get("max_value")
+            row[f"{metric}_stddev"] = None
+            if not row["reading_count"]:
+                row["reading_count"] = agg.get("reading_count", 0)
+        else:
+            row[metric] = None
+            row[f"{metric}_min"] = None
+            row[f"{metric}_max"] = None
+            row[f"{metric}_stddev"] = None
+    return row
+
+
+def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str, Any]:
+    """Aggregate metric values across all known spaces into a single 'all_labs' row."""
+    spaces = fetch_spaces()
+    slugs = [s["slug"] for s in spaces if s.get("slug")]
+    if not slugs:
+        row: Dict[str, Any] = {"lab_space": "all_labs", "reading_count": 0}
+        for m in metrics:
+            row[m] = None
+            row[f"{m}_min"] = None
+            row[f"{m}_max"] = None
+            row[f"{m}_stddev"] = None
+        return row
+
+    per_space: List[Dict[str, Any]] = [
+        fetch_multi_metric_agg_row(slug, metrics, window_hours) for slug in slugs
+    ]
+    row = {"lab_space": "all_labs", "reading_count": 0}
+    for metric in metrics:
+        vals = [r[metric] for r in per_space if r.get(metric) is not None]
+        mins = [r.get(f"{metric}_min") for r in per_space if r.get(f"{metric}_min") is not None]
+        maxs = [r.get(f"{metric}_max") for r in per_space if r.get(f"{metric}_max") is not None]
+        row[metric] = sum(vals) / len(vals) if vals else None
+        row[f"{metric}_min"] = min(mins) if mins else None
+        row[f"{metric}_max"] = max(maxs) if maxs else None
+        row[f"{metric}_stddev"] = None
+    row["reading_count"] = sum(r.get("reading_count", 0) for r in per_space)
+    return row
+
+
+def fetch_all_spaces_agg_rows_for_metric(metric: str, window_hours: int) -> List[Dict[str, Any]]:
+    """Return per-space aggregation rows for a single metric (for ranking/comparison)."""
+    spaces = fetch_spaces()
+    rows: List[Dict[str, Any]] = []
+    for space in spaces:
+        slug = space.get("slug")
+        if not slug:
+            continue
+        agg = fetch_aggregation_row(slug, metric, window_hours)
+        if agg:
+            rows.append(agg)
+    rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
+    return rows
+
+
+def fetch_merged_timeseries(
+    slug: str,
+    metrics: List[str],
+    window_hours: int,
+    interval_hours: int = 1,
+) -> List[Dict[str, Any]]:
+    """Fetch per-bucket time series for multiple metrics, merged by timestamp."""
+    by_bucket: Dict[str, Dict[str, Any]] = {}
+    for metric in metrics:
+        series = fetch_timeseries_rows(slug, metric, window_hours, interval_hours)
+        for row in series:
+            bucket = str(row.get("bucket") or "")
+            if not bucket:
+                continue
+            if bucket not in by_bucket:
+                by_bucket[bucket] = {"lab_space": slug, "bucket": bucket}
+            by_bucket[bucket][metric] = row.get("value")
+    return sorted(by_bucket.values(), key=lambda r: r["bucket"])

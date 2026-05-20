@@ -1,4 +1,4 @@
-"""Intent-specific DB query handlers extracted from db_query_executor."""
+"""Intent-specific query handlers — data fetched via REST API, not direct DB."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ except ImportError:
     from ...query_routing.intent_classifier import IntentType
 
 try:
+    from executors.db_support import api_client
     from executors.db_support import charts as db_charts
     from executors.db_support import query_parsing as db_parsing
     from executors.db_support import response_helpers as db_helpers
     from executors.db_support.response_helpers import is_diagnostic_query_text
 except ImportError:
+    from . import api_client
     from . import charts as db_charts
     from . import query_parsing as db_parsing
     from . import response_helpers as db_helpers
@@ -119,12 +121,8 @@ def _requested_metrics(
         IntentType.ANOMALY_ANALYSIS_DB,
     }
     if explicit_metrics and hinted_metrics and len(hinted_metrics) > len(explicit_metrics) and intent in analytical_intents:
-        # When planner explicitly asks for wider analytical context, prefer the
-        # hinted order/pack and keep explicit metrics included.
         metrics = list(hinted_metrics) + [m for m in explicit_metrics if m not in hinted_metrics]
     if explicit_metrics:
-        # For comparison-style air-quality asks (for example: "compare CO2 levels ..."),
-        # expand to a core multi-metric pack so responses include PM2.5/TVOC context.
         explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
         trend_like_phrase = any(
             token in q
@@ -192,7 +190,6 @@ def _requested_metrics(
 
 def _handle_diagnostic(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     requested_metrics: List[str],
@@ -205,12 +202,10 @@ def _handle_diagnostic(
     if not is_diagnostic_query_text(question):
         return None
     core_metrics = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"]
-    metric_columns = [
-        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
-        for metric in core_metrics
-        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
-    ]
-    if not metric_columns:
+    # Only fetch metrics the API supports
+    fetchable = [m for m in core_metrics if api_client._api_sensor_slug(m) or api_client._score_type(m)]
+
+    if not resolved_lab_name or not fetchable:
         return {
             "operation_type": "diagnostic",
             "rows": [],
@@ -225,19 +220,10 @@ def _handle_diagnostic(
             "window_label": window_label,
             "compared_spaces": [],
         }
-    select_metrics_sql = ", ".join([f"AVG({column}) AS {metric}" for metric, column in metric_columns])
-    sql = f"""
-        SELECT bucket, {select_metrics_sql}
-        FROM lab_ieq_final
-        WHERE bucket >= %s
-          AND bucket < %s
-          AND (%s IS NULL OR lab_space = %s)
-        GROUP BY bucket
-        ORDER BY bucket ASC
-        LIMIT 2000
-    """
-    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-    rows = [dict(row) for row in cur.fetchall()]
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+    rows = api_client.fetch_merged_timeseries(resolved_lab_name, fetchable, window_hours)
+
     if not rows:
         return {
             "operation_type": "diagnostic",
@@ -247,12 +233,13 @@ def _handle_diagnostic(
             "forecast_data": None,
             "correlation_data": None,
             "metric_alias": "ieq",
-            "metrics_used": [m for m, _ in metric_columns],
+            "metrics_used": fetchable,
             "window_start": window_start,
             "window_end": window_end,
             "window_label": window_label,
             "compared_spaces": [],
         }
+
     correlation_analysis = db_helpers.correlate_metrics_with_ieq(rows=rows, metrics=core_metrics)
     top_culprits = list(correlation_analysis.get("top_culprits") or [])
     chart = db_helpers.build_diagnostic_chart(
@@ -276,7 +263,7 @@ def _handle_diagnostic(
         "forecast_data": None,
         "correlation_data": correlation_analysis,
         "metric_alias": "ieq",
-        "metrics_used": [m for m, _ in metric_columns],
+        "metrics_used": fetchable,
         "window_start": window_start,
         "window_end": window_end,
         "window_label": window_label,
@@ -286,7 +273,6 @@ def _handle_diagnostic(
 
 def _handle_correlation(
     *,
-    cur: Any,
     question: str,
     window_start: datetime,
     window_end: datetime,
@@ -298,9 +284,7 @@ def _handle_correlation(
     if not (db_parsing.wants_correlation(question) and len(requested_metrics) >= 2):
         return None
     metric_x, metric_y = requested_metrics[0], requested_metrics[1]
-    column_x = db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric_x)
-    column_y = db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric_y)
-    if not column_x or not column_y:
+    if not resolved_lab_name:
         return {
             "operation_type": "correlation",
             "rows": [],
@@ -311,25 +295,27 @@ def _handle_correlation(
             "metrics_used": [metric_x, metric_y],
         }
 
-    sql = f"""
-        SELECT bucket, {column_x} AS x_value, {column_y} AS y_value
-        FROM lab_ieq_final
-        WHERE bucket >= %s
-          AND bucket < %s
-          AND (%s IS NULL OR lab_space = %s)
-          AND {column_x} IS NOT NULL
-          AND {column_y} IS NOT NULL
-        ORDER BY bucket ASC
-        LIMIT 5000
-    """
-    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-    rows = [dict(row) for row in cur.fetchall()]
+    window_hours = max(api_client.window_hours_from_datetimes(window_start, window_end), 6)
+    series_x = api_client.fetch_timeseries_rows(resolved_lab_name, metric_x, window_hours)
+    series_y = api_client.fetch_timeseries_rows(resolved_lab_name, metric_y, window_hours)
+
+    # Merge by timestamp bucket
+    by_bucket_x = {str(r["bucket"]): r["value"] for r in series_x}
+    by_bucket_y = {str(r["bucket"]): r["value"] for r in series_y}
+    common = sorted(set(by_bucket_x) & set(by_bucket_y))
+    rows = [
+        {"lab_space": resolved_lab_name, "bucket": b, "x_value": by_bucket_x[b], "y_value": by_bucket_y[b]}
+        for b in common
+        if by_bucket_x[b] is not None and by_bucket_y[b] is not None
+    ]
+
     corr_value: Optional[float] = None
     if len(rows) >= 3:
         df = pd.DataFrame(rows)
         corr = df["x_value"].corr(df["y_value"])
         if corr is not None and not pd.isna(corr):
             corr_value = float(corr)
+
     correlation_data = {
         "metric_x": metric_x,
         "metric_y": metric_y,
@@ -365,7 +351,6 @@ def _handle_correlation(
 
 def _handle_comparison_multi(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     requested_metrics: List[str],
@@ -384,12 +369,13 @@ def _handle_comparison_multi(
         compare_metrics = requested_metrics[:5]
     else:
         compare_metrics = requested_metrics[:4]
-    metric_columns = [
-        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
-        for metric in compare_metrics
-        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
+
+    # Only include metrics that have a mapping (keeps metrics_used consistent)
+    metric_names = [
+        m for m in compare_metrics
+        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)
     ]
-    if len(metric_columns) < 1:
+    if not metric_names:
         return {
             "operation_type": "comparison_multi_metric",
             "rows": [],
@@ -397,25 +383,17 @@ def _handle_comparison_multi(
             "chart_payload": db_charts.empty_chart(),
             "metrics_used": [],
         }
+
     compared_spaces = db_parsing.extract_compared_spaces(question)
     if not compared_spaces and resolved_lab_name:
         compared_spaces = [resolved_lab_name]
-    select_metrics_sql = ", ".join([f"AVG({column}) AS {metric}" for metric, column in metric_columns])
-    metric_names = [m for m, _ in metric_columns]
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+
     if len(compared_spaces) < 2:
         if resolved_lab_name:
-            sql = f"""
-                SELECT lab_space, {select_metrics_sql}
-                FROM lab_ieq_final
-                WHERE lab_space = %s
-                  AND bucket >= %s
-                  AND bucket < %s
-                GROUP BY lab_space
-                LIMIT 1
-            """
-            cur.execute(sql, (resolved_lab_name, window_start, window_end))
-            row = cur.fetchone()
-            rows = [dict(row)] if row else []
+            row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+            rows = [row] if row.get(metric_names[0]) is not None else []
             return {
                 "operation_type": "comparison_multi_metric",
                 "rows": rows,
@@ -446,19 +424,12 @@ def _handle_comparison_multi(
             "metrics_used": metric_names,
             "compared_spaces": compared_spaces,
         }
-    if len(compared_spaces) >= 2:
-        sql = f"""
-            SELECT lab_space, {select_metrics_sql}
-            FROM lab_ieq_final
-            WHERE lab_space = ANY(%s)
-              AND bucket >= %s
-              AND bucket < %s
-            GROUP BY lab_space
-            ORDER BY lab_space ASC
-            LIMIT 2
-        """
-        cur.execute(sql, (compared_spaces, window_start, window_end))
-    rows = [dict(row) for row in cur.fetchall()]
+
+    rows = [
+        api_client.fetch_multi_metric_agg_row(slug, metric_names, window_hours)
+        for slug in compared_spaces[:2]
+    ]
+    rows = [r for r in rows if any(r.get(m) is not None for m in metric_names)]
     return {
         "operation_type": "comparison_multi_metric",
         "rows": rows,
@@ -475,17 +446,15 @@ def _handle_comparison_multi(
         ),
         "metric_alias": metric_names[0],
         "metrics_used": metric_names,
-        "compared_spaces": compared_spaces,
+        "compared_spaces": compared_spaces[:2],
     }
 
 
 def _handle_baseline_reference_comparison(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     window_start: datetime,
     window_end: datetime,
@@ -508,42 +477,26 @@ def _handle_baseline_reference_comparison(
 
     window_seconds = max(3600, int((window_end - window_start).total_seconds()))
     baseline_start = window_start - timedelta(seconds=window_seconds)
-    baseline_end = window_start
-    sql = f"""
-        SELECT
-            AVG(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS current_avg,
-            AVG(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS baseline_avg,
-            STDDEV_POP(CASE WHEN bucket >= %s AND bucket < %s THEN {metric_column} END) AS baseline_stddev,
-            COUNT(CASE WHEN bucket >= %s AND bucket < %s THEN 1 END) AS current_count,
-            COUNT(CASE WHEN bucket >= %s AND bucket < %s THEN 1 END) AS baseline_count
-        FROM lab_ieq_final
-        WHERE lab_space = %s
-          AND bucket >= %s
-          AND bucket < %s
-          AND {metric_column} IS NOT NULL
-    """
-    cur.execute(
-        sql,
-        (
-            window_start,
-            window_end,
-            baseline_start,
-            baseline_end,
-            baseline_start,
-            baseline_end,
-            window_start,
-            window_end,
-            baseline_start,
-            baseline_end,
-            resolved_lab_name,
-            baseline_start,
-            window_end,
-        ),
-    )
-    row = dict(cur.fetchone() or {})
-    current_avg = row.get("current_avg")
-    baseline_avg = row.get("baseline_avg")
-    if current_avg is None or baseline_avg is None:
+
+    # Fetch the full range (baseline + current) as a single time series
+    full_window_hours = api_client.window_hours_from_datetimes(baseline_start, window_end)
+    all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, full_window_hours)
+
+    def _ts(dt: datetime) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=__import__("datetime").timezone.utc)
+        return dt.isoformat()
+
+    current_vals = [
+        r["value"] for r in all_rows
+        if r.get("value") is not None and str(r.get("bucket", "")) >= _ts(window_start)
+    ]
+    baseline_vals = [
+        r["value"] for r in all_rows
+        if r.get("value") is not None and str(r.get("bucket", "")) < _ts(window_start)
+    ]
+
+    if not current_vals or not baseline_vals:
         return {
             "operation_type": "baseline_reference_comparison",
             "rows": [],
@@ -555,10 +508,14 @@ def _handle_baseline_reference_comparison(
             "metrics_used": [metric_alias],
             "compared_spaces": [resolved_lab_name],
         }
-    current_value = float(current_avg)
-    baseline_value = float(baseline_avg)
+
+    current_value = sum(current_vals) / len(current_vals)
+    baseline_value = sum(baseline_vals) / len(baseline_vals)
+    import statistics
+    baseline_stddev = statistics.pstdev(baseline_vals) if len(baseline_vals) > 1 else None
     delta = current_value - baseline_value
     pct = (delta / baseline_value * 100.0) if baseline_value != 0 else None
+
     rows = [
         {
             "lab_space": resolved_lab_name,
@@ -566,9 +523,9 @@ def _handle_baseline_reference_comparison(
             "baseline_avg": baseline_value,
             "delta_value": delta,
             "delta_percent": pct,
-            "baseline_stddev": row.get("baseline_stddev"),
-            "current_count": int(row.get("current_count") or 0),
-            "baseline_count": int(row.get("baseline_count") or 0),
+            "baseline_stddev": baseline_stddev,
+            "current_count": len(current_vals),
+            "baseline_count": len(baseline_vals),
         }
     ]
     pct_text = f"{pct:+.1f}%" if pct is not None else "n/a"
@@ -605,7 +562,6 @@ def _handle_baseline_reference_comparison(
 
 def _handle_aggregation_multi(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     requested_metrics: List[str],
@@ -625,12 +581,9 @@ def _handle_aggregation_multi(
         selected_metrics = requested_metrics[:5]
     else:
         selected_metrics = requested_metrics[:4]
-    metric_columns = [
-        (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
-        for metric in selected_metrics
-        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
-    ]
-    if len(metric_columns) < 1:
+
+    metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+    if not metric_names:
         return {
             "operation_type": "aggregation_multi_metric",
             "rows": [],
@@ -638,40 +591,16 @@ def _handle_aggregation_multi(
             "chart_payload": db_charts.empty_chart(),
             "metrics_used": [],
         }
-    select_metrics_sql = ", ".join(
-        [
-            (
-                f"AVG({column}) AS {metric}, "
-                f"MIN({column}) AS {metric}_min, "
-                f"MAX({column}) AS {metric}_max, "
-                f"STDDEV_POP({column}) AS {metric}_stddev"
-            )
-            for metric, column in metric_columns
-        ]
-    )
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+
     if resolved_lab_name:
-        sql = f"""
-            SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-              AND lab_space = %s
-            GROUP BY lab_space
-            ORDER BY reading_count DESC
-            LIMIT 1
-        """
-        cur.execute(sql, (window_start, window_end, resolved_lab_name))
+        row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+        rows = [row]
     else:
-        sql = f"""
-            SELECT 'all_labs' AS lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-        """
-        cur.execute(sql, (window_start, window_end))
-    row = cur.fetchone()
-    rows = [dict(row)] if row else []
-    metric_names = [m for m, _ in metric_columns]
+        row = api_client.fetch_all_spaces_avg_row(metric_names, window_hours)
+        rows = [row]
+
     return {
         "operation_type": "aggregation_multi_metric",
         "rows": rows,
@@ -693,11 +622,9 @@ def _handle_aggregation_multi(
 
 def _handle_point_lookup(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     requested_metrics: List[str],
     window_start: datetime,
@@ -708,6 +635,7 @@ def _handle_point_lookup(
 ) -> Optional[Dict[str, Any]]:
     if intent not in {IntentType.POINT_LOOKUP_DB, IntentType.CURRENT_STATUS_DB}:
         return None
+
     current_snapshot_query = _is_current_snapshot_query(question)
     historical_summary_query = _is_historical_window_summary_query(
         question=question,
@@ -715,18 +643,16 @@ def _handle_point_lookup(
         window_start=window_start,
         window_end=window_end,
     )
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+
     if historical_summary_query and intent == IntentType.POINT_LOOKUP_DB:
         if len(requested_metrics) >= 2:
             if db_helpers.is_comfort_assessment_query_text(question):
                 selected_metrics = requested_metrics[:8]
             else:
                 selected_metrics = requested_metrics[:6]
-            metric_columns = [
-                (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
-                for metric in selected_metrics
-                if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
-            ]
-            if len(metric_columns) < 1:
+            metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+            if not metric_names:
                 return {
                     "operation_type": "aggregation_multi_metric",
                     "rows": [],
@@ -734,40 +660,12 @@ def _handle_point_lookup(
                     "chart_payload": db_charts.empty_chart(),
                     "metrics_used": [],
                 }
-            select_metrics_sql = ", ".join(
-                [
-                    (
-                        f"AVG({column}) AS {metric}, "
-                        f"MIN({column}) AS {metric}_min, "
-                        f"MAX({column}) AS {metric}_max, "
-                        f"STDDEV_POP({column}) AS {metric}_stddev"
-                    )
-                    for metric, column in metric_columns
-                ]
-            )
             if resolved_lab_name:
-                sql = f"""
-                    SELECT lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-                    FROM lab_ieq_final
-                    WHERE bucket >= %s
-                      AND bucket < %s
-                      AND lab_space = %s
-                    GROUP BY lab_space
-                    ORDER BY reading_count DESC
-                    LIMIT 1
-                """
-                cur.execute(sql, (window_start, window_end, resolved_lab_name))
+                row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+                rows = [row]
             else:
-                sql = f"""
-                    SELECT 'all_labs' AS lab_space, {select_metrics_sql}, COUNT(*) AS reading_count
-                    FROM lab_ieq_final
-                    WHERE bucket >= %s
-                      AND bucket < %s
-                """
-                cur.execute(sql, (window_start, window_end))
-            row = cur.fetchone()
-            rows = [dict(row)] if row else []
-            metric_names = [m for m, _ in metric_columns]
+                row = api_client.fetch_all_spaces_avg_row(metric_names, window_hours)
+                rows = [row]
             return {
                 "operation_type": "aggregation_multi_metric",
                 "rows": rows,
@@ -786,22 +684,12 @@ def _handle_point_lookup(
                 "metrics_used": metric_names,
             }
 
-        sql = f"""
-            SELECT lab_space,
-                   AVG({metric_column}) AS avg_value,
-                   MIN({metric_column}) AS min_value,
-                   MAX({metric_column}) AS max_value,
-                   COUNT(*) AS reading_count
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-              AND (%s IS NULL OR lab_space = %s)
-            GROUP BY lab_space
-            ORDER BY avg_value DESC
-            LIMIT 10
-        """
-        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-        rows = [dict(row) for row in cur.fetchall()]
+        # Single metric historical summary
+        if resolved_lab_name:
+            agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+            rows = [agg] if agg else []
+        else:
+            rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_hours)[:10]
         return {
             "operation_type": "aggregation",
             "rows": rows,
@@ -824,12 +712,8 @@ def _handle_point_lookup(
     )
     if is_multi:
         selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
-        metric_columns = [
-            (metric, db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric))
-            for metric in selected_metrics
-            if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(metric)
-        ]
-        if len(metric_columns) < 1:
+        metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+        if not metric_names:
             return {
                 "operation_type": "point_lookup_multi_metric",
                 "rows": [],
@@ -837,40 +721,22 @@ def _handle_point_lookup(
                 "chart_payload": db_charts.empty_chart(),
                 "metrics_used": [],
             }
-        select_metrics_sql = ", ".join([f"{column} AS {metric}" for metric, column in metric_columns])
-        sql = f"""
-            SELECT lab_space, bucket, {select_metrics_sql}
-            FROM lab_ieq_final
-            WHERE (%s IS NULL OR lab_space = %s)
-              AND bucket >= %s
-              AND bucket < %s
-            ORDER BY bucket DESC
-            LIMIT 1
-        """
-        cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
-        row = cur.fetchone()
-        active_window_start = window_start
-        active_window_end = window_end
+
         active_window_label = window_label
         window_note = ""
-        if (
-            row is None
-            and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
-        ):
-            fallback_start = window_end - timedelta(hours=6)
-            if fallback_start < window_start:
-                cur.execute(sql, (resolved_lab_name, resolved_lab_name, fallback_start, window_end))
-                row = cur.fetchone()
-                if row is not None:
-                    active_window_start = fallback_start
-                    active_window_end = window_end
-                    active_window_label = "last 6 hours"
-                    bucket = row.get("bucket")
-                    if isinstance(bucket, datetime):
-                        hours_ago = max(0.0, (window_end - bucket).total_seconds() / 3600.0)
-                        window_note = f" Most recent reading is about {hours_ago:.1f} hour(s) old."
-        rows = [dict(row)] if row else []
-        metric_names = [m for m, _ in metric_columns]
+        if resolved_lab_name:
+            row = api_client.fetch_multi_metric_point_row(resolved_lab_name, metric_names)
+            rows = [row] if any(row.get(m) is not None for m in metric_names) else []
+        else:
+            # No specific lab — use all-spaces average from /spaces/ endpoint
+            spaces_data = api_client.fetch_spaces()
+            if spaces_data:
+                # Build an aggregate row from first available space or aggregate
+                row = api_client.fetch_multi_metric_point_row(spaces_data[0]["slug"], metric_names)
+                rows = [row] if any(row.get(m) is not None for m in metric_names) else []
+            else:
+                rows = []
+
         fallback_answer = db_helpers.build_multi_metric_aggregation_answer(
             metric_aliases=metric_names,
             row=rows[0] if rows else {},
@@ -890,56 +756,32 @@ def _handle_point_lookup(
             ),
             "metric_alias": metric_names[0],
             "metrics_used": metric_names,
-            "window_start": active_window_start,
-            "window_end": active_window_end,
+            "window_start": window_start,
+            "window_end": window_end,
             "window_label": active_window_label,
         }
 
-    sql = f"""
-        SELECT lab_space, bucket, {metric_column} AS value
-        FROM lab_ieq_final
-        WHERE (%s IS NULL OR lab_space = %s)
-          AND bucket >= %s
-          AND bucket < %s
-        ORDER BY bucket DESC
-        LIMIT 1
-    """
-    cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
-    row = cur.fetchone()
-    active_window_start = window_start
-    active_window_end = window_end
+    # Single-metric point lookup
+    # Use a slightly wider window (2h) so we always catch the most recent completed bucket.
+    fetch_hours = max(window_hours, 6)
+    trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name or "", metric_alias, fetch_hours)
+    rows = [trend_rows[-1]] if trend_rows else []
     active_window_label = window_label
     window_note = ""
-    if (
-        row is None
-        and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
-    ):
-        fallback_start = window_end - timedelta(hours=6)
-        if fallback_start < window_start:
-            cur.execute(sql, (resolved_lab_name, resolved_lab_name, fallback_start, window_end))
-            row = cur.fetchone()
-            if row is not None:
-                active_window_start = fallback_start
-                active_window_end = window_end
-                active_window_label = "last 6 hours"
-                bucket = row.get("bucket")
-                if isinstance(bucket, datetime):
-                    hours_ago = max(0.0, (window_end - bucket).total_seconds() / 3600.0)
-                    window_note = f" Most recent reading is about {hours_ago:.1f} hour(s) old."
-    rows = [dict(row)] if row else []
-    trend_sql = f"""
-        SELECT bucket, {metric_column} AS value
-        FROM lab_ieq_final
-        WHERE (%s IS NULL OR lab_space = %s)
-          AND bucket >= %s
-          AND bucket < %s
-        ORDER BY bucket ASC
-        LIMIT 500
-    """
-    cur.execute(trend_sql, (resolved_lab_name, resolved_lab_name, active_window_start, active_window_end))
-    trend_rows = [dict(item) for item in cur.fetchall()]
+
+    # If still no timeseries data, fall back to the space-level metrics endpoint for current value.
+    if not rows and resolved_lab_name and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}:
+        space = api_client.fetch_space_metrics(resolved_lab_name)
+        if space:
+            api_slug = api_client._api_sensor_slug(metric_alias)
+            avg_by_type = {m["type"]: m["avg_value"] for m in (space.get("avg_metrics") or [])}
+            val = avg_by_type.get(api_slug) if api_slug else None
+            if val is not None:
+                rows = [{"lab_space": resolved_lab_name, "bucket": space.get("last_updated"), "value": val}]
+                trend_rows = rows
+
     series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
-    fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, row or {}, active_window_label)
+    fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, rows[0] if rows else {}, active_window_label)
     if window_note:
         fallback_answer = f"{fallback_answer}{window_note}"
     return {
@@ -955,18 +797,16 @@ def _handle_point_lookup(
             lookback_points=max_chart_lookback_points,
         ),
         "metrics_used": [metric_alias],
-        "window_start": active_window_start,
-        "window_end": active_window_end,
+        "window_start": window_start,
+        "window_end": window_end,
         "window_label": active_window_label,
     }
 
 
 def _handle_anomaly(
     *,
-    cur: Any,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     window_start: datetime,
     window_end: datetime,
@@ -976,20 +816,16 @@ def _handle_anomaly(
 ) -> Optional[Dict[str, Any]]:
     if intent != IntentType.ANOMALY_ANALYSIS_DB:
         return None
-    sql = f"""
-        SELECT lab_space, bucket, {metric_column} AS value
-        FROM lab_ieq_final
-        WHERE (%s IS NULL OR lab_space = %s)
-          AND bucket >= %s
-          AND bucket < %s
-          AND {metric_column} IS NOT NULL
-        ORDER BY bucket ASC
-        LIMIT 5000
-    """
-    cur.execute(sql, (resolved_lab_name, resolved_lab_name, window_start, window_end))
-    rows = [dict(item) for item in cur.fetchall()]
+    if not resolved_lab_name:
+        return None
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+    # The API requires at least 5 hours to return completed hourly buckets;
+    # anomaly detection also needs enough points to compute a meaningful baseline.
+    fetch_hours = max(window_hours, 6)
+    rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_hours)
     anomalies = db_helpers.detect_anomaly_points(rows)
-    series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
+    series_name = resolved_lab_name
     return {
         "operation_type": "anomaly",
         "rows": rows,
@@ -1015,11 +851,9 @@ def _handle_anomaly(
 
 def _handle_comparison(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     window_start: datetime,
     window_end: datetime,
@@ -1043,19 +877,14 @@ def _handle_comparison(
             "metrics_used": [metric_alias],
             "compared_spaces": compared_spaces,
         }
-    if len(compared_spaces) >= 2:
-        sql = f"""
-            SELECT lab_space, AVG({metric_column}) AS avg_value
-            FROM lab_ieq_final
-            WHERE lab_space = ANY(%s)
-              AND bucket >= %s
-              AND bucket < %s
-            GROUP BY lab_space
-            ORDER BY avg_value DESC
-            LIMIT 2
-        """
-        cur.execute(sql, (compared_spaces, window_start, window_end))
-    rows = [dict(row) for row in cur.fetchall()]
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+    rows = []
+    for slug in compared_spaces[:2]:
+        agg = api_client.fetch_aggregation_row(slug, metric_alias, window_hours)
+        if agg:
+            rows.append(agg)
+    rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
     return {
         "operation_type": "comparison",
         "rows": rows,
@@ -1068,17 +897,15 @@ def _handle_comparison(
             value_key="avg_value",
         ),
         "metrics_used": [metric_alias],
-        "compared_spaces": compared_spaces,
+        "compared_spaces": compared_spaces[:2],
     }
 
 
 def _handle_forecast(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     window_start: datetime,
     window_end: datetime,
@@ -1096,31 +923,22 @@ def _handle_forecast(
         default_end=window_end,
         default_label=window_label,
     )
-    sql = f"""
-        SELECT bucket, value
-        FROM (
-            SELECT bucket, AVG({metric_column}) AS value
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-              AND (%s IS NULL OR lab_space = %s)
-            GROUP BY bucket
-            ORDER BY bucket DESC
-            LIMIT 1000
-        ) recent
-        ORDER BY bucket ASC
-    """
-    cur.execute(sql, (forecast_window_start, forecast_window_end, resolved_lab_name, resolved_lab_name))
-    model_rows = [dict(row) for row in cur.fetchall()]
+
+    slug = resolved_lab_name or ""
+    forecast_window_hours = max(
+        api_client.window_hours_from_datetimes(forecast_window_start, forecast_window_end), 6
+    )
+    model_rows = api_client.fetch_timeseries_rows(slug, metric_alias, forecast_window_hours)
+    model_rows = model_rows[-1000:] if len(model_rows) > 1000 else model_rows
+
     forecast_data = db_helpers.build_forecast_from_rows(model_rows, horizon_hours=horizon_hours)
     chart_rows = model_rows
     if forecast_window_start != window_start or forecast_window_end != window_end:
-        # Keep chart/history display aligned to the requested window, while the model
-        # can still use a broader history window internally.
-        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-        requested_rows = [dict(row) for row in cur.fetchall()]
+        requested_hours = max(api_client.window_hours_from_datetimes(window_start, window_end), 6)
+        requested_rows = api_client.fetch_timeseries_rows(slug, metric_alias, requested_hours)
         if requested_rows:
             chart_rows = requested_rows
+
     effective_horizon_hours = int((forecast_data or {}).get("horizon_hours") or horizon_hours)
     effective_horizon_label = f"next {effective_horizon_hours} hour(s)"
     series_name = resolved_lab_name or "selected_scope"
@@ -1158,11 +976,9 @@ def _handle_forecast(
 
 def _handle_default(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
-    metric_column: str,
     unit: str,
     window_start: datetime,
     window_end: datetime,
@@ -1171,19 +987,15 @@ def _handle_default(
     compared_spaces: List[str],
     max_chart_lookback_points: int,
 ) -> Dict[str, Any]:
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+
     if intent == IntentType.AGGREGATION_DB and len(compared_spaces) >= 2:
-        sql = f"""
-            SELECT lab_space, AVG({metric_column}) AS avg_value
-            FROM lab_ieq_final
-            WHERE lab_space = ANY(%s)
-              AND bucket >= %s
-              AND bucket < %s
-            GROUP BY lab_space
-            ORDER BY avg_value DESC
-            LIMIT 2
-        """
-        cur.execute(sql, (compared_spaces, window_start, window_end))
-        rows = [dict(row) for row in cur.fetchall()]
+        rows = []
+        for slug in compared_spaces[:2]:
+            agg = api_client.fetch_aggregation_row(slug, metric_alias, window_hours)
+            if agg:
+                rows.append(agg)
+        rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
         return {
             "operation_type": "comparison",
             "rows": rows,
@@ -1196,21 +1008,12 @@ def _handle_default(
                 value_key="avg_value",
             ),
             "metrics_used": [metric_alias],
-            "compared_spaces": compared_spaces,
+            "compared_spaces": compared_spaces[:2],
         }
 
     if db_parsing.wants_time_series(question):
-        sql = f"""
-            SELECT lab_space, bucket, {metric_column} AS value
-            FROM lab_ieq_final
-            WHERE bucket >= %s
-              AND bucket < %s
-              AND (%s IS NULL OR lab_space = %s)
-            ORDER BY bucket ASC
-            LIMIT 1000
-        """
-        cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-        rows = [dict(row) for row in cur.fetchall()]
+        slug = resolved_lab_name or ""
+        rows = api_client.fetch_timeseries_rows(slug, metric_alias, max(window_hours, 6))
         series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
         return {
             "operation_type": "timeseries",
@@ -1227,27 +1030,25 @@ def _handle_default(
             "metrics_used": [metric_alias],
         }
 
-    sql = f"""
-        SELECT lab_space,
-               AVG({metric_column}) AS avg_value,
-               MIN({metric_column}) AS min_value,
-               MAX({metric_column}) AS max_value,
-               AVG(contri_thermal) AS contri_thermal,
-               AVG(contri_light) AS contri_light,
-               AVG(contri_air) AS contri_air,
-               AVG(contri_acoustic) AS contri_acoustic,
-               AVG(contri_acoustic) AS contri_acustic,
-               COUNT(*) AS reading_count
-        FROM lab_ieq_final
-        WHERE bucket >= %s
-          AND bucket < %s
-          AND (%s IS NULL OR lab_space = %s)
-        GROUP BY lab_space
-        ORDER BY avg_value DESC
-        LIMIT 10
-    """
-    cur.execute(sql, (window_start, window_end, resolved_lab_name, resolved_lab_name))
-    rows = [dict(row) for row in cur.fetchall()]
+    # Default aggregation — include IEQ contribution sub-scores from /spaces/
+    if resolved_lab_name:
+        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+        rows = []
+        if agg:
+            # Enrich with contribution fields from /spaces/ summary
+            spaces = api_client.fetch_spaces()
+            space_summary = next((s for s in spaces if s.get("slug") == resolved_lab_name), None)
+            if space_summary:
+                sub = space_summary.get("metrics") or {}
+                agg["contri_thermal"] = sub.get("itc")
+                agg["contri_light"] = sub.get("iil")
+                agg["contri_air"] = sub.get("iaq")
+                agg["contri_acoustic"] = sub.get("iac")
+                agg["contri_acustic"] = sub.get("iac")
+            rows = [agg]
+    else:
+        rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_hours)[:10]
+
     return {
         "operation_type": "aggregation",
         "rows": rows,
@@ -1265,7 +1066,6 @@ def _handle_default(
 
 def execute_intent_query(
     *,
-    cur: Any,
     question: str,
     intent: IntentType,
     metric_alias: str,
@@ -1279,6 +1079,8 @@ def execute_intent_query(
     explicit_metrics: List[str],
     hinted_metrics: List[str],
     max_chart_lookback_points: int,
+    # Legacy parameter kept for backwards compatibility — no longer used
+    cur: Any = None,
 ) -> Dict[str, Any]:
     result = _base_result(metric_alias=metric_alias, window_label=window_label)
     result["window_start"] = window_start
@@ -1294,7 +1096,6 @@ def execute_intent_query(
 
     handlers = [
         lambda: _handle_diagnostic(
-            cur=cur,
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1305,7 +1106,6 @@ def execute_intent_query(
             max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_correlation(
-            cur=cur,
             question=question,
             window_start=window_start,
             window_end=window_end,
@@ -1315,7 +1115,6 @@ def execute_intent_query(
             max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_comparison_multi(
-            cur=cur,
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1325,11 +1124,9 @@ def execute_intent_query(
             resolved_lab_name=resolved_lab_name,
         ),
         lambda: _handle_baseline_reference_comparison(
-            cur=cur,
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             window_start=window_start,
             window_end=window_end,
@@ -1337,7 +1134,6 @@ def execute_intent_query(
             resolved_lab_name=resolved_lab_name,
         ),
         lambda: _handle_aggregation_multi(
-            cur=cur,
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1348,11 +1144,9 @@ def execute_intent_query(
             resolved_lab_name=resolved_lab_name,
         ),
         lambda: _handle_point_lookup(
-            cur=cur,
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             requested_metrics=requested_metrics,
             window_start=window_start,
@@ -1362,10 +1156,8 @@ def execute_intent_query(
             max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_anomaly(
-            cur=cur,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             window_start=window_start,
             window_end=window_end,
@@ -1374,11 +1166,9 @@ def execute_intent_query(
             max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_comparison(
-            cur=cur,
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             window_start=window_start,
             window_end=window_end,
@@ -1386,11 +1176,9 @@ def execute_intent_query(
             resolved_lab_name=resolved_lab_name,
         ),
         lambda: _handle_forecast(
-            cur=cur,
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             window_start=window_start,
             window_end=window_end,
@@ -1408,11 +1196,9 @@ def execute_intent_query(
             break
     if not selected:
         selected = _handle_default(
-            cur=cur,
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            metric_column=metric_column,
             unit=unit,
             window_start=window_start,
             window_end=window_end,
@@ -1423,7 +1209,6 @@ def execute_intent_query(
         )
 
     result.update(selected)
-    # Preserve original scope values when branch did not override them.
     result.setdefault("window_start", window_start)
     result.setdefault("window_end", window_end)
     result.setdefault("window_label", window_label)

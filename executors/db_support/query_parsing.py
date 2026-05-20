@@ -14,13 +14,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from query_routing.intent_classifier import IntentType
-    from storage.postgres_client import get_cursor
     from executors.db_support import time_windows as db_time_windows
+    from executors.db_support import api_client as db_api
     from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 except ImportError:
     from ...query_routing.intent_classifier import IntentType
-    from ...storage.postgres_client import get_cursor
     from . import time_windows as db_time_windows
+    from . import api_client as db_api
     from ..metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 
 _SPACE_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
@@ -72,7 +72,11 @@ _TIME_HINT_RE = re.compile(
     r"last\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"past\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
     r"next\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)|"
+    r"last\s+(hour|day|week|month|hours|days|weeks|months)|"
+    r"past\s+(hour|day|week|month|hours|days|weeks|months)|"
     r"next\s+(hour|day|week|month)|"
+    r"this\s+(hour|morning|afternoon|evening)|"
+    r"recent\s+(hour|hours|day|days)|"
     r"\d{4}-\d{1,2}-\d{1,2}|"
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
     r"january|february|march|april|june|july|august|september|october|november|december)"
@@ -85,25 +89,20 @@ _LAB_NAMES_CACHE_TTL_SECONDS = 300.0
 
 
 def get_known_lab_names() -> Tuple[str, ...]:
-    """Fetch known lab names from app_lab with short-lived cache."""
+    """Fetch known space slugs from the REST API with short-lived cache."""
     global _LAB_NAMES_CACHE
     global _LAB_NAMES_CACHE_TS
     now = time.time()
     if _LAB_NAMES_CACHE and (now - _LAB_NAMES_CACHE_TS) < _LAB_NAMES_CACHE_TTL_SECONDS:
         return _LAB_NAMES_CACHE
     try:
-        with get_cursor(real_dict=True) as cur:
-            cur.execute("SELECT name FROM app_lab WHERE name IS NOT NULL")
-            names = []
-            for row in cur.fetchall():
-                name = str(row.get("name") or "").strip().lower()
-                if name:
-                    names.append(name)
-            resolved = tuple(sorted(set(names)))
-            if resolved:
-                _LAB_NAMES_CACHE = resolved
-                _LAB_NAMES_CACHE_TS = now
-            return resolved
+        spaces = db_api.fetch_spaces()
+        names = [str(s.get("slug") or "").strip().lower() for s in spaces if s.get("slug")]
+        resolved = tuple(sorted(set(n for n in names if n)))
+        if resolved:
+            _LAB_NAMES_CACHE = resolved
+            _LAB_NAMES_CACHE_TS = now
+        return resolved
     except Exception:
         return _LAB_NAMES_CACHE
 
@@ -381,6 +380,9 @@ def validate_db_execution_invariants(
     if not metric_justified and analytical_intent and has_db_scope:
         # For comparison/anomaly/forecast style intents, fallback metric defaults are valid.
         metric_justified = True
+    if not metric_justified and analytical_intent and has_lab_hint:
+        # When the user names a lab for an analytical query, the default metric is valid.
+        metric_justified = True
 
     time_justified = has_time_hint or has_currentness_hint or intent in {
         IntentType.CURRENT_STATUS_DB,
@@ -388,6 +390,10 @@ def validate_db_execution_invariants(
     }
     if not time_justified and analytical_intent and has_db_scope:
         # Aggregation-like intents can safely use deterministic default windows.
+        time_justified = True
+    if not time_justified and analytical_intent and has_lab_hint:
+        # When the user explicitly names a lab for an analytical intent, the default
+        # window is always well-defined — don't gate on a missing time phrase.
         time_justified = True
     resolved_lab_token = str(resolved_lab_name or "").strip().lower()
     has_prepositional_lab_scope = False
