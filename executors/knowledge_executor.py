@@ -394,6 +394,89 @@ def answer_env_question_with_metadata(
     }
 
 
+async def stream_knowledge_tokens(
+    user_question: str,
+    k: int = 5,
+    space: Optional[str] = None,
+    think: Optional[bool] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> AsyncIterator[str]:
+    effective_guideline_records = list(guideline_records or [])
+    if wants_guideline_detail(user_question):
+        searched_guidelines = search_guideline_records(question=user_question, k=3)
+        if searched_guidelines:
+            effective_guideline_records = searched_guidelines
+    numbered_sources_block, _ = build_numbered_sources_block(effective_guideline_records)
+
+    context = _build_knowledge_context(
+        user_question=user_question,
+        k=k,
+        space=space,
+        guideline_records=[],
+    )
+    grounded_context = build_grounded_context_sections(
+        measured_room_facts=[],
+        backend_semantic_state=None,
+        knowledge_cards=context.get("knowledge_cards", []),
+        numbered_sources_block=numbered_sources_block,
+        allow_general_knowledge=True,
+    )
+    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
+    messages = prompt_template.format_messages(
+        question=user_question,
+        context_label="Measured room facts with knowledge grounding",
+        context_data=grounded_context,
+    )
+    prompt_text = _build_prompt_text_from_messages(messages)
+
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+    ollama_payload = {
+        "model": model,
+        "prompt": prompt_text,
+        "stream": True,
+        "temperature": 0.4,
+    }
+    if think is True:
+        ollama_payload["think"] = True
+
+    in_thinking_block = False
+    include_thinking = think is not False
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", f"{base_url}/api/generate", json=ollama_payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    thinking_text = _coerce_chunk_text(event.get("thinking"))
+                    response_text = _coerce_chunk_text(event.get("response"))
+
+                    if include_thinking and thinking_text:
+                        if not in_thinking_block:
+                            in_thinking_block = True
+                            yield f"data: {json.dumps({'event': 'token', 'text': '<think>'})}\n\n"
+                        yield f"data: {json.dumps({'event': 'token', 'text': thinking_text})}\n\n"
+
+                    if response_text:
+                        if in_thinking_block:
+                            in_thinking_block = False
+                            yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+                        yield f"data: {json.dumps({'event': 'token', 'text': response_text})}\n\n"
+
+        if include_thinking and in_thinking_block:
+            yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+    except Exception:
+        pass
+
+    yield f"data: {json.dumps({'event': 'done'})}\n\n"
+
+
 async def stream_answer_env_question(
     user_question: str,
     k: int = 5,

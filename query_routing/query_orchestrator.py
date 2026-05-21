@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 try:
-    from executors.db_query_executor import run_db_query, stream_db_query
+    from executors.db_query_executor import run_db_query, stream_db_query, stream_db_tokens
     from executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
+        stream_knowledge_tokens,
     )
     from query_routing.intent_classifier import IntentType
     from query_routing.llm_router_planner import plan_route
@@ -16,10 +18,11 @@ try:
     from query_routing.router_types import RoutePlan, RouteExecutor
     from storage.conversation_memory import apply_routing_memory, extract_routing_memory
 except ImportError:
-    from ..executors.db_query_executor import run_db_query, stream_db_query
+    from ..executors.db_query_executor import run_db_query, stream_db_query, stream_db_tokens
     from ..executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
+        stream_knowledge_tokens,
     )
     from .intent_classifier import IntentType
     from .llm_router_planner import plan_route
@@ -75,8 +78,6 @@ def _execute_knowledge(
             "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
         },
         "data": None,
-        "visualization_type": "none",
-        "chart": None,
     }
 
 
@@ -97,7 +98,6 @@ def _execute_db(
     ui = derive_ui_contract(
         execution_intent=route.intent,
         metrics=metrics,
-        visualization_type=db_result.get("visualization_type", "none"),
         has_floor_comparison=False,
         clarification_required="clarify" in str(db_result.get("timescale", "")),
         use_knowledge_executor=False,
@@ -119,12 +119,43 @@ def _execute_db(
             "route_confidence": route.confidence,
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
-            "visualization_type": db_result.get("visualization_type", "none"),
             "ui": ui,
         },
         "data": db_result.get("data"),
-        "visualization_type": db_result.get("visualization_type", "none"),
-        "chart": db_result.get("chart"),
+    }
+
+
+async def _build_stream_meta(
+    route: RoutePlan,
+    effective_lab: Optional[str],
+    use_knowledge_executor: bool,
+) -> Dict[str, Any]:
+    metrics = list(route.metrics)
+    ui = derive_ui_contract(
+        execution_intent=route.intent,
+        metrics=metrics,
+        has_floor_comparison=False,
+        clarification_required=False,
+        use_knowledge_executor=use_knowledge_executor,
+    )
+    executor = "knowledge_qa" if use_knowledge_executor else "db_query"
+    timescale = "knowledge" if use_knowledge_executor else "pending"
+    return {
+        "executor": executor,
+        "intent": route.intent.value,
+        "lab_name": effective_lab,
+        "llm_used": True,
+        "route_confidence": route.confidence,
+        "planner_model": route.model,
+        "fallback_used": route.fallback_used,
+        "ui": ui,
+        "timescale": timescale,
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "visualization_type": "none",
+        "chart": None,
+        "citation_sources": [],
+        "footnotes": [],
     }
 
 
@@ -173,9 +204,13 @@ async def stream_query(
     effective_question, effective_lab = _resolve_context(question, lab_name, conversation_context)
     route = plan_route(effective_question, effective_lab)
     executor = _choose_executor(route)
+    use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA
 
-    if executor == RouteExecutor.KNOWLEDGE_QA:
-        async for chunk in stream_answer_env_question(
+    meta = await _build_stream_meta(route, effective_lab, use_knowledge_executor)
+    yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
+
+    if use_knowledge_executor:
+        async for chunk in stream_knowledge_tokens(
             user_question=effective_question,
             k=max(1, min(k, 8)),
             space=effective_lab,
@@ -184,7 +219,7 @@ async def stream_query(
         return
 
     planner_hints = _build_planner_hints(route)
-    async for chunk in stream_db_query(
+    async for chunk in stream_db_tokens(
         question=effective_question,
         intent=route.intent,
         lab_name=effective_lab,

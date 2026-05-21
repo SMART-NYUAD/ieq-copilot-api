@@ -22,8 +22,6 @@ class QueryResponse(BaseModel):
     conversation_id: Optional[str] = None
     turn_index: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
-    visualization_type: Optional[str] = "none"
-    chart: Optional[Dict[str, Any]] = None
     footnotes: List["GuidelineFootnote"] = Field(default_factory=list)
     citation_sources: List["CitationSource"] = Field(default_factory=list)
 

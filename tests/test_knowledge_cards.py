@@ -19,7 +19,7 @@ if ROOT_DIR not in sys.path:
 
 from prompting.shared_prompts import SHARED_SYSTEM_PROMPT, build_grounded_context_sections
 from executors.knowledge_executor import build_card_grounded_context, search_knowledge_cards
-from executors.db_query_executor import _build_db_payload
+from executors.db_support.response_helpers import build_db_payload as _build_db_payload
 from executors.db_support.response_helpers import db_response_directive, is_air_quality_query_text
 from knowledge_cards.loader import KnowledgeCardValidationError, normalize_card
 

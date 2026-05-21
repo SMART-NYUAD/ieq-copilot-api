@@ -16,7 +16,6 @@ _DEFAULT_TRANSITION = "fade"
 def derive_ui_contract(
     execution_intent: IntentType,
     metrics: List[str],
-    visualization_type: str,
     has_floor_comparison: bool,
     clarification_required: bool,
     use_knowledge_executor: bool,
@@ -27,8 +26,6 @@ def derive_ui_contract(
         mode, panel = "clarify", "overview"
     elif use_knowledge_executor:
         mode, panel = "conversational", "overview"
-    elif execution_intent == IntentType.FORECAST_DB:
-        mode, panel = "forecast", "forecast"
     elif execution_intent == IntentType.COMPARISON_DB and has_floor_comparison:
         mode, panel = "analytical", "heatmap"
     elif execution_intent in {IntentType.AGGREGATION_DB, IntentType.COMPARISON_DB}:
@@ -46,7 +43,7 @@ def derive_ui_contract(
     else:
         mode, panel = "conversational", "overview"
 
-    transition = _ANALYTICAL_TRANSITION if mode in {"analytical", "forecast"} else _DEFAULT_TRANSITION
+    transition = _ANALYTICAL_TRANSITION if mode == "analytical" else _DEFAULT_TRANSITION
 
     return {
         "mode": mode,

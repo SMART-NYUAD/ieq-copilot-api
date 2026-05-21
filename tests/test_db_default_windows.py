@@ -13,8 +13,9 @@ if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
 from query_routing.intent_classifier import IntentType
-from executors.db_query_executor import _build_db_payload, _default_window_hours_for_intent, prepare_db_query
-from executors.db_support.charts import build_forecast_chart
+from executors.db_query_executor import prepare_db_query
+from executors.db_support.response_helpers import build_db_payload as _build_db_payload
+from executors.db_support.query_parsing import default_window_hours_for_intent as _default_window_hours_for_intent
 from executors.db_support.query_handlers import execute_intent_query
 from executors.db_support.query_parsing import (
     extract_metric_aliases,
@@ -34,9 +35,6 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual(_default_window_hours_for_intent(IntentType.AGGREGATION_DB), 24)
         self.assertEqual(_default_window_hours_for_intent(IntentType.COMPARISON_DB), 24)
         self.assertEqual(_default_window_hours_for_intent(IntentType.ANOMALY_ANALYSIS_DB), 24)
-
-    def test_forecast_keeps_existing_default(self):
-        self.assertEqual(_default_window_hours_for_intent(IntentType.FORECAST_DB), 24)
 
     def test_db_payload_includes_deterministic_display_window(self):
         payload = _build_db_payload(
@@ -120,27 +118,6 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "has_time_window_hint": True,
                     "has_lab_reference": True,
                     "is_baseline_reference_query": True,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
-
-    def test_invariants_allow_forecast_with_default_metric_and_window(self):
-        result = validate_db_execution_invariants(
-            question="Predict next day in smart_lab",
-            intent=IntentType.FORECAST_DB,
-            selected_metric="pm25",
-            resolved_lab_name="smart_lab",
-            request_lab_name="smart_lab",
-            explicit_metrics=[],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": False,
-                    "has_lab_reference": True,
                 }
             },
         )
@@ -309,118 +286,6 @@ class DbDefaultWindowTests(unittest.TestCase):
         )
         self.assertTrue(result["allowed"])
 
-    def test_forecast_handler_keeps_requested_window_for_chart_and_metadata(self):
-        class _Cursor:
-            def __init__(self):
-                self.calls = 0
-                self._rows = [
-                    [  # model history query rows
-                        {"bucket": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc), "value": 10.0},
-                        {"bucket": datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc), "value": 12.0},
-                    ],
-                    [  # requested window rows
-                        {"bucket": datetime(2026, 3, 27, 0, 0, tzinfo=timezone.utc), "value": 15.0},
-                        {"bucket": datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc), "value": 14.0},
-                    ],
-                ]
-
-            def execute(self, _sql, _params):
-                self.calls += 1
-
-            def fetchall(self):
-                idx = max(0, min(self.calls - 1, len(self._rows) - 1))
-                return self._rows[idx]
-
-            def fetchone(self):
-                return None
-
-        cur = _Cursor()
-        start = datetime(2026, 3, 27, 0, 0, tzinfo=timezone.utc)
-        end = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
-        result = execute_intent_query(
-            cur=cur,
-            question="Forecast PM2.5 next day in smart_lab",
-            intent=IntentType.FORECAST_DB,
-            metric_alias="pm25",
-            metric_column="pm25_avg",
-            unit="ug/m3",
-            window_start=start,
-            window_end=end,
-            window_label="last 24 hours",
-            resolved_lab_name="smart_lab",
-            compared_spaces=[],
-            explicit_metrics=["pm25"],
-            hinted_metrics=[],
-            max_chart_lookback_points=72,
-        )
-        chart_title = (((result.get("chart_payload") or {}).get("chart") or {}).get("title") or "")
-        self.assertIn("last 24 hours", chart_title)
-        # Forecast handler should keep requested external window fields.
-        self.assertEqual(result.get("window_start"), start)
-        self.assertEqual(result.get("window_end"), end)
-
-    def test_forecast_handler_returns_prediction_operation_type(self):
-        start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        end = datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc)
-        result = execute_intent_query(
-            question="Forecast PM2.5 in smart_lab next day",
-            intent=IntentType.FORECAST_DB,
-            metric_alias="pm25",
-            metric_column="pm25_avg",
-            unit="ug/m3",
-            window_start=start,
-            window_end=end,
-            window_label="last 24 hours",
-            resolved_lab_name="smart_lab",
-            compared_spaces=[],
-            explicit_metrics=["pm25"],
-            hinted_metrics=[],
-            max_chart_lookback_points=72,
-        )
-        self.assertEqual(result.get("operation_type"), "prediction")
-
-    def test_forecast_chart_uses_target_timezone_for_history_and_prediction(self):
-        history_rows = [
-            {"bucket": datetime(2026, 3, 29, 9, 0, tzinfo=timezone.utc), "value": 1.0},
-        ]
-        forecast = {
-            "forecast_points": [
-                {"bucket": datetime(2026, 3, 29, 14, 0, tzinfo=timezone(timedelta(hours=4))), "value": 2.0}
-            ]
-        }
-        chart = build_forecast_chart(
-            metric_alias="pm25",
-            unit="ug/m3",
-            window_label="last 24 hours + next 24 hour(s)",
-            history_rows=history_rows,
-            forecast=forecast,
-            series_name="smart_lab",
-            lookback_points=0,
-        )
-        series = ((chart.get("chart") or {}).get("series") or [])
-        history_x = series[0]["points"][0]["x"]
-        forecast_x = series[1]["points"][0]["x"]
-        self.assertTrue(history_x.endswith("+04:00"))
-        self.assertTrue(forecast_x.endswith("+04:00"))
-
-    def test_forecast_chart_with_zero_lookback_keeps_full_requested_history(self):
-        start = datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc)
-        history_rows = [
-            {"bucket": start + timedelta(hours=hour), "value": float(hour)}
-            for hour in range(100)
-        ]
-        chart = build_forecast_chart(
-            metric_alias="pm25",
-            unit="ug/m3",
-            window_label="last 100 hours + next 12 hour(s)",
-            history_rows=history_rows,
-            forecast={"forecast_points": []},
-            series_name="smart_lab",
-            lookback_points=0,
-        )
-        series = ((chart.get("chart") or {}).get("series") or [])
-        self.assertEqual(len(series[0]["points"]), 100)
-
     def test_comparison_co2_query_expands_to_multi_metric_air_quality_pack(self):
         class _Cursor:
             def execute(self, _sql, _params):
@@ -461,7 +326,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
 
         self.assertEqual(result.get("operation_type"), "comparison_multi_metric")
@@ -503,7 +367,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
         metrics_used = list(result.get("metrics_used") or [])
@@ -525,12 +388,9 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
         self.assertIn("all_labs", str(result.get("fallback_answer") or ""))
-        series = (((result.get("chart_payload") or {}).get("chart") or {}).get("series") or [])
-        self.assertEqual((series[0] or {}).get("name"), "all_labs")
 
     def test_point_lookup_historical_multi_metric_without_lab_uses_all_labs_scope(self):
         result = execute_intent_query(
@@ -546,12 +406,9 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2", "pm25"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
         self.assertIn("all_labs", str(result.get("fallback_answer") or ""))
-        series = (((result.get("chart_payload") or {}).get("chart") or {}).get("series") or [])
-        self.assertEqual((series[0] or {}).get("name"), "all_labs")
 
     def test_current_status_co2_returns_point_lookup(self):
         end = datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc)
@@ -569,7 +426,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "point_lookup")
 
@@ -606,7 +462,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["co2", "pm25", "tvoc"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "point_lookup_multi_metric")
         metrics_used = list(result.get("metrics_used") or [])
@@ -649,7 +504,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["pm25"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation")
         self.assertIn("average", str(result.get("fallback_answer") or "").lower())
@@ -692,7 +546,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=[],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
         metrics_used = list(result.get("metrics_used") or [])
@@ -739,7 +592,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=[],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "aggregation_multi_metric")
         metrics_used = list(result.get("metrics_used") or [])
@@ -771,7 +623,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["humidity"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())
 
@@ -806,7 +657,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["humidity"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         # Handler should correctly route to baseline comparison regardless of data availability
         self.assertIn(
@@ -843,7 +693,6 @@ class DbDefaultWindowTests(unittest.TestCase):
             compared_spaces=[],
             explicit_metrics=["pm25", "co2"],
             hinted_metrics=[],
-            max_chart_lookback_points=0,
         )
         self.assertEqual(result.get("operation_type"), "comparison_multi_metric")
         self.assertNotIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())

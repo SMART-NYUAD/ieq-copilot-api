@@ -35,8 +35,6 @@ class QueryRuntimeContextTests(unittest.TestCase):
                 "cards_retrieved": 0,
                 "recent_card": False,
                 "metadata": {"executor": "knowledge_qa"},
-                "visualization_type": "none",
-                "chart": None,
             }
 
         result = asyncio.run(

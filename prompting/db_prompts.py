@@ -95,13 +95,6 @@ You are answering a comparison from a structured DB query result.
 - Include practical actions only if the user asks for actions or the weaker metric is materially concerning.
 """.strip()
 
-_BASE_FORECAST = """
-You are answering a forecast from a structured DB query result.
-- Report forecast horizon, trend direction, and confidence in plain language.
-- Mention assumptions/limits and avoid deterministic claims beyond provided forecast output.
-- Provide operational recommendations only when requested or when confidence/risk warrants cautionary action.
-""".strip()
-
 _BASE_ANOMALY = """
 You are answering an anomaly analysis from a structured DB query result.
 - State whether anomalies were detected, when they occurred, and likely occupant impact.
@@ -129,6 +122,5 @@ DB_TOOL_RESPONSE_DIRECTIVE = f"{_BASE_DIRECTIVE}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = f"{_BASE_POINT_LOOKUP}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = f"{_BASE_AIR_QUALITY_POINT_LOOKUP}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"{_BASE_COMPARISON}{_SUFFIX}".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_FORECAST = f"{_BASE_FORECAST}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"{_BASE_ANOMALY}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = f"{_BASE_DIAGNOSTIC}{_SUFFIX}".strip()

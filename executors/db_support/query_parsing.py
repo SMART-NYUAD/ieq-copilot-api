@@ -368,7 +368,6 @@ def validate_db_execution_invariants(
         IntentType.AGGREGATION_DB,
         IntentType.COMPARISON_DB,
         IntentType.ANOMALY_ANALYSIS_DB,
-        IntentType.FORECAST_DB,
     }
 
     metric_justified = has_metric_hint or metric_explicit_in_planner
@@ -685,27 +684,4 @@ def format_display_window_bounds(window_start: datetime, window_end: datetime) -
 def wants_time_series(question: str) -> bool:
     return db_time_windows.wants_time_series(question)
 
-
-def wants_forecast(question: str) -> bool:
-    return db_time_windows.wants_forecast(question)
-
-
-def extract_forecast_horizon_hours(question: str) -> Tuple[int, str]:
-    return db_time_windows.extract_forecast_horizon_hours(question)
-
-
-def forecast_history_window(
-    question: str,
-    horizon_hours: int,
-    default_start: datetime,
-    default_end: datetime,
-    default_label: str,
-) -> Tuple[datetime, datetime, str]:
-    return db_time_windows.forecast_history_window(
-        question=question,
-        horizon_hours=horizon_hours,
-        default_start=default_start,
-        default_end=default_end,
-        default_label=default_label,
-    )
 

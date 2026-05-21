@@ -9,11 +9,6 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import pandas as pd
 
 try:
-    from prophet import Prophet
-except ImportError:  # pragma: no cover - dependency presence varies by deployment.
-    Prophet = None
-
-try:
     from query_routing.intent_classifier import IntentType
     from executors import metric_registry
 except ImportError:
@@ -33,12 +28,10 @@ except ImportError:
         search_knowledge_cards,
     )
 try:
-    from executors.db_support import charts as db_charts
     from executors.db_support import query_handlers as db_handlers
     from executors.db_support import query_parsing as db_parsing
     from executors.db_support import response_helpers as db_helpers
 except ImportError:
-    from .db_support import charts as db_charts
     from .db_support import query_handlers as db_handlers
     from .db_support import query_parsing as db_parsing
     from .db_support import response_helpers as db_helpers
@@ -61,7 +54,6 @@ except ImportError:
     from ..storage.guideline_store import get_thresholds_for_metrics
 
 
-MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
 LLM_PAYLOAD_MAX_RECENT_POINTS = 48
 LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS = 12
 _TARGET_TZ = timezone(timedelta(hours=4))
@@ -323,14 +315,11 @@ def prepare_db_query(
                 "display_end": display_end,
             },
             "resolved_lab_name": resolved_lab_name,
-            "forecast": None,
             "knowledge_cards": [],
             "guideline_records": guideline_records,
             "cards_retrieved": 0,
             "correlation": None,
             "sources": [],
-            "visualization_type": "none",
-            "chart": None,
             "invariant_violation": invariant,
         }
     branch_result = db_handlers.execute_intent_query(
@@ -346,14 +335,11 @@ def prepare_db_query(
         compared_spaces=compared_spaces,
         explicit_metrics=explicit_metrics,
         hinted_metrics=hinted_metrics,
-        max_chart_lookback_points=MAX_CHART_LOOKBACK_POINTS,
     )
 
     operation_type = str(branch_result["operation_type"])
     rows = list(branch_result["rows"])
     fallback_answer = str(branch_result["fallback_answer"])
-    chart_payload = dict(branch_result["chart_payload"])
-    forecast_data = branch_result.get("forecast_data")
     correlation_data = branch_result.get("correlation_data")
     metric_alias = str(branch_result.get("metric_alias") or metric_alias)
     metrics_used = list(branch_result.get("metrics_used") or [metric_alias])
@@ -372,23 +358,11 @@ def prepare_db_query(
     window_start = branch_result.get("window_start") or window_start
     window_end = branch_result.get("window_end") or window_end
     window_label = str(branch_result.get("window_label") or window_label)
-    if operation_type == "prediction":
-        # Forecast handler may use a broader internal model window. Keep external
-        # metadata/source window aligned to the user-requested scope.
-        window_start = requested_window_start
-        window_end = requested_window_end
-        window_label = requested_window_label
     compared_spaces = list(branch_result.get("compared_spaces") or compared_spaces)
 
     knowledge_cards: List[Dict[str, Any]] = []
 
-    payload_rows = rows
-    row_summary: Dict[str, Any] = {}
-    if operation_type == "prediction" and forecast_data:
-        # Keep LLM forecast context focused on future points only.
-        payload_rows = []
-    else:
-        payload_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
+    payload_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
 
     needs_cards, card_topics, max_cards = db_parsing.planner_card_controls(planner_hints)
     knowledge_cards = (
@@ -411,14 +385,11 @@ def prepare_db_query(
         window_end=window_end.isoformat(),
         display_start=display_start,
         display_end=display_end,
-        forecast=forecast_data,
         knowledge_cards=knowledge_cards,
     )
     if isinstance(correlation_data, dict) and "correlations" in correlation_data:
         payload["correlation_analysis"] = _serialize_timestamp_value(correlation_data)
     payload["metric_coverage"] = _build_metric_coverage(rows=rows, metrics_used=metrics_used)
-    if operation_type == "prediction" and forecast_data:
-        payload["forecast_only_context"] = True
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     metric_pair = None
@@ -452,7 +423,6 @@ def prepare_db_query(
             "display_end": display_end,
         },
         "resolved_lab_name": resolved_lab_name,
-        "forecast": forecast_data,
         "knowledge_cards": knowledge_cards,
         "guideline_records": guideline_records,
         "cards_retrieved": len(knowledge_cards),
@@ -466,7 +436,6 @@ def prepare_db_query(
             resolved_lab_name=resolved_lab_name,
             compared_spaces=compared_spaces,
             rows=rows,
-            forecast=forecast_data,
             metric_pair=metric_pair,
             correlation=correlation_value,
             metrics_used=metrics_used,
@@ -482,8 +451,6 @@ def prepare_db_query(
             }
             for card in knowledge_cards
         ],
-        "visualization_type": chart_payload.get("visualization_type", "none"),
-        "chart": chart_payload.get("chart"),
     }
 
 
@@ -495,17 +462,11 @@ def _render_db_answer_with_llm(
     rows: List[Dict],
     fallback_answer: str,
     time_window: Optional[Dict[str, Any]] = None,
-    forecast: Optional[Dict[str, Any]] = None,
     correlation: Optional[Dict[str, Any]] = None,
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, bool, List[Dict[str, Any]]]:
-    llm_rows = rows
-    row_summary: Dict[str, Any] = {}
-    if intent == IntentType.FORECAST_DB and forecast:
-        llm_rows = []
-    else:
-        llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
+    llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
     payload = db_helpers.build_db_payload(
         intent,
         metric_alias,
@@ -515,11 +476,8 @@ def _render_db_answer_with_llm(
         window_end=str((time_window or {}).get("end") or ""),
         display_start=str((time_window or {}).get("display_start") or ""),
         display_end=str((time_window or {}).get("display_end") or ""),
-        forecast=forecast,
         knowledge_cards=knowledge_cards,
     )
-    if intent == IntentType.FORECAST_DB and forecast:
-        payload["forecast_only_context"] = True
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     payload["metric_coverage"] = _build_metric_coverage(
@@ -587,15 +545,12 @@ def run_db_query(
             "indexed_sources": [],
             "data": [],
             "cards_retrieved": 0,
-            "forecast": None,
             "correlation": None,
             "timescale": "clarify",
             "llm_used": False,
             "time_window": context.get("time_window"),
             "resolved_lab_name": context.get("resolved_lab_name"),
             "sources": [],
-            "visualization_type": "none",
-            "chart": None,
             "invariant_violation": invariant_violation,
             "evidence": validate_tool_evidence(
                 {
@@ -619,7 +574,6 @@ def run_db_query(
         rows=context["rows"],
         fallback_answer=context["fallback_answer"],
         time_window=context.get("time_window"),
-        forecast=context.get("forecast"),
         correlation=context.get("correlation"),
         knowledge_cards=context.get("knowledge_cards"),
         guideline_records=context.get("guideline_records"),
@@ -632,7 +586,7 @@ def run_db_query(
     confidence_notes: List[str] = []
     if not llm_used:
         confidence_notes.append("llm_render_fallback_used")
-    if not context.get("rows") and not context.get("forecast"):
+    if not context.get("rows"):
         confidence_notes.append("low_data_coverage")
 
     evidence_sources: List[Dict[str, Any]] = []
@@ -675,17 +629,141 @@ def run_db_query(
         "indexed_sources": indexed_sources,
         "data": context["rows"],
         "cards_retrieved": int(context.get("cards_retrieved") or 0),
-        "forecast": context.get("forecast"),
         "correlation": context.get("correlation"),
         "timescale": context["timescale"],
         "llm_used": llm_used,
         "time_window": context["time_window"],
         "resolved_lab_name": context["resolved_lab_name"],
         "sources": context.get("sources", []),
-        "visualization_type": context.get("visualization_type", "none"),
-        "chart": context.get("chart"),
         "evidence": evidence,
     }
+
+
+async def stream_db_tokens(
+    question: str,
+    intent: IntentType,
+    lab_name: Optional[str],
+    planner_hints: Optional[Dict[str, Any]] = None,
+    query_context: Optional[Dict[str, Any]] = None,
+    think: Optional[bool] = None,
+    guideline_records: Optional[List[Dict[str, Any]]] = None,
+) -> AsyncIterator[str]:
+    query_text = str(question or "").strip()
+    context = query_context or prepare_db_query(
+        question=question,
+        intent=intent,
+        lab_name=lab_name,
+        planner_hints=planner_hints,
+        guideline_records=guideline_records,
+    )
+    if context.get("invariant_violation"):
+        fallback = str(context.get("fallback_answer") or "")
+        yield f"data: {json.dumps({'event': 'token', 'text': fallback})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        return
+    payload = context["payload"]
+    fallback_answer = context["fallback_answer"]
+    source_metrics: List[str] = []
+    for src in list(context.get("sources") or []):
+        for metric in list(src.get("metrics_used") or []):
+            token = str(metric or "").strip().lower()
+            if token and token not in source_metrics:
+                source_metrics.append(token)
+    citation_metrics = _collect_citation_metrics(
+        question=query_text,
+        metric_alias=str(context.get("metric_alias") or "ieq"),
+        metrics_used=source_metrics,
+        rows=list(context.get("rows") or []),
+        context_payload=dict(context.get("payload") or {}),
+    )
+    guideline_records = get_thresholds_for_metrics(citation_metrics)
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
+    context["indexed_sources"] = indexed_sources
+
+    prompt_template = get_shared_prompt_template(
+        response_directive=db_helpers.db_response_directive(intent, question=query_text)
+    )
+    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(context.get("knowledge_cards"))
+    context_data = build_grounded_context_sections(
+        measured_room_facts=payload,
+        backend_semantic_state=None,
+        knowledge_cards=interpretation_cards,
+        communication_guardrails=guardrails,
+        numbered_sources_block=numbered_sources_block,
+    )
+    messages = prompt_template.format_messages(
+        question=query_text,
+        context_label="Structured DB Query Result with knowledge grounding",
+        context_data=context_data,
+    )
+
+    prompt_parts = []
+    for m in messages:
+        role = getattr(m, "type", "user").upper()
+        content = str(getattr(m, "content", "") or "")
+        prompt_parts.append(f"{role}:\n{content}")
+    prompt_text = "\n\n".join(prompt_parts)
+
+    import os
+    import httpx
+
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+    api_url = f"{base_url}/api/generate"
+    ollama_payload = {
+        "model": model,
+        "prompt": prompt_text,
+        "stream": True,
+        "temperature": 0.4,
+    }
+    if think is True:
+        ollama_payload["think"] = True
+
+    in_thinking_block = False
+    emitted_anything = False
+    include_thinking = think is not False
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", api_url, json=ollama_payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    thinking_text = str(event.get("thinking") or "")
+                    response_text = str(event.get("response") or "")
+
+                    if include_thinking and thinking_text:
+                        if not in_thinking_block:
+                            in_thinking_block = True
+                            emitted_anything = True
+                            yield f"data: {json.dumps({'event': 'token', 'text': '<think>'})}\n\n"
+                        yield f"data: {json.dumps({'event': 'token', 'text': thinking_text})}\n\n"
+                        emitted_anything = True
+
+                    if response_text:
+                        if in_thinking_block:
+                            in_thinking_block = False
+                            yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+                        emitted_anything = True
+                        yield f"data: {json.dumps({'event': 'token', 'text': response_text})}\n\n"
+    except Exception:
+        fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
+        yield f"data: {json.dumps({'event': 'token', 'text': fb})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        return
+
+    if include_thinking and in_thinking_block:
+        yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+    elif not emitted_anything:
+        fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
+        yield f"data: {json.dumps({'event': 'token', 'text': fb})}\n\n"
+
+    yield f"data: {json.dumps({'event': 'done'})}\n\n"
 
 
 async def stream_db_query(

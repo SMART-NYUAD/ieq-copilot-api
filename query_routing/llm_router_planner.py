@@ -42,7 +42,6 @@ _METRIC_CANONICAL = {
     "pm 2.5": "pm25", "pm2.5": "pm25", "pm 25": "pm25",
     "voc": "tvoc", "temp": "temperature", "lux": "light", "noise": "sound",
 }
-_FORECAST_RE = re.compile(r"\b(forecast|predict|prediction|project|tomorrow|next\s+(hour|day|week))\b")
 _COMPARISON_RE = re.compile(r"\b(compare|comparison|versus|vs\.?|between)\b")
 _ANOMALY_RE = re.compile(r"\b(anomal|spike|outlier|unusual|abnormal|deviation)\b")
 _AGGREGATION_RE = re.compile(r"\b(trend|average|avg|mean|sum|over\s+the|last\s+\d|past\s+\d|history|historical|weekly|daily)\b")
@@ -53,7 +52,7 @@ _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
     '  "intent": one of [definition_explanation, current_status_db, aggregation_db, '
-    "comparison_db, anomaly_analysis_db, forecast_db]\n"
+    "comparison_db, anomaly_analysis_db]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": second lab name for comparisons, else null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, tvoc, humidity, temperature, light, sound, ieq]\n'
@@ -64,8 +63,7 @@ _SYSTEM_PROMPT = (
     "- current_status_db: current/latest readings without a time range\n"
     "- aggregation_db: trends, averages, summaries over a time window\n"
     "- comparison_db: comparing two or more labs/spaces\n"
-    "- anomaly_analysis_db: anomalies, spikes, outliers, unusual readings\n"
-    "- forecast_db: predictions, future values, tomorrow, next N hours/days\n\n"
+    "- anomaly_analysis_db: anomalies, spikes, outliers, unusual readings\n\n"
     "Output only the JSON object, no markdown, no explanation."
 )
 
@@ -84,9 +82,7 @@ def _extract_metrics_from_question(question: str) -> List[str]:
 
 def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
     q = question.lower()
-    if _FORECAST_RE.search(q):
-        intent = IntentType.FORECAST_DB
-    elif _COMPARISON_RE.search(q):
+    if _COMPARISON_RE.search(q):
         intent = IntentType.COMPARISON_DB
     elif _ANOMALY_RE.search(q):
         intent = IntentType.ANOMALY_ANALYSIS_DB

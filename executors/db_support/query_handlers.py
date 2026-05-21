@@ -14,14 +14,12 @@ except ImportError:
 
 try:
     from executors.db_support import api_client
-    from executors.db_support import charts as db_charts
     from executors.db_support import query_parsing as db_parsing
     from executors.db_support import response_helpers as db_helpers
     from executors.db_support.response_helpers import is_diagnostic_query_text
     from executors import metric_registry
 except ImportError:
     from . import api_client
-    from . import charts as db_charts
     from . import query_parsing as db_parsing
     from . import response_helpers as db_helpers
     from .response_helpers import is_diagnostic_query_text
@@ -33,8 +31,6 @@ def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
         "operation_type": "aggregation",
         "rows": [],
         "fallback_answer": f"I couldn't find {metric_alias} data for {window_label}.",
-        "chart_payload": db_charts.empty_chart(),
-        "forecast_data": None,
         "correlation_data": None,
         "metric_alias": metric_alias,
         "metrics_used": [metric_alias],
@@ -199,7 +195,6 @@ def _handle_diagnostic(
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
-    max_chart_lookback_points: int,
 ) -> Optional[Dict[str, Any]]:
     if not is_diagnostic_query_text(question):
         return None
@@ -212,8 +207,6 @@ def _handle_diagnostic(
             "operation_type": "diagnostic",
             "rows": [],
             "fallback_answer": f"I couldn't map diagnostic metrics for {window_label}.",
-            "chart_payload": db_charts.empty_chart(),
-            "forecast_data": None,
             "correlation_data": None,
             "metric_alias": "ieq",
             "metrics_used": [],
@@ -231,8 +224,6 @@ def _handle_diagnostic(
             "operation_type": "diagnostic",
             "rows": [],
             "fallback_answer": f"I couldn't find IEQ diagnostic readings for {window_label}.",
-            "chart_payload": db_charts.empty_chart(),
-            "forecast_data": None,
             "correlation_data": None,
             "metric_alias": "ieq",
             "metrics_used": fetchable,
@@ -243,14 +234,6 @@ def _handle_diagnostic(
         }
 
     correlation_analysis = db_helpers.correlate_metrics_with_ieq(rows=rows, metrics=core_metrics)
-    top_culprits = list(correlation_analysis.get("top_culprits") or [])
-    chart = db_helpers.build_diagnostic_chart(
-        rows=rows,
-        culprit_metrics=top_culprits[:3],
-        window_label=window_label,
-        lab_name=resolved_lab_name,
-        max_lookback=max_chart_lookback_points,
-    )
     fallback = db_helpers.build_diagnostic_answer(
         rows=rows,
         correlation_analysis=correlation_analysis,
@@ -261,8 +244,6 @@ def _handle_diagnostic(
         "operation_type": "diagnostic",
         "rows": rows,
         "fallback_answer": fallback,
-        "chart_payload": chart,
-        "forecast_data": None,
         "correlation_data": correlation_analysis,
         "metric_alias": "ieq",
         "metrics_used": fetchable,
@@ -281,7 +262,6 @@ def _handle_correlation(
     window_label: str,
     resolved_lab_name: Optional[str],
     requested_metrics: List[str],
-    max_chart_lookback_points: int,
 ) -> Optional[Dict[str, Any]]:
     if not (db_parsing.wants_correlation(question) and len(requested_metrics) >= 2):
         return None
@@ -291,7 +271,6 @@ def _handle_correlation(
             "operation_type": "correlation",
             "rows": [],
             "fallback_answer": f"I couldn't map requested metrics for correlation: {metric_x} vs {metric_y}.",
-            "chart_payload": db_charts.empty_chart(),
             "correlation_data": None,
             "metric_alias": f"{metric_x}_vs_{metric_y}",
             "metrics_used": [metric_x, metric_y],
@@ -335,16 +314,6 @@ def _handle_correlation(
             window_label=window_label,
             lab_name=resolved_lab_name,
         ),
-        "chart_payload": db_charts.build_scatter_chart(
-            metric_x=metric_x,
-            metric_y=metric_y,
-            unit_x=db_helpers.metric_unit(metric_x),
-            unit_y=db_helpers.metric_unit(metric_y),
-            window_label=window_label,
-            rows=rows,
-            correlation=corr_value,
-            lookback_points=max_chart_lookback_points,
-        ),
         "correlation_data": correlation_data,
         "metric_alias": f"{metric_x}_vs_{metric_y}",
         "metrics_used": [metric_x, metric_y],
@@ -379,7 +348,6 @@ def _handle_comparison_multi(
             "operation_type": "comparison_multi_metric",
             "rows": [],
             "fallback_answer": "I couldn't map planner-selected metrics for comparison.",
-            "chart_payload": db_charts.empty_chart(),
             "metrics_used": [],
         }
 
@@ -401,12 +369,6 @@ def _handle_comparison_multi(
                     row=rows[0] if rows else {},
                     window_label=window_label,
                 ),
-                "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
-                    metric_aliases=metric_names,
-                    unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-                    window_label=window_label,
-                    row=rows[0] if rows else {},
-                ),
                 "metric_alias": metric_names[0],
                 "metrics_used": metric_names,
                 "compared_spaces": [resolved_lab_name],
@@ -418,7 +380,6 @@ def _handle_comparison_multi(
                 "I need two explicit spaces for cross-space comparison (for example: "
                 "'smart_lab vs concrete_lab')."
             ),
-            "chart_payload": db_charts.empty_chart(),
             "metric_alias": metric_names[0],
             "metrics_used": metric_names,
             "compared_spaces": compared_spaces,
@@ -436,12 +397,6 @@ def _handle_comparison_multi(
             metric_aliases=metric_names,
             rows=rows,
             window_label=window_label,
-        ),
-        "chart_payload": db_helpers.build_multi_metric_bar_chart(
-            metric_aliases=metric_names,
-            unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-            window_label=window_label,
-            rows=rows,
         ),
         "metric_alias": metric_names[0],
         "metrics_used": metric_names,
@@ -469,7 +424,6 @@ def _handle_baseline_reference_comparison(
             "operation_type": "baseline_reference_comparison",
             "rows": [],
             "fallback_answer": "Please specify one lab to compare against its baseline/reference.",
-            "chart_payload": db_charts.empty_chart(),
             "metrics_used": [metric_alias],
             "compared_spaces": [],
         }
@@ -503,7 +457,6 @@ def _handle_baseline_reference_comparison(
                 f"I couldn't compute a baseline comparison for {metric_alias} in {resolved_lab_name} "
                 f"for {window_label}."
             ),
-            "chart_payload": db_charts.empty_chart(),
             "metrics_used": [metric_alias],
             "compared_spaces": [resolved_lab_name],
         }
@@ -536,23 +489,6 @@ def _handle_baseline_reference_comparison(
             f"In {window_label}, {resolved_lab_name} has average {metric_alias} {abs(delta):.2f} {unit} "
             f"({pct_text}) {direction} than its baseline/reference window."
         ),
-        "chart_payload": {
-            "visualization_type": "bar",
-            "chart": {
-                "title": f"{metric_alias} vs baseline ({window_label})",
-                "x_label": "reference",
-                "y_label": f"{metric_alias} ({unit})",
-                "series": [
-                    {
-                        "name": resolved_lab_name,
-                        "points": [
-                            {"x": "baseline", "y": baseline_value},
-                            {"x": "current", "y": current_value},
-                        ],
-                    }
-                ],
-            },
-        },
         "metric_alias": metric_alias,
         "metrics_used": [metric_alias],
         "compared_spaces": [resolved_lab_name],
@@ -587,7 +523,6 @@ def _handle_aggregation_multi(
             "operation_type": "aggregation_multi_metric",
             "rows": [],
             "fallback_answer": "I couldn't map requested metrics for analysis.",
-            "chart_payload": db_charts.empty_chart(),
             "metrics_used": [],
         }
 
@@ -608,12 +543,6 @@ def _handle_aggregation_multi(
             row=rows[0] if rows else {},
             window_label=window_label,
         ),
-        "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
-            metric_aliases=metric_names,
-            unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-            window_label=window_label,
-            row=rows[0] if rows else {},
-        ),
         "metric_alias": metric_names[0],
         "metrics_used": metric_names,
     }
@@ -630,7 +559,6 @@ def _handle_point_lookup(
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
-    max_chart_lookback_points: int,
 ) -> Optional[Dict[str, Any]]:
     if intent not in {IntentType.POINT_LOOKUP_DB, IntentType.CURRENT_STATUS_DB}:
         return None
@@ -656,7 +584,6 @@ def _handle_point_lookup(
                     "operation_type": "aggregation_multi_metric",
                     "rows": [],
                     "fallback_answer": "I couldn't map requested metrics for window analysis.",
-                    "chart_payload": db_charts.empty_chart(),
                     "metrics_used": [],
                 }
             if resolved_lab_name:
@@ -673,12 +600,6 @@ def _handle_point_lookup(
                     row=rows[0] if rows else {},
                     window_label=window_label,
                 ),
-                "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
-                    metric_aliases=metric_names,
-                    unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-                    window_label=window_label,
-                    row=rows[0] if rows else {},
-                ),
                 "metric_alias": metric_names[0],
                 "metrics_used": metric_names,
             }
@@ -693,13 +614,6 @@ def _handle_point_lookup(
             "operation_type": "aggregation",
             "rows": rows,
             "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
-            "chart_payload": db_charts.build_bar_chart(
-                metric_alias=metric_alias,
-                unit=unit,
-                window_label=window_label,
-                rows=rows,
-                value_key="avg_value",
-            ),
             "metrics_used": [metric_alias],
         }
 
@@ -717,7 +631,6 @@ def _handle_point_lookup(
                 "operation_type": "point_lookup_multi_metric",
                 "rows": [],
                 "fallback_answer": "I couldn't map requested air-quality metrics for point lookup.",
-                "chart_payload": db_charts.empty_chart(),
                 "metrics_used": [],
             }
 
@@ -747,12 +660,6 @@ def _handle_point_lookup(
             "operation_type": "point_lookup_multi_metric",
             "rows": rows,
             "fallback_answer": fallback_answer,
-            "chart_payload": db_helpers.build_multi_metric_snapshot_chart(
-                metric_aliases=metric_names,
-                unit_by_metric={m: db_helpers.metric_unit(m) for m in metric_names},
-                window_label=active_window_label,
-                row=rows[0] if rows else {},
-            ),
             "metric_alias": metric_names[0],
             "metrics_used": metric_names,
             "window_start": window_start,
@@ -787,14 +694,6 @@ def _handle_point_lookup(
         "operation_type": "point_lookup",
         "rows": rows,
         "fallback_answer": fallback_answer,
-        "chart_payload": db_charts.build_line_chart(
-            metric_alias=metric_alias,
-            unit=unit,
-            window_label=active_window_label,
-            series_rows=trend_rows,
-            series_name=str(series_name),
-            lookback_points=max_chart_lookback_points,
-        ),
         "metrics_used": [metric_alias],
         "window_start": window_start,
         "window_end": window_end,
@@ -806,12 +705,10 @@ def _handle_anomaly(
     *,
     intent: IntentType,
     metric_alias: str,
-    unit: str,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
-    max_chart_lookback_points: int,
 ) -> Optional[Dict[str, Any]]:
     if intent != IntentType.ANOMALY_ANALYSIS_DB:
         return None
@@ -824,7 +721,6 @@ def _handle_anomaly(
     fetch_hours = max(window_hours, 6)
     rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_hours)
     anomalies = db_helpers.detect_anomaly_points(rows)
-    series_name = resolved_lab_name
     return {
         "operation_type": "anomaly",
         "rows": rows,
@@ -834,15 +730,6 @@ def _handle_anomaly(
             anomalies=anomalies,
             window_label=window_label,
             lab_name=resolved_lab_name,
-        ),
-        "chart_payload": db_charts.build_anomaly_chart(
-            metric_alias=metric_alias,
-            unit=unit,
-            window_label=window_label,
-            series_rows=rows,
-            anomalies=anomalies,
-            series_name=str(series_name),
-            lookback_points=max_chart_lookback_points,
         ),
         "metrics_used": [metric_alias],
     }
@@ -872,7 +759,6 @@ def _handle_comparison(
                 "I need two explicit spaces for cross-space comparison (for example: "
                 "'smart_lab vs concrete_lab')."
             ),
-            "chart_payload": db_charts.empty_chart(),
             "metrics_used": [metric_alias],
             "compared_spaces": compared_spaces,
         }
@@ -888,88 +774,8 @@ def _handle_comparison(
         "operation_type": "comparison",
         "rows": rows,
         "fallback_answer": db_helpers.build_comparison_answer(metric_alias, rows, window_label),
-        "chart_payload": db_charts.build_bar_chart(
-            metric_alias=metric_alias,
-            unit=unit,
-            window_label=window_label,
-            rows=rows,
-            value_key="avg_value",
-        ),
         "metrics_used": [metric_alias],
         "compared_spaces": compared_spaces[:2],
-    }
-
-
-def _handle_forecast(
-    *,
-    question: str,
-    intent: IntentType,
-    metric_alias: str,
-    unit: str,
-    window_start: datetime,
-    window_end: datetime,
-    window_label: str,
-    resolved_lab_name: Optional[str],
-    max_chart_lookback_points: int,
-) -> Optional[Dict[str, Any]]:
-    if not (intent == IntentType.FORECAST_DB or db_parsing.wants_forecast(question)):
-        return None
-    horizon_hours, _ = db_parsing.extract_forecast_horizon_hours(question)
-    forecast_window_start, forecast_window_end, forecast_window_label = db_parsing.forecast_history_window(
-        question=question,
-        horizon_hours=horizon_hours,
-        default_start=window_start,
-        default_end=window_end,
-        default_label=window_label,
-    )
-
-    slug = resolved_lab_name or ""
-    forecast_window_hours = max(
-        api_client.window_hours_from_datetimes(forecast_window_start, forecast_window_end), 6
-    )
-    model_rows = api_client.fetch_timeseries_rows(slug, metric_alias, forecast_window_hours)
-    model_rows = model_rows[-1000:] if len(model_rows) > 1000 else model_rows
-
-    forecast_data = db_helpers.build_forecast_from_rows(model_rows, horizon_hours=horizon_hours)
-    chart_rows = model_rows
-    if forecast_window_start != window_start or forecast_window_end != window_end:
-        requested_hours = max(api_client.window_hours_from_datetimes(window_start, window_end), 6)
-        requested_rows = api_client.fetch_timeseries_rows(slug, metric_alias, requested_hours)
-        if requested_rows:
-            chart_rows = requested_rows
-
-    effective_horizon_hours = int((forecast_data or {}).get("horizon_hours") or horizon_hours)
-    effective_horizon_label = f"next {effective_horizon_hours} hour(s)"
-    series_name = resolved_lab_name or "selected_scope"
-    fallback_text = db_helpers.build_forecast_answer(
-        metric_alias=metric_alias,
-        forecast=forecast_data,
-        window_label=window_label,
-        horizon_label=effective_horizon_label,
-    )
-    if forecast_window_label != window_label:
-        fallback_text = (
-            f"{fallback_text} "
-            f"(Model history window: {forecast_window_label}.)"
-        )
-    return {
-        "operation_type": "prediction",
-        "rows": chart_rows,
-        "fallback_answer": fallback_text,
-        "chart_payload": db_charts.build_forecast_chart(
-            metric_alias=metric_alias,
-            unit=unit,
-            window_label=f"{window_label} + {effective_horizon_label}",
-            history_rows=chart_rows,
-            forecast=forecast_data,
-            series_name=str(series_name),
-            lookback_points=max_chart_lookback_points,
-        ),
-        "forecast_data": forecast_data,
-        "metrics_used": [metric_alias],
-        "forecast_history_start": forecast_window_start,
-        "forecast_history_end": forecast_window_end,
-        "forecast_history_label": forecast_window_label,
     }
 
 
@@ -978,13 +784,11 @@ def _handle_default(
     question: str,
     intent: IntentType,
     metric_alias: str,
-    unit: str,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
     compared_spaces: List[str],
-    max_chart_lookback_points: int,
 ) -> Dict[str, Any]:
     window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
 
@@ -999,13 +803,6 @@ def _handle_default(
             "operation_type": "comparison",
             "rows": rows,
             "fallback_answer": db_helpers.build_comparison_answer(metric_alias, rows, window_label),
-            "chart_payload": db_charts.build_bar_chart(
-                metric_alias=metric_alias,
-                unit=unit,
-                window_label=window_label,
-                rows=rows,
-                value_key="avg_value",
-            ),
             "metrics_used": [metric_alias],
             "compared_spaces": compared_spaces[:2],
         }
@@ -1013,19 +810,10 @@ def _handle_default(
     if db_parsing.wants_time_series(question):
         slug = resolved_lab_name or ""
         rows = api_client.fetch_timeseries_rows(slug, metric_alias, max(window_hours, 6))
-        series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
         return {
             "operation_type": "timeseries",
             "rows": rows,
             "fallback_answer": db_helpers.build_timeseries_answer(metric_alias, rows, window_label),
-            "chart_payload": db_charts.build_line_chart(
-                metric_alias=metric_alias,
-                unit=unit,
-                window_label=window_label,
-                series_rows=rows,
-                series_name=str(series_name),
-                lookback_points=max_chart_lookback_points,
-            ),
             "metrics_used": [metric_alias],
         }
 
@@ -1052,13 +840,6 @@ def _handle_default(
         "operation_type": "aggregation",
         "rows": rows,
         "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
-        "chart_payload": db_charts.build_bar_chart(
-            metric_alias=metric_alias,
-            unit=unit,
-            window_label=window_label,
-            rows=rows,
-            value_key="avg_value",
-        ),
         "metrics_used": [metric_alias],
     }
 
@@ -1077,7 +858,6 @@ def execute_intent_query(
     compared_spaces: List[str],
     explicit_metrics: List[str],
     hinted_metrics: List[str],
-    max_chart_lookback_points: int,
     # Legacy parameter kept for backwards compatibility — no longer used
     cur: Any = None,
 ) -> Dict[str, Any]:
@@ -1102,7 +882,6 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-            max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_correlation(
             question=question,
@@ -1111,7 +890,6 @@ def execute_intent_query(
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
             requested_metrics=requested_metrics,
-            max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_comparison_multi(
             question=question,
@@ -1152,17 +930,14 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-            max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_anomaly(
             intent=intent,
             metric_alias=metric_alias,
-            unit=unit,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-            max_chart_lookback_points=max_chart_lookback_points,
         ),
         lambda: _handle_comparison(
             question=question,
@@ -1173,17 +948,6 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_forecast(
-            question=question,
-            intent=intent,
-            metric_alias=metric_alias,
-            unit=unit,
-            window_start=window_start,
-            window_end=window_end,
-            window_label=window_label,
-            resolved_lab_name=resolved_lab_name,
-            max_chart_lookback_points=max_chart_lookback_points,
         ),
     ]
 
@@ -1198,13 +962,11 @@ def execute_intent_query(
             question=question,
             intent=intent,
             metric_alias=metric_alias,
-            unit=unit,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
             compared_spaces=compared_spaces,
-            max_chart_lookback_points=max_chart_lookback_points,
         )
 
     result.update(selected)
@@ -1212,6 +974,5 @@ def execute_intent_query(
     result.setdefault("window_end", window_end)
     result.setdefault("window_label", window_label)
     result.setdefault("compared_spaces", list(compared_spaces))
-    result.setdefault("forecast_data", None)
     result.setdefault("correlation_data", None)
     return result

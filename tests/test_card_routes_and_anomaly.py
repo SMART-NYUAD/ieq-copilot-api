@@ -14,7 +14,7 @@ if REPO_DIR not in sys.path:
 
 from query_routing.intent_classifier import IntentType
 from query_routing.query_orchestrator import resolve_execution_intent
-from executors.db_query_executor import _detect_anomaly_points
+from executors.db_support.response_helpers import detect_anomaly_points as _detect_anomaly_points
 
 
 class CardRoutesAndAnomalyTests(unittest.TestCase):

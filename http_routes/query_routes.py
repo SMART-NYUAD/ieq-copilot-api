@@ -83,8 +83,6 @@ async def query_cards(request: QueryRequest):
             conversation_id=conversation_id,
             turn_index=turn_index,
             metadata=metadata,
-            visualization_type=result.get("visualization_type", "none"),
-            chart=result.get("chart"),
             footnotes=list(result.get("footnotes") or []),
             citation_sources=list(result.get("citation_sources") or []),
         )

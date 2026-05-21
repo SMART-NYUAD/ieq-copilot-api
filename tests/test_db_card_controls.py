@@ -9,7 +9,8 @@ SERVER_DIR = os.path.abspath(os.path.join(TEST_DIR, ".."))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from executors.db_query_executor import _fetch_knowledge_cards, _planner_card_controls
+from executors.db_support.response_helpers import fetch_knowledge_cards as _fetch_knowledge_cards
+from executors.db_support.query_parsing import planner_card_controls as _planner_card_controls
 
 
 class DbCardControlsTests(unittest.TestCase):
@@ -31,9 +32,8 @@ class DbCardControlsTests(unittest.TestCase):
         self.assertEqual(topics, ["metric_explanations", "caveats"])
         self.assertEqual(max_cards, 4)
 
-    @patch("executors.db_query_executor.search_knowledge_cards")
-    def test_fetch_knowledge_cards_filters_by_topics(self, mock_search):
-        mock_search.return_value = [
+    def test_fetch_knowledge_cards_filters_by_topics(self):
+        fake_cards = [
             {
                 "card_type": "rule",
                 "topic": "ieq",
@@ -53,8 +53,13 @@ class DbCardControlsTests(unittest.TestCase):
                 "source_label": "guide",
             },
         ]
+
+        def _fake_search(*, question, k):
+            return fake_cards
+
         cards = _fetch_knowledge_cards(
             question="How can I improve comfort?",
+            search_fn=_fake_search,
             limit=2,
             card_topics=["recommendations"],
         )

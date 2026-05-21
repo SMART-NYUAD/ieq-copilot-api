@@ -9,21 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 try:
-    from executors.db_support import charts as db_charts
     from executors.db_support import time_windows as db_time_windows
     from executors import metric_registry
 except ImportError:
-    from . import charts as db_charts
     from . import time_windows as db_time_windows
     from .. import metric_registry
-
-try:
-    from prophet import Prophet
-except ImportError:  # pragma: no cover
-    Prophet = None
-
-
-MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
 
 try:
     from prompting.db_prompts import (
@@ -31,7 +21,6 @@ try:
         DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
         DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
         DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
-        DB_TOOL_RESPONSE_DIRECTIVE_FORECAST,
         DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
         DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
         CITATION_FORMAT_INSTRUCTION,
@@ -43,7 +32,6 @@ except ImportError:
         DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
         DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
         DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
-        DB_TOOL_RESPONSE_DIRECTIVE_FORECAST,
         DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
         DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
         CITATION_FORMAT_INSTRUCTION,
@@ -157,8 +145,6 @@ def db_response_directive(intent: Any, question: str = "") -> str:
         return DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP
     if intent_value == "comparison_db":
         return DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON
-    if intent_value == "forecast_db":
-        return DB_TOOL_RESPONSE_DIRECTIVE_FORECAST
     if intent_value == "anomaly_analysis_db":
         return DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY
     return DB_TOOL_RESPONSE_DIRECTIVE
@@ -228,7 +214,7 @@ def correlate_metrics_with_ieq(
             for column in columns:
                 value = row.get(column)
                 if column == "bucket":
-                    period[column] = db_charts._serialize_timestamp_value(value)
+                    period[column] = db_time_windows.serialize_timestamp_value(value)
                 else:
                     period[column] = None if pd.isna(value) else float(value)
             dip_periods.append(period)
@@ -289,48 +275,6 @@ def build_diagnostic_answer(
         f"Top likely driver is {top_metric} with r={float(top_score or 0.0):.3f} "
         f"({strength} {direction} relationship with IEQ).{secondary_text}"
     )
-
-
-def build_diagnostic_chart(
-    rows: List[Dict[str, Any]],
-    culprit_metrics: List[str],
-    window_label: str,
-    lab_name: Optional[str],
-    max_lookback: int,
-) -> Dict[str, Any]:
-    """
-    Multi-series line chart: IEQ index + top culprit metrics.
-    """
-    recent_rows = db_charts._clip_rows(rows, max_lookback)
-    series: List[Dict[str, Any]] = []
-    ieq_points = [
-        {"x": db_charts._serialize_timestamp_value(row.get("bucket")), "y": float(row.get("ieq") or 0.0)}
-        for row in recent_rows
-        if row.get("bucket") is not None and row.get("ieq") is not None
-    ]
-    series.append({"name": "IEQ Index", "points": ieq_points})
-    for metric in culprit_metrics:
-        if metric == "ieq":
-            continue
-        points = [
-            {"x": db_charts._serialize_timestamp_value(row.get("bucket")), "y": float(row.get(metric) or 0.0)}
-            for row in recent_rows
-            if row.get("bucket") is not None and row.get(metric) is not None
-        ]
-        if not points:
-            continue
-        series.append({"name": metric.upper(), "points": points})
-    title_scope = lab_name or "selected scope"
-    return {
-        "visualization_type": "line",
-        "chart": {
-            "title": f"IEQ diagnostic drivers ({title_scope}, {window_label})",
-            "x_label": "time",
-            "y_label": "value",
-            "series": series,
-            "note": "IEQ and correlated metrics overlaid to identify drivers",
-        },
-    }
 
 
 def build_point_lookup_answer(metric_alias: str, row: Dict, window_label: str) -> str:
@@ -486,46 +430,6 @@ def build_correlation_answer(
     )
 
 
-def build_forecast_answer(
-    metric_alias: str,
-    forecast: Optional[Dict[str, Any]],
-    window_label: str,
-    horizon_label: str,
-) -> str:
-    if not forecast:
-        if Prophet is None:
-            return (
-                f"I couldn't compute a {metric_alias} forecast because Meta Prophet is not available "
-                f"in the runtime environment."
-            )
-        return (
-            f"I couldn't compute a {metric_alias} forecast because there is not enough historical data "
-            f"in {window_label}."
-        )
-    points = forecast.get("forecast_points", [])
-    if not points:
-        return f"I couldn't compute a {metric_alias} forecast because forecast points were not generated."
-    start_point = points[0]
-    end_point = points[-1]
-    requested_horizon = int(forecast.get("requested_horizon_hours") or forecast.get("horizon_hours") or 0)
-    used_horizon = int(forecast.get("horizon_hours") or 0)
-    downgrade_note = ""
-    if requested_horizon > 0 and used_horizon > 0 and used_horizon < requested_horizon:
-        downgrade_note = (
-            f" Horizon was automatically reduced from {requested_horizon}h to {used_horizon}h "
-            f"to satisfy the history-to-horizon rule."
-        )
-    return (
-        f"Computed a deterministic {metric_alias} forecast for {horizon_label} using a "
-        f"{forecast.get('model', 'basic')} model over {forecast.get('history_points_used', 0)} "
-        f"historical points from {window_label}. Predicted value moves from "
-        f"{start_point.get('value')} at {start_point.get('bucket')} to "
-        f"{end_point.get('value')} at {end_point.get('bucket')} "
-        f"(confidence: {forecast.get('confidence', 'low')}, score: {forecast.get('confidence_score', 0.0):.2f})."
-        f"{downgrade_note}"
-    )
-
-
 def ensure_think_prefix(text: str) -> str:
     normalized = str(text or "").strip()
     if not normalized:
@@ -544,7 +448,6 @@ def build_db_payload(
     window_end: Optional[str] = None,
     display_start: Optional[str] = None,
     display_end: Optional[str] = None,
-    forecast: Optional[Dict[str, Any]] = None,
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     intent_value = getattr(intent, "value", str(intent))
@@ -562,28 +465,6 @@ def build_db_payload(
         payload["display_start"] = display_start
     if display_end:
         payload["display_end"] = display_end
-    if forecast:
-        payload["forecast"] = {
-            "model": forecast.get("model"),
-            "confidence": forecast.get("confidence"),
-            "confidence_score": forecast.get("confidence_score"),
-            "history_points_used": forecast.get("history_points_used"),
-            "history_start": serialize_timestamp_value(forecast.get("history_start")),
-            "history_end": serialize_timestamp_value(forecast.get("history_end")),
-            "requested_horizon_hours": forecast.get("requested_horizon_hours"),
-            "horizon_hours": forecast.get("horizon_hours"),
-            "horizon_downgraded": forecast.get("horizon_downgraded", False),
-            "assumptions": forecast.get("assumptions", []),
-            "forecast_points": [
-                {
-                    "bucket": serialize_timestamp_value(row.get("bucket")),
-                    "value": row.get("value"),
-                    "lower": row.get("lower"),
-                    "upper": row.get("upper"),
-                }
-                for row in forecast.get("forecast_points", [])[:336]
-            ],
-        }
     if knowledge_cards:
         payload["knowledge_cards"] = knowledge_cards[:5]
     return payload
@@ -671,119 +552,6 @@ def split_knowledge_cards(cards: Optional[List[Dict[str, Any]]]) -> Tuple[List[D
     return knowledge, guardrails
 
 
-def extract_forecast_horizon_hours(question: str) -> Tuple[int, str]:
-    return db_time_windows.extract_forecast_horizon_hours(question)
-
-
-def forecast_history_window(
-    question: str,
-    horizon_hours: int,
-    default_start: datetime,
-    default_end: datetime,
-    default_label: str,
-) -> Tuple[datetime, datetime, str]:
-    return db_time_windows.forecast_history_window(
-        question=question,
-        horizon_hours=horizon_hours,
-        default_start=default_start,
-        default_end=default_end,
-        default_label=default_label,
-    )
-
-
-def build_forecast_from_rows(series_rows: List[Dict[str, Any]], horizon_hours: int) -> Optional[Dict[str, Any]]:
-    cleaned_rows = [row for row in series_rows if row.get("bucket") is not None and row.get("value") is not None]
-    if len(cleaned_rows) < 24 or Prophet is None:
-        return None
-    history = cleaned_rows[-1000:]
-    history_df = pd.DataFrame(history).rename(columns={"bucket": "ds", "value": "y"})
-    history_df = history_df[["ds", "y"]].copy()
-    history_df["ds"] = pd.to_datetime(history_df["ds"], utc=True, errors="coerce")
-    history_df["y"] = pd.to_numeric(history_df["y"], errors="coerce")
-    history_df = history_df.dropna(subset=["ds", "y"]).sort_values("ds")
-    history_df = history_df.drop_duplicates(subset=["ds"], keep="last")
-    if len(history_df) < 24:
-        return None
-    requested_horizon_hours = max(1, int(horizon_hours))
-    max_allowed_horizon = max(1, len(history_df) // 5)
-    effective_horizon_hours = min(requested_horizon_hours, max_allowed_horizon)
-    history_df["ds"] = history_df["ds"].dt.tz_localize(None)
-    y_min = float(history_df["y"].quantile(0.01))
-    y_max = float(history_df["y"].quantile(0.99))
-    floor = max(0.0, y_min * 0.9)
-    cap = max(floor, y_max * 1.1)
-    history_df["y"] = history_df["y"].clip(lower=floor, upper=cap)
-    history_df["floor"] = floor
-    history_df["cap"] = cap
-    try:
-        model = Prophet(
-            growth="logistic",
-            interval_width=0.9,
-            daily_seasonality=True,
-            weekly_seasonality=True,
-            yearly_seasonality=False,
-            changepoint_prior_scale=0.01,
-            n_changepoints=10,
-            seasonality_mode="additive",
-        )
-        model.fit(history_df)
-        future = model.make_future_dataframe(periods=effective_horizon_hours, freq="h", include_history=True)
-        future["floor"] = floor
-        future["cap"] = cap
-        full_forecast = model.predict(future)
-    except Exception:
-        return None
-    forecast_rows = full_forecast.tail(effective_horizon_hours).copy()
-    if forecast_rows.empty:
-        return None
-    forecast_rows["yhat"] = forecast_rows["yhat"].clip(lower=floor, upper=cap)
-    forecast_rows["yhat_lower"] = forecast_rows["yhat_lower"].clip(lower=floor, upper=cap)
-    forecast_rows["yhat_upper"] = forecast_rows["yhat_upper"].clip(lower=floor, upper=cap)
-    mean_pred = max(float(forecast_rows["yhat"].abs().mean()), 1e-6)
-    avg_band = float((forecast_rows["yhat_upper"] - forecast_rows["yhat_lower"]).mean())
-    interval_ratio = avg_band / mean_pred
-    history_factor = min(1.0, len(history_df) / 240.0)
-    horizon_penalty = min(1.0, effective_horizon_hours / max(len(history_df), 1))
-    confidence_score = max(
-        0.0,
-        min(1.0, (0.65 * history_factor) + (0.35 / (1.0 + interval_ratio)) - (0.2 * horizon_penalty)),
-    )
-    confidence = "high" if confidence_score >= 0.75 else "medium" if confidence_score >= 0.45 else "low"
-    forecast_points: List[Dict[str, Any]] = []
-    for _, row in forecast_rows.iterrows():
-        bucket_dt = row["ds"].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
-        forecast_points.append(
-            {
-                "bucket": bucket_dt,
-                "value": round(float(row["yhat"]), 4),
-                "lower": round(float(row["yhat_lower"]), 4),
-                "upper": round(float(row["yhat_upper"]), 4),
-            }
-        )
-    history_start = (
-        history_df["ds"].iloc[0].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
-    )
-    history_end = (
-        history_df["ds"].iloc[-1].to_pydatetime().replace(tzinfo=timezone.utc).astimezone(db_time_windows.TARGET_TZ)
-    )
-    return {
-        "model": "meta_prophet",
-        "confidence": confidence,
-        "confidence_score": round(confidence_score, 4),
-        "history_points_used": int(len(history_df)),
-        "history_start": history_start,
-        "history_end": history_end,
-        "requested_horizon_hours": requested_horizon_hours,
-        "horizon_hours": effective_horizon_hours,
-        "horizon_downgraded": effective_horizon_hours < requested_horizon_hours,
-        "forecast_points": forecast_points,
-        "assumptions": [
-            "Forecast produced by Prophet trend and seasonality components.",
-            "No major occupancy or ventilation regime shift.",
-        ],
-    }
-
-
 def build_multi_metric_comparison_answer(metric_aliases: List[str], rows: List[Dict[str, Any]], window_label: str) -> str:
     if len(rows) < 2:
         return (
@@ -805,30 +573,6 @@ def build_multi_metric_comparison_answer(metric_aliases: List[str], rows: List[D
     return f"Air-quality comparison over {window_label}: " + "; ".join(parts) + "."
 
 
-def build_multi_metric_bar_chart(
-    metric_aliases: List[str], unit_by_metric: Dict[str, str], window_label: str, rows: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    series = []
-    for metric in metric_aliases:
-        points = []
-        for row in rows:
-            value = row.get(metric)
-            if value is None:
-                continue
-            points.append({"x": str(row.get("lab_space", "unknown")), "y": float(value)})
-        if points:
-            series.append({"name": f"{metric} ({unit_by_metric.get(metric, 'value')})", "points": points})
-    return {
-        "visualization_type": "bar",
-        "chart": {
-            "title": f"Air-quality metric comparison ({window_label})",
-            "x_label": "space",
-            "y_label": "value",
-            "series": series,
-        },
-    }
-
-
 def build_multi_metric_aggregation_answer(metric_aliases: List[str], row: Dict[str, Any], window_label: str) -> str:
     if not row:
         return f"I couldn't find metric data for {window_label}."
@@ -847,30 +591,6 @@ def build_multi_metric_aggregation_answer(metric_aliases: List[str], row: Dict[s
     return f"Air-quality analysis for {lab} over {window_label}: " + ", ".join(parts) + "."
 
 
-def build_multi_metric_snapshot_chart(
-    metric_aliases: List[str], unit_by_metric: Dict[str, str], window_label: str, row: Dict[str, Any]
-) -> Dict[str, Any]:
-    points = []
-    for metric in metric_aliases:
-        value = row.get(metric)
-        if value is None:
-            continue
-        points.append({"x": metric, "y": float(value), "unit": unit_by_metric.get(metric, "value")})
-    lab_raw = row.get("lab_space")
-    series_name = str(lab_raw).strip() if lab_raw is not None else ""
-    if not series_name:
-        series_name = "all_labs"
-    return {
-        "visualization_type": "bar",
-        "chart": {
-            "title": f"Air-quality metric snapshot ({window_label})",
-            "x_label": "metric",
-            "y_label": "value",
-            "series": [{"name": series_name, "points": points}],
-        },
-    }
-
-
 def build_db_sources(
     *,
     operation_type: str,
@@ -881,7 +601,6 @@ def build_db_sources(
     resolved_lab_name: Optional[str],
     compared_spaces: List[str],
     rows: List[Dict[str, Any]],
-    forecast: Optional[Dict[str, Any]],
     metric_pair: Optional[List[str]] = None,
     correlation: Optional[float] = None,
     metrics_used: Optional[List[str]] = None,
@@ -904,15 +623,4 @@ def build_db_sources(
         source["correlation"] = correlation
     if metrics_used:
         source["metrics_used"] = metrics_used
-    if forecast:
-        source["forecast"] = {
-            "model": forecast.get("model"),
-            "confidence": forecast.get("confidence"),
-            "confidence_score": forecast.get("confidence_score"),
-            "history_points_used": forecast.get("history_points_used"),
-            "history_start": serialize_timestamp_value(forecast.get("history_start")),
-            "history_end": serialize_timestamp_value(forecast.get("history_end")),
-            "requested_horizon_hours": forecast.get("requested_horizon_hours"),
-            "horizon_hours": forecast.get("horizon_hours"),
-        }
     return [source]
