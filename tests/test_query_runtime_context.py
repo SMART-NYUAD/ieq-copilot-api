@@ -12,7 +12,7 @@ REPO_DIR = os.path.abspath(os.path.join(SERVER_DIR, ".."))
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
-from http_routes.query_runtime import execute_non_stream_query
+from http_routes.route_helpers import execute_non_stream_query
 
 
 class QueryRuntimeContextTests(unittest.TestCase):

@@ -1,6 +1,12 @@
 """Health and root endpoints."""
 
 from fastapi import APIRouter
+from fastapi.concurrency import run_in_threadpool
+
+try:
+    from executors.sensors_endpoint import get_sensor_latest
+except ImportError:
+    from ..executors.sensors_endpoint import get_sensor_latest
 
 router = APIRouter()
 
@@ -21,3 +27,8 @@ async def root():
 @router.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@router.get("/sensors/latest/{space}")
+async def sensors_latest(space: str):
+    return await run_in_threadpool(get_sensor_latest, space)

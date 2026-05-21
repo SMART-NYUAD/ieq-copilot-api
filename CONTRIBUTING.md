@@ -8,12 +8,19 @@
 3. Copy env template:
    - `cp .env.example .env`
 4. Configure local services (Postgres + Ollama) and database access in `.env` (`DATABASE_URL` or `DB_*`).
+5. Preferred local runtime is Docker Compose with hot reload.
 
 ## Running the API
 
-- From this directory:
+- Preferred (Docker + hot reload):
+  - `docker compose up --build`
+- Stop Docker runtime:
+  - `docker compose down`
+- View logs:
+  - `docker compose logs -f rag-api`
+- Optional direct Python runtime from this directory:
   - `python rag_api_server.py`
-- Or explicit host/port:
+- Optional explicit host/port:
   - `python rag_api_server.py 8001 0.0.0.0`
 
 ## Running Tests

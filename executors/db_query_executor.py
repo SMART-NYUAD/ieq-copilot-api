@@ -15,10 +15,10 @@ except ImportError:  # pragma: no cover - dependency presence varies by deployme
 
 try:
     from query_routing.intent_classifier import IntentType
-    from executors.metric_registry import metric_unit as _registry_metric_unit
+    from executors import metric_registry
 except ImportError:
     from ..query_routing.intent_classifier import IntentType
-    from .metric_registry import metric_unit as _registry_metric_unit
+    from .. import metric_registry
 
 try:
     from executors.knowledge_executor import (
@@ -61,11 +61,6 @@ except ImportError:
     from ..storage.guideline_store import get_thresholds_for_metrics
 
 
-def _metric_unit(name: str) -> str:
-    return _registry_metric_unit(name) or "index"
-
-
-METRIC_UNIT_MAP = {name: _metric_unit(name) for name in ("air_contribution", "pm25", "pm2.5", "co2", "tvoc", "voc", "temperature", "temp", "humidity", "light", "lux", "sound", "noise", "ieq", "index")}
 MAX_CHART_LOOKBACK_POINTS = 0  # 0 disables chart-side truncation; preserve requested windows
 LLM_PAYLOAD_MAX_RECENT_POINTS = 48
 LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS = 12
@@ -98,289 +93,6 @@ def _serialize_timestamp_value(value: Any) -> Any:
             return value
         return _serialize_datetime_iso(parsed)
     return value
-def _is_air_quality_query_text(question: str) -> bool:
-    return db_helpers.is_air_quality_query_text(question)
-
-
-def _is_comfort_assessment_query_text(question: str) -> bool:
-    return db_helpers.is_comfort_assessment_query_text(question)
-
-
-def _db_response_directive(intent: IntentType, question: str = "") -> str:
-    return db_helpers.db_response_directive(intent, question=question)
-
-
-def _build_lab_alias_map() -> Dict[str, str]:
-    """Compatibility shim: delegate lab alias map building to db_support parser."""
-    return db_parsing.build_lab_alias_map()
-
-
-def _resolve_lab_alias(raw_lab: Optional[str]) -> Optional[str]:
-    """Compatibility shim retained for existing tests/imports."""
-    raw = str(raw_lab or "").strip().lower()
-    if not raw:
-        return None
-    token = re.sub(r"[^a-z0-9_\s]", "", raw)
-    token = re.sub(r"\s+", " ", token).strip()
-    if not token:
-        return None
-
-    alias_map = _build_lab_alias_map()
-    if not alias_map:
-        return token.replace(" ", "_")
-
-    candidates: List[str] = []
-
-    def _push(value: str) -> None:
-        normalized = str(value or "").strip().lower()
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
-
-    _push(token)
-    _push(token.replace(" ", "_"))
-    _push(token.replace("_", " "))
-    if token.endswith(" lab"):
-        base = token[: -len(" lab")].strip()
-        _push(base)
-        _push(f"{base}_lab")
-    if token.endswith("_lab"):
-        base = token[: -len("_lab")].strip("_")
-        _push(base)
-        _push(base.replace("_", " "))
-    if " " not in token and "_" not in token:
-        _push(f"{token}_lab")
-
-    for candidate in candidates:
-        canonical = alias_map.get(candidate)
-        if canonical:
-            return canonical
-    return token.replace(" ", "_")
-
-
-def _planner_card_controls(planner_hints: Optional[Dict[str, Any]]) -> Tuple[bool, List[str], int]:
-    """Compatibility shim: canonical logic lives in db_support.query_parsing."""
-    return db_parsing.planner_card_controls(planner_hints)
-
-
-def _default_window_hours_for_intent(intent: IntentType) -> int:
-    """Compatibility shim: canonical logic lives in db_support.query_parsing."""
-    return db_parsing.default_window_hours_for_intent(intent)
-
-
-def _build_point_lookup_answer(metric_alias: str, row: Dict, window_label: str) -> str:
-    return db_helpers.build_point_lookup_answer(metric_alias, row, window_label)
-
-
-def _build_aggregation_answer(metric_alias: str, rows: List[Dict], window_label: str) -> str:
-    return db_helpers.build_aggregation_answer(metric_alias, rows, window_label)
-
-
-def _build_timeseries_answer(metric_alias: str, rows: List[Dict], window_label: str) -> str:
-    return db_helpers.build_timeseries_answer(metric_alias, rows, window_label)
-
-
-def _detect_anomaly_points(
-    rows: List[Dict[str, Any]],
-    z_threshold: float = 2.5,
-) -> List[Dict[str, Any]]:
-    return db_helpers.detect_anomaly_points(rows, z_threshold=z_threshold)
-
-
-def _build_anomaly_answer(
-    metric_alias: str,
-    rows: List[Dict[str, Any]],
-    anomalies: List[Dict[str, Any]],
-    window_label: str,
-    lab_name: Optional[str],
-) -> str:
-    return db_helpers.build_anomaly_answer(
-        metric_alias=metric_alias,
-        rows=rows,
-        anomalies=anomalies,
-        window_label=window_label,
-        lab_name=lab_name,
-    )
-
-
-def _build_comparison_answer(metric_alias: str, rows: List[Dict], window_label: str) -> str:
-    return db_helpers.build_comparison_answer(metric_alias, rows, window_label)
-
-
-def _build_correlation_answer(
-    metric_x: str,
-    metric_y: str,
-    correlation: Optional[float],
-    row_count: int,
-    window_label: str,
-    lab_name: Optional[str],
-) -> str:
-    return db_helpers.build_correlation_answer(
-        metric_x=metric_x,
-        metric_y=metric_y,
-        correlation=correlation,
-        row_count=row_count,
-        window_label=window_label,
-        lab_name=lab_name,
-    )
-
-
-def _build_forecast_answer(
-    metric_alias: str,
-    forecast: Optional[Dict[str, Any]],
-    window_label: str,
-    horizon_label: str,
-) -> str:
-    return db_helpers.build_forecast_answer(
-        metric_alias=metric_alias,
-        forecast=forecast,
-        window_label=window_label,
-        horizon_label=horizon_label,
-    )
-
-
-def _ensure_think_prefix(text: str) -> str:
-    return db_helpers.ensure_think_prefix(text)
-
-
-def _build_db_payload(
-    intent: IntentType,
-    metric_alias: str,
-    window_label: str,
-    rows: List[Dict],
-    window_start: Optional[str] = None,
-    window_end: Optional[str] = None,
-    display_start: Optional[str] = None,
-    display_end: Optional[str] = None,
-    forecast: Optional[Dict[str, Any]] = None,
-    knowledge_cards: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    return db_helpers.build_db_payload(
-        intent=intent,
-        metric_alias=metric_alias,
-        window_label=window_label,
-        rows=rows,
-        window_start=window_start,
-        window_end=window_end,
-        display_start=display_start,
-        display_end=display_end,
-        forecast=forecast,
-        knowledge_cards=knowledge_cards,
-    )
-
-
-def _metric_unit(metric_alias: str) -> str:
-    return db_helpers.metric_unit(metric_alias)
-
-
-def _wants_time_series(question: str) -> bool:
-    return db_helpers.wants_time_series(question)
-
-
-def _wants_forecast(question: str) -> bool:
-    return db_helpers.wants_forecast(question)
-
-
-def _topic_matches_card(card: Dict[str, Any], requested_topics: List[str]) -> bool:
-    return db_helpers.topic_matches_card(card, requested_topics)
-
-
-def _fetch_knowledge_cards(
-    question: str, limit: int = 4, card_topics: Optional[List[str]] = None
-) -> List[Dict[str, Any]]:
-    return db_helpers.fetch_knowledge_cards(
-        question=question,
-        search_fn=search_knowledge_cards,
-        limit=limit,
-        card_topics=card_topics,
-    )
-
-
-def _split_knowledge_cards(cards: Optional[List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    return db_helpers.split_knowledge_cards(cards)
-
-
-def _extract_forecast_horizon_hours(question: str) -> Tuple[int, str]:
-    return db_helpers.extract_forecast_horizon_hours(question)
-
-
-def _forecast_history_window(
-    question: str,
-    horizon_hours: int,
-    default_start: datetime,
-    default_end: datetime,
-    default_label: str,
-) -> Tuple[datetime, datetime, str]:
-    return db_helpers.forecast_history_window(
-        question=question,
-        horizon_hours=horizon_hours,
-        default_start=default_start,
-        default_end=default_end,
-        default_label=default_label,
-    )
-
-
-def _build_forecast_from_rows(
-    series_rows: List[Dict[str, Any]],
-    horizon_hours: int,
-) -> Optional[Dict[str, Any]]:
-    return db_helpers.build_forecast_from_rows(series_rows, horizon_hours=horizon_hours)
-
-
-def _build_multi_metric_comparison_answer(
-    metric_aliases: List[str], rows: List[Dict[str, Any]], window_label: str
-) -> str:
-    return db_helpers.build_multi_metric_comparison_answer(metric_aliases, rows, window_label)
-
-
-def _build_multi_metric_bar_chart(
-    metric_aliases: List[str], unit_by_metric: Dict[str, str], window_label: str, rows: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    return db_helpers.build_multi_metric_bar_chart(metric_aliases, unit_by_metric, window_label, rows)
-
-
-def _build_multi_metric_aggregation_answer(
-    metric_aliases: List[str], row: Dict[str, Any], window_label: str
-) -> str:
-    return db_helpers.build_multi_metric_aggregation_answer(metric_aliases, row, window_label)
-
-
-def _build_multi_metric_snapshot_chart(
-    metric_aliases: List[str], unit_by_metric: Dict[str, str], window_label: str, row: Dict[str, Any]
-) -> Dict[str, Any]:
-    return db_helpers.build_multi_metric_snapshot_chart(metric_aliases, unit_by_metric, window_label, row)
-
-
-def _build_db_sources(
-    *,
-    operation_type: str,
-    metric_alias: str,
-    window_label: str,
-    window_start: datetime,
-    window_end: datetime,
-    resolved_lab_name: Optional[str],
-    compared_spaces: List[str],
-    rows: List[Dict[str, Any]],
-    forecast: Optional[Dict[str, Any]],
-    metric_pair: Optional[List[str]] = None,
-    correlation: Optional[float] = None,
-    metrics_used: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
-    return db_helpers.build_db_sources(
-        operation_type=operation_type,
-        metric_alias=metric_alias,
-        window_label=window_label,
-        window_start=window_start,
-        window_end=window_end,
-        resolved_lab_name=resolved_lab_name,
-        compared_spaces=compared_spaces,
-        rows=rows,
-        forecast=forecast,
-        metric_pair=metric_pair,
-        correlation=correlation,
-        metrics_used=metrics_used,
-    )
-
-
 def _to_float_or_none(value: Any) -> Optional[float]:
     try:
         if value is None:
@@ -509,7 +221,7 @@ def _collect_citation_metrics(
         if token and token not in collected:
             collected.append(token)
 
-    if _is_air_quality_query_text(question):
+    if db_helpers.is_air_quality_query_text(question):
         for metric in ("co2", "pm25", "tvoc", "humidity", "ieq"):
             if metric not in collected:
                 collected.append(metric)
@@ -573,7 +285,7 @@ def prepare_db_query(
         hinted_column = db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(top_metric)
         if hinted_column:
             metric_alias, metric_column = top_metric, hinted_column
-    unit = _metric_unit(metric_alias)
+    unit = metric_registry.metric_unit(metric_alias) or "index"
     window_start, window_end, window_label = db_parsing.extract_time_window(
         query_text,
         default_hours=db_parsing.default_window_hours_for_intent(intent),
@@ -680,12 +392,17 @@ def prepare_db_query(
 
     needs_cards, card_topics, max_cards = db_parsing.planner_card_controls(planner_hints)
     knowledge_cards = (
-        _fetch_knowledge_cards(question=question, limit=max_cards, card_topics=card_topics)
+        db_helpers.fetch_knowledge_cards(
+            question=question,
+            search_fn=search_knowledge_cards,
+            limit=max_cards,
+            card_topics=card_topics,
+        )
         if needs_cards
         else []
     )
 
-    payload = _build_db_payload(
+    payload = db_helpers.build_db_payload(
         intent=intent,
         metric_alias=metric_alias,
         window_label=window_label,
@@ -740,7 +457,7 @@ def prepare_db_query(
         "guideline_records": guideline_records,
         "cards_retrieved": len(knowledge_cards),
         "correlation": correlation_data,
-        "sources": _build_db_sources(
+        "sources": db_helpers.build_db_sources(
             operation_type=operation_type,
             metric_alias=metric_alias,
             window_label=window_label,
@@ -789,7 +506,7 @@ def _render_db_answer_with_llm(
         llm_rows = []
     else:
         llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
-    payload = _build_db_payload(
+    payload = db_helpers.build_db_payload(
         intent,
         metric_alias,
         window_label,
@@ -821,7 +538,7 @@ def _render_db_answer_with_llm(
             }
     effective_guideline_records = list(guideline_records or [])
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
-    interpretation_cards, guardrails = _split_knowledge_cards(knowledge_cards)
+    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(knowledge_cards)
     context_data = build_grounded_context_sections(
         measured_room_facts=payload,
         backend_semantic_state=None,
@@ -830,7 +547,7 @@ def _render_db_answer_with_llm(
         numbered_sources_block=numbered_sources_block,
     )
     prompt_template = get_shared_prompt_template(
-        response_directive=_db_response_directive(intent, question=question)
+        response_directive=db_helpers.db_response_directive(intent, question=question)
     )
     try:
         messages = prompt_template.format_messages(
@@ -1011,9 +728,9 @@ async def stream_db_query(
     context["indexed_sources"] = indexed_sources
 
     prompt_template = get_shared_prompt_template(
-        response_directive=_db_response_directive(intent, question=query_text)
+        response_directive=db_helpers.db_response_directive(intent, question=query_text)
     )
-    interpretation_cards, guardrails = _split_knowledge_cards(context.get("knowledge_cards"))
+    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(context.get("knowledge_cards"))
     context_data = build_grounded_context_sections(
         measured_room_facts=payload,
         backend_semantic_state=None,
@@ -1083,11 +800,11 @@ async def stream_db_query(
                         emitted_anything = True
                         yield response_text
     except Exception:
-        yield _ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
+        yield db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
         return
 
     if include_thinking and in_thinking_block:
         yield "</think>"
     elif not emitted_anything:
         # Streaming may complete without tokens in error/edge cases.
-        yield _ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
+        yield db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")

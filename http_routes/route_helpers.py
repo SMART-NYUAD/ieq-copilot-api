@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from fastapi.concurrency import run_in_threadpool
+
 try:
     from storage.conversation_store import append_conversation_turn, build_compact_context
+    from query_routing.query_orchestrator import execute_query as _default_execute_query
 except ImportError:
     from ..storage.conversation_store import append_conversation_turn, build_compact_context
+    from ..query_routing.query_orchestrator import execute_query as _default_execute_query
 
 
 SSE_HEADERS: Dict[str, str] = {
@@ -51,10 +55,6 @@ def attach_conversation_metadata(
     return meta
 
 
-def attach_policy_metadata(metadata: Dict[str, Any], route_contract: Optional[Any]) -> Dict[str, Any]:
-    return dict(metadata)
-
-
 def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
     if route_plan is None:
         return {}
@@ -64,3 +64,40 @@ def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
         if val is not None:
             meta[attr] = val.value if hasattr(val, "value") else val
     return meta
+
+
+async def execute_non_stream_query(
+    *,
+    question: str,
+    latest_user_question: str,
+    conversation_context: str,
+    k: int,
+    lab_name: Optional[str],
+    allow_clarify: bool,
+    conversation_id: Optional[str],
+    context_applied: bool,
+    endpoint_key: str = "query_sync",
+    execute_query_fn: Any = None,
+) -> Dict[str, Any]:
+    fn = execute_query_fn if execute_query_fn is not None else _default_execute_query
+    result = await run_in_threadpool(
+        fn,
+        latest_user_question,
+        k,
+        lab_name,
+        allow_clarify,
+        endpoint_key,
+        conversation_context,
+    )
+    turn_index = persist_turn(
+        conversation_id=conversation_id,
+        question=question,
+        answer=str(result.get("answer") or ""),
+    )
+    metadata = attach_conversation_metadata(
+        dict(result.get("metadata") or {}),
+        conversation_id=conversation_id,
+        conversation_context_applied=context_applied,
+        turn_index=turn_index,
+    )
+    return {"result": result, "turn_index": turn_index, "metadata": metadata}

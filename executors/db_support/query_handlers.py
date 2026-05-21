@@ -18,12 +18,14 @@ try:
     from executors.db_support import query_parsing as db_parsing
     from executors.db_support import response_helpers as db_helpers
     from executors.db_support.response_helpers import is_diagnostic_query_text
+    from executors import metric_registry
 except ImportError:
     from . import api_client
     from . import charts as db_charts
     from . import query_parsing as db_parsing
     from . import response_helpers as db_helpers
     from .response_helpers import is_diagnostic_query_text
+    from .. import metric_registry
 
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
@@ -371,10 +373,7 @@ def _handle_comparison_multi(
         compare_metrics = requested_metrics[:4]
 
     # Only include metrics that have a mapping (keeps metrics_used consistent)
-    metric_names = [
-        m for m in compare_metrics
-        if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)
-    ]
+    metric_names = [m for m in compare_metrics if metric_registry.metric_column(m) is not None]
     if not metric_names:
         return {
             "operation_type": "comparison_multi_metric",
@@ -582,7 +581,7 @@ def _handle_aggregation_multi(
     else:
         selected_metrics = requested_metrics[:4]
 
-    metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+    metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
     if not metric_names:
         return {
             "operation_type": "aggregation_multi_metric",
@@ -651,7 +650,7 @@ def _handle_point_lookup(
                 selected_metrics = requested_metrics[:8]
             else:
                 selected_metrics = requested_metrics[:6]
-            metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+            metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
             if not metric_names:
                 return {
                     "operation_type": "aggregation_multi_metric",
@@ -712,7 +711,7 @@ def _handle_point_lookup(
     )
     if is_multi:
         selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
-        metric_names = [m for m in selected_metrics if db_parsing.CANONICAL_METRIC_COLUMN_MAP.get(m)]
+        metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
         if not metric_names:
             return {
                 "operation_type": "point_lookup_multi_metric",

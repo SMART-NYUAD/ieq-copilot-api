@@ -146,7 +146,7 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         second_lab = second_lab.strip().lower() or None
 
     raw_metrics = data.get("metrics")
-    if isinstance(raw_metrics, list):
+    if isinstance(raw_metrics, list) and raw_metrics:
         metrics = [str(m).strip().lower() for m in raw_metrics if m]
         metrics = [_METRIC_CANONICAL.get(m, m) for m in metrics]
         metrics = list(dict.fromkeys(m for m in metrics if m))
@@ -169,11 +169,6 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         model=router_model(),
         fallback_used=False,
     )
-
-
-def extract_query_signals(question: str, lab_name: Optional[str] = None) -> dict:
-    """Compat shim - signal extraction removed; returns empty dict."""
-    return {}
 
 
 def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:

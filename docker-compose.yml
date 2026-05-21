@@ -1,0 +1,14 @@
+services:
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-api-server
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./:/app
+    command: python -m uvicorn app_bootstrap:app --host 0.0.0.0 --port 8001 --reload --reload-dir /app
+    restart: unless-stopped

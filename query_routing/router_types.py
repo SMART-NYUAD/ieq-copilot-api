@@ -22,8 +22,8 @@ class RoutePlan:
     intent: IntentType
     confidence: float
     lab_name: Optional[str]
-    second_lab_name: Optional[str]
-    metrics: List[str]
     time_phrase: Optional[str]
     model: str = ""
     fallback_used: bool = False
+    second_lab_name: Optional[str] = None
+    metrics: List[str] = field(default_factory=list)

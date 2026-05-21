@@ -14,6 +14,7 @@ This folder is structured to be standalone-repo friendly.
 - Runtime dependencies: `requirements.txt`
 - Dev/test dependencies: `requirements-dev.txt`
 - Environment template: `.env.example`
+- Container runtime: `Dockerfile`, `docker-compose.yml`
 - Contributor workflow: `CONTRIBUTING.md`
 - Release process: `RELEASE_CHECKLIST.md`
 - API contracts: `docs/API_CONTRACTS.md`
@@ -21,7 +22,15 @@ This folder is structured to be standalone-repo friendly.
 
 ## Architecture
 
-Main modules:
+The service uses a layered architecture:
+
+1. **API layer** receives requests (`/query`, `/query/stream`, OpenAI-compatible routes).
+2. **Routing layer** classifies intent and enforces deterministic policy.
+3. **Execution layer** runs exactly one branch (`clarify_gate`, `knowledge_qa`, or `db_query`).
+4. **Normalization layer** repairs and validates evidence/metadata before response mapping.
+5. **Response layer** returns a contract-stable payload (sync JSON or SSE events).
+
+Main modules by layer:
 
 - `rag_api_server.py`: runtime entrypoint
 - `app_bootstrap.py`: FastAPI app + route registration
@@ -33,7 +42,6 @@ Main modules:
   - `intent_classifier.py` (deterministic classifier utilities)
   - `llm_router_planner.py`
   - `route_policy_engine.py`
-  - `query_orchestrator.py`
   - `query_orchestrator.py` (branch execution and payload assembly)
 - `http_routes/query_runtime.py`: shared runtime adapters used by both native and OpenAI-compatible routes
 - `http_routes/route_helpers.py`: route metadata helpers + conversation persistence hooks
@@ -44,9 +52,7 @@ Main modules:
 - `contracts/progressive_contracts.py`: progressive contracts (stable core + extensible fields)
 - `storage/postgres_client.py`: shared DB cursor/connection helper
 
-Detailed router design is documented in `docs/router_architecture.md`.
-End-to-end request lifecycle (with sequence/state graphs) is documented in
-`docs/architecture_deep_dive.md`.
+Primary architecture reference: `docs/router_architecture.md`.
 
 ## Local Setup
 
@@ -71,6 +77,30 @@ manual `export`), and environment variables already set in your shell still win.
    - Postgres connectivity used by project modules
    - Database credentials in `.env` as `DATABASE_URL` (or `DB_*` components)
 
+## Docker Development (Hot Reload)
+
+1. Copy environment template if needed:
+
+```bash
+cp .env.example .env
+```
+
+2. Build and run in development mode:
+
+```bash
+docker compose up --build
+```
+
+The container runs Uvicorn with `--reload` and bind-mounts this repository into
+`/app`, so Python file edits on your host automatically trigger server restart.
+
+Useful commands:
+
+```bash
+docker compose down
+docker compose logs -f rag-api
+```
+
 ## Request Flow
 
 1. Client calls `POST /query` (or `POST /query/stream`).
@@ -80,14 +110,11 @@ manual `export`), and environment variables already set in your shell still win.
 5. For DB intents, SQL rows are converted to a grounded LLM answer (with deterministic fallback).
 6. Unified response is returned with route and evidence metadata.
 
-For a very detailed step-by-step flow (including clarify-gate behavior,
-follow-up memory carry-over, policy execution, and streaming internals),
-see `docs/architecture_deep_dive.md`.
+For architecture and routing behavior details, see `docs/router_architecture.md`.
 
 ## Documentation Map
 
-- `docs/architecture_deep_dive.md`: full architecture walkthrough with Mermaid graphs
-- `docs/router_architecture.md`: routing policy, planner contract, and metadata details
+- `docs/router_architecture.md`: architecture overview, routing policy, planner contract, and metadata details
 - `docs/API_CONTRACTS.md`: request/response contracts and compatibility payloads
 - `docs/BLUEPRINT_GUIDE.md`: implementation and blueprint guidance
 
@@ -125,6 +152,12 @@ Router outputs one of:
   - Forecasts are clearly labeled with confidence and are never extrapolated by the LLM itself.
 
 ## Run the API
+
+Preferred:
+
+```bash
+docker compose up --build
+```
 
 From this project directory:
 

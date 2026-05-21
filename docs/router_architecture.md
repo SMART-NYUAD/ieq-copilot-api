@@ -2,6 +2,18 @@
 
 For full end-to-end request flow (not only routing), see `docs/architecture_deep_dive.md`.
 
+## Architecture Overview
+
+The runtime is organized into five layers that execute in order:
+
+1. **API layer** (`http_routes/*`): validates request shape, normalizes optional fields, and resolves conversation context.
+2. **Routing layer** (`query_routing/llm_router_planner.py`, `query_routing/route_policy_engine.py`): generates and validates route intent.
+3. **Execution layer** (`query_routing/query_orchestrator.py`, `executors/*`): runs exactly one branch (`clarify_gate`, `knowledge_qa`, or `db_query`).
+4. **Evidence layer** (`evidence/evidence_layer.py`): normalizes, validates, and repairs provenance envelopes.
+5. **Response layer** (`http_routes/query_runtime.py`, response mappers): emits stable sync/stream payloads and route metadata.
+
+This design keeps routing deterministic while allowing planner behavior to evolve safely behind policy validation.
+
 ## Purpose
 
 The router decides exactly one execution path per query:
@@ -48,9 +60,10 @@ Category-to-intent constraints:
 
 ```mermaid
 flowchart LR
-    Q[Incoming query] --> S[Signal extraction]
+    Q[Incoming query] --> A[API layer]
+    A --> S[Signal extraction]
     S --> P[LLM planner]
-    P --> V[Plan validation]
+    P --> V[Policy validation]
     V --> D[Route decision]
 
     D --> C{Execution path}
@@ -62,7 +75,7 @@ flowchart LR
     K --> E
     B --> E
 
-    E --> R[API response]
+    E --> R[Contract-stable API response]
 ```
 
 ## Progressive Contracts + Evidence Layer

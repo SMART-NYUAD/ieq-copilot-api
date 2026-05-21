@@ -225,6 +225,9 @@ def fetch_multi_metric_point_row(slug: str, metrics: List[str]) -> Dict[str, Any
     return row
 
 
+# NOTE: Sequential — one HTTP call per metric. Latency scales linearly with
+# len(metrics). Callers (_handle_aggregation_multi, _handle_comparison_multi,
+# _handle_point_lookup) should limit metrics to what is actually needed.
 def fetch_multi_metric_agg_row(
     slug: str,
     metrics: List[str],

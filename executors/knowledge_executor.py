@@ -18,9 +18,9 @@ except ImportError:
     from ..storage.postgres_client import get_cursor
     from ..storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
 try:
-    from prompting.shared_prompts import SHARED_SYSTEM_PROMPT, build_grounded_context_sections
+    from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 except ImportError:
-    from ..prompting.shared_prompts import SHARED_SYSTEM_PROMPT, build_grounded_context_sections
+    from ..prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 try:
     from http_schemas import validate_tool_evidence
 except ImportError:
@@ -277,17 +277,6 @@ def _build_prompt_text_from_messages(messages: List[Any]) -> str:
     return "\n\n".join(prompt_parts)
 
 
-def _build_knowledge_prompt(question: str, grounded_context: str) -> str:
-    human = (
-        f"Question: {question}\n\n"
-        f"Grounded Context Source: Measured room facts with knowledge grounding\n"
-        f"Grounded Context:\n{grounded_context}\n\n"
-        f"Tool-specific response directive:\n{CARD_TOOL_RESPONSE_DIRECTIVE}\n\n"
-        "Please answer the question by prioritizing grounded context and following the General Knowledge Policy section."
-    )
-    return f"SYSTEM:\n{SHARED_SYSTEM_PROMPT}\n\nHUMAN:\n{human}"
-
-
 def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Optional[bool]) -> str:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
@@ -354,7 +343,13 @@ def answer_env_question_with_metadata(
         numbered_sources_block=numbered_sources_block,
         allow_general_knowledge=True,
     )
-    prompt_text = _build_knowledge_prompt(user_question, grounded_context)
+    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
+    messages = prompt_template.format_messages(
+        question=user_question,
+        context_label="Measured room facts with knowledge grounding",
+        context_data=grounded_context,
+    )
+    prompt_text = _build_prompt_text_from_messages(messages)
     answer = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
@@ -429,7 +424,13 @@ async def stream_answer_env_question(
         numbered_sources_block=numbered_sources_block,
         allow_general_knowledge=True,
     )
-    prompt_text = _build_knowledge_prompt(user_question, grounded_context)
+    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
+    messages = prompt_template.format_messages(
+        question=user_question,
+        context_label="Measured room facts with knowledge grounding",
+        context_data=grounded_context,
+    )
+    prompt_text = _build_prompt_text_from_messages(messages)
 
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")

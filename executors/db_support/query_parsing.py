@@ -347,24 +347,22 @@ def validate_db_execution_invariants(
 ) -> Dict[str, Any]:
     """Verify DB execution inputs are justified by current question/planner output."""
     q = str(question or "").strip().lower()
-    signals = (planner_hints or {}).get("query_signals") if isinstance(planner_hints, dict) else {}
-    signals = signals if isinstance(signals, dict) else {}
     selected = normalize_metric_alias(selected_metric) or selected_metric
     generic_air_quality_query = is_generic_air_quality_scope_query(q)
 
-    has_time_hint = bool(signals.get("has_time_window_hint")) or _TIME_HINT_RE.search(q) is not None
+    has_time_hint = _TIME_HINT_RE.search(q) is not None
     has_currentness_hint = any(token in q for token in ("current", "now", "latest", "right now", "at this moment"))
     extracted_lab_scope = extract_space_from_question(q)
     has_explicit_lab_scope = bool(extracted_lab_scope)
-    has_db_scope = bool(signals.get("asks_for_db_facts")) or bool(signals.get("has_db_scope_phrase"))
-    has_metric_hint = bool(signals.get("has_metric_reference")) or (selected in explicit_metrics)
+    has_db_scope = False
+    has_metric_hint = selected in explicit_metrics
     has_deictic_scope_hint = any(token in f" {q} " for token in _DEICTIC_SCOPE_HINTS)
-    is_baseline_query = bool(signals.get("is_baseline_reference_query")) or is_baseline_reference_query(q)
+    is_baseline_query = is_baseline_reference_query(q)
     compared_spaces = extract_compared_spaces(q)
     has_explicit_second_space = len(compared_spaces) >= 2
     if has_explicit_second_space:
         has_explicit_lab_scope = True
-    has_lab_hint = bool(signals.get("has_lab_reference")) or bool(request_lab_name) or has_explicit_lab_scope
+    has_lab_hint = bool(request_lab_name) or has_explicit_lab_scope
     metric_explicit_in_planner = selected in hinted_metrics
     analytical_intent = intent in {
         IntentType.AGGREGATION_DB,

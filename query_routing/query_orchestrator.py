@@ -12,6 +12,7 @@ try:
     )
     from query_routing.intent_classifier import IntentType
     from query_routing.llm_router_planner import plan_route
+    from query_routing.metadata_builders import derive_ui_contract
     from query_routing.router_types import RoutePlan, RouteExecutor
     from storage.conversation_memory import apply_routing_memory, extract_routing_memory
 except ImportError:
@@ -22,6 +23,7 @@ except ImportError:
     )
     from .intent_classifier import IntentType
     from .llm_router_planner import plan_route
+    from .metadata_builders import derive_ui_contract
     from .router_types import RoutePlan, RouteExecutor
     from ..storage.conversation_memory import apply_routing_memory, extract_routing_memory
 
@@ -70,6 +72,7 @@ def _execute_knowledge(
             "route_confidence": route.confidence,
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
         },
         "data": None,
         "visualization_type": "none",
@@ -90,6 +93,15 @@ def _execute_db(
         lab_name=lab_name,
         planner_hints=planner_hints,
     )
+    metrics = list(db_result.get("metrics_used") or planner_hints.get("metrics_priority") or [])
+    ui = derive_ui_contract(
+        execution_intent=route.intent,
+        metrics=metrics,
+        visualization_type=db_result.get("visualization_type", "none"),
+        has_floor_comparison=False,
+        clarification_required="clarify" in str(db_result.get("timescale", "")),
+        use_knowledge_executor=False,
+    )
     return {
         "answer": str(db_result.get("answer") or ""),
         "footnotes": list(db_result.get("footnotes") or []),
@@ -108,6 +120,7 @@ def _execute_db(
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
             "visualization_type": db_result.get("visualization_type", "none"),
+            "ui": ui,
         },
         "data": db_result.get("data"),
         "visualization_type": db_result.get("visualization_type", "none"),
@@ -121,16 +134,14 @@ def _resolve_context(
     conversation_context: str,
 ) -> tuple[str, Optional[str]]:
     """Apply conversation memory carry-over to question and lab."""
-    current_signals: Dict[str, Any] = {}
     routing_memory = extract_routing_memory(
         conversation_context=conversation_context,
-        current_signals=current_signals,
+        current_signals={},
     )
     effective_question, effective_lab, _ = apply_routing_memory(
         question=question,
         lab_name=lab_name,
         memory=routing_memory,
-        current_signals=current_signals,
     )
     return effective_question, effective_lab
 
