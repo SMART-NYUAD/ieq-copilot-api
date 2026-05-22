@@ -334,6 +334,8 @@ def _handle_comparison_multi(
         return None
     if db_parsing.is_baseline_reference_query(question):
         return None
+    if db_parsing.is_temporal_period_comparison(question):
+        return None
     if db_helpers.is_comfort_assessment_query_text(question):
         compare_metrics = requested_metrics[:8]
     elif db_helpers.is_air_quality_query_text(question):
@@ -626,6 +628,10 @@ def _handle_point_lookup(
     if is_multi:
         selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
         metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
+        if "ieq" in metric_names:
+            for sub in ("iaq", "itc", "iac", "iil"):
+                if sub not in metric_names:
+                    metric_names.append(sub)
         if not metric_names:
             return {
                 "operation_type": "point_lookup_multi_metric",
@@ -668,15 +674,15 @@ def _handle_point_lookup(
         }
 
     # Single-metric point lookup
-    # Use a slightly wider window (2h) so we always catch the most recent completed bucket.
-    fetch_hours = max(window_hours, 6)
-    trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name or "", metric_alias, fetch_hours)
-    rows = [trend_rows[-1]] if trend_rows else []
     active_window_label = window_label
     window_note = ""
+    rows: List[Dict[str, Any]] = []
+    trend_rows: List[Dict[str, Any]] = []
 
-    # If still no timeseries data, fall back to the space-level metrics endpoint for current value.
-    if not rows and resolved_lab_name and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}:
+    has_time_window = db_parsing.has_explicit_time_hint(question)
+
+    if not has_time_window and resolved_lab_name and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}:
+        # No explicit time window — use /spaces/{slug}/metrics for the live current value.
         space = api_client.fetch_space_metrics(resolved_lab_name)
         if space:
             api_slug = api_client._api_sensor_slug(metric_alias)
@@ -685,6 +691,12 @@ def _handle_point_lookup(
             if val is not None:
                 rows = [{"lab_space": resolved_lab_name, "bucket": space.get("last_updated"), "value": val}]
                 trend_rows = rows
+
+    if not rows:
+        # Explicit time window or no current value available — use agg-summary timeseries.
+        fetch_hours = max(window_hours, 6)
+        trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name or "", metric_alias, fetch_hours)
+        rows = [trend_rows[-1]] if trend_rows else []
 
     series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
     fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, rows[0] if rows else {}, active_window_label)
@@ -698,6 +710,66 @@ def _handle_point_lookup(
         "window_start": window_start,
         "window_end": window_end,
         "window_label": active_window_label,
+    }
+
+
+_ANOMALY_CORE_METRICS = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature"]
+
+
+def _handle_anomaly_multi(
+    *,
+    intent: IntentType,
+    explicit_metrics: List[str],
+    requested_metrics: List[str],
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Anomaly scan across all core metrics when the user didn't request a single specific one."""
+    if intent != IntentType.ANOMALY_ANALYSIS_DB:
+        return None
+    if not resolved_lab_name:
+        return None
+    # Defer to single-metric handler when user explicitly named exactly one metric.
+    if len(explicit_metrics) == 1:
+        return None
+
+    # When no metric was explicitly requested, always scan all core metrics so
+    # general questions like "any anomaly in the room?" get a full picture.
+    if explicit_metrics:
+        metrics_to_check = [m for m in requested_metrics if m in _ANOMALY_CORE_METRICS] or _ANOMALY_CORE_METRICS
+    else:
+        metrics_to_check = _ANOMALY_CORE_METRICS
+
+    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+    fetch_hours = max(window_hours, 6)
+
+    metric_results = []
+    all_rows: List[Dict[str, Any]] = []
+    metrics_used: List[str] = []
+    for metric in metrics_to_check:
+        rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, fetch_hours)
+        if not rows:
+            continue
+        anomalies = db_helpers.detect_anomaly_points(rows)
+        metric_results.append({"metric": metric, "rows": rows, "anomalies": anomalies})
+        all_rows.extend([{**row, "metric": metric} for row in rows])
+        metrics_used.append(metric)
+
+    if not metric_results:
+        return None
+
+    return {
+        "operation_type": "anomaly_multi",
+        "rows": all_rows,
+        "metric_results": metric_results,
+        "fallback_answer": db_helpers.build_multi_metric_anomaly_answer(
+            metric_results=metric_results,
+            window_label=window_label,
+            lab_name=resolved_lab_name,
+        ),
+        "metrics_used": metrics_used,
     }
 
 
@@ -735,6 +807,176 @@ def _handle_anomaly(
     }
 
 
+def _handle_temporal_comparison(
+    *,
+    question: str,
+    intent: IntentType,
+    metric_alias: str,
+    unit: str,
+    window_start: datetime,
+    window_end: datetime,
+    window_label: str,
+    resolved_lab_name: Optional[str],
+    requested_metrics: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Handle within-lab temporal period comparisons (today vs last week, this week vs last month, etc.)."""
+    if intent != IntentType.COMPARISON_DB:
+        return None
+    if not db_parsing.is_temporal_period_comparison(question):
+        return None
+    if db_parsing.is_baseline_reference_query(question):
+        return None
+
+    if not resolved_lab_name:
+        return {
+            "operation_type": "temporal_comparison",
+            "rows": [],
+            "fallback_answer": (
+                "Please specify a lab to run the period comparison "
+                "(e.g., 'today vs last week in smart_lab')."
+            ),
+            "metrics_used": [metric_alias],
+            "compared_spaces": [],
+        }
+
+    windows = db_parsing.extract_temporal_comparison_windows(question)
+    if not windows:
+        return None
+    current_start, current_end, current_label, ref_start, ref_end, ref_label = windows
+
+    is_multi = (
+        db_helpers.is_air_quality_query_text(question)
+        or db_helpers.is_comfort_assessment_query_text(question)
+    )
+    if is_multi and len(requested_metrics) >= 2:
+        cap = 8 if db_helpers.is_comfort_assessment_query_text(question) else 5
+        compare_metrics = [m for m in requested_metrics[:cap] if metric_registry.metric_column(m) is not None]
+    else:
+        compare_metrics = [metric_alias]
+
+    from datetime import timezone as _utc
+
+    def _parse_bucket_utc(bucket: Any) -> Optional[datetime]:
+        try:
+            return datetime.fromisoformat(str(bucket).replace("Z", "+00:00")).astimezone(_utc.utc)
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    current_start_utc = current_start.astimezone(_utc.utc)
+    current_end_utc = current_end.astimezone(_utc.utc)
+    ref_start_utc = ref_start.astimezone(_utc.utc)
+    ref_end_utc = ref_end.astimezone(_utc.utc)
+
+    full_start = min(current_start, ref_start)
+    full_window_hours = api_client.window_hours_from_datetimes(full_start, max(current_end, ref_end))
+
+    if len(compare_metrics) == 1:
+        metric = compare_metrics[0]
+        all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, full_window_hours)
+
+        def _in_period(row: dict, start_utc: datetime, end_utc: datetime) -> bool:
+            bucket_dt = _parse_bucket_utc(row.get("bucket"))
+            return bucket_dt is not None and start_utc <= bucket_dt < end_utc
+
+        current_vals = [float(r["value"]) for r in all_rows if r.get("value") is not None and _in_period(r, current_start_utc, current_end_utc)]
+        ref_vals = [float(r["value"]) for r in all_rows if r.get("value") is not None and _in_period(r, ref_start_utc, ref_end_utc)]
+
+        if not current_vals or not ref_vals:
+            return {
+                "operation_type": "temporal_comparison",
+                "rows": [],
+                "fallback_answer": (
+                    f"I couldn't find enough {metric} data in {resolved_lab_name} "
+                    f"to compare {current_label} against {ref_label}."
+                ),
+                "metric_alias": metric,
+                "metrics_used": [metric],
+                "compared_spaces": [resolved_lab_name],
+                "window_start": ref_start,
+                "window_end": current_end,
+                "window_label": f"{current_label} vs {ref_label}",
+            }
+
+        current_avg = sum(current_vals) / len(current_vals)
+        ref_avg = sum(ref_vals) / len(ref_vals)
+        delta = current_avg - ref_avg
+        pct = (delta / ref_avg * 100.0) if ref_avg != 0 else None
+
+        rows = [{
+            "lab_space": resolved_lab_name,
+            "period": current_label,
+            "avg_value": current_avg,
+            "reference_period": ref_label,
+            "reference_avg": ref_avg,
+            "delta_value": delta,
+            "delta_percent": pct,
+        }]
+        return {
+            "operation_type": "temporal_comparison",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_temporal_comparison_answer(
+                metric_aliases=[metric],
+                rows=rows,
+                current_label=current_label,
+                ref_label=ref_label,
+                lab_name=resolved_lab_name,
+                unit=unit,
+            ),
+            "metric_alias": metric,
+            "metrics_used": [metric],
+            "compared_spaces": [resolved_lab_name],
+            "window_start": ref_start,
+            "window_end": current_end,
+            "window_label": f"{current_label} vs {ref_label}",
+        }
+
+    # Multi-metric: fetch merged timeseries and split by period
+    all_rows = api_client.fetch_merged_timeseries(resolved_lab_name, compare_metrics, full_window_hours)
+
+    def _in_period(row: dict, start_utc: datetime, end_utc: datetime) -> bool:
+        bucket_dt = _parse_bucket_utc(row.get("bucket"))
+        return bucket_dt is not None and start_utc <= bucket_dt < end_utc
+
+    current_period_rows = [r for r in all_rows if _in_period(r, current_start_utc, current_end_utc)]
+    ref_period_rows = [r for r in all_rows if _in_period(r, ref_start_utc, ref_end_utc)]
+
+    comparison_row: Dict[str, Any] = {
+        "lab_space": resolved_lab_name,
+        "period": current_label,
+        "reference_period": ref_label,
+    }
+    for metric in compare_metrics:
+        c_vals = [float(r[metric]) for r in current_period_rows if r.get(metric) is not None]
+        r_vals = [float(r[metric]) for r in ref_period_rows if r.get(metric) is not None]
+        if c_vals and r_vals:
+            c_avg = sum(c_vals) / len(c_vals)
+            r_avg = sum(r_vals) / len(r_vals)
+            comparison_row[f"{metric}_current"] = c_avg
+            comparison_row[f"{metric}_reference"] = r_avg
+            comparison_row[f"{metric}_delta"] = c_avg - r_avg
+            comparison_row[metric] = c_avg
+
+    rows = [comparison_row]
+    return {
+        "operation_type": "temporal_comparison",
+        "rows": rows,
+        "fallback_answer": db_helpers.build_temporal_comparison_answer(
+            metric_aliases=compare_metrics,
+            rows=rows,
+            current_label=current_label,
+            ref_label=ref_label,
+            lab_name=resolved_lab_name,
+            unit=unit,
+        ),
+        "metric_alias": compare_metrics[0],
+        "metrics_used": compare_metrics,
+        "compared_spaces": [resolved_lab_name],
+        "window_start": ref_start,
+        "window_end": current_end,
+        "window_label": f"{current_label} vs {ref_label}",
+    }
+
+
 def _handle_comparison(
     *,
     question: str,
@@ -750,33 +992,21 @@ def _handle_comparison(
         return None
     if db_parsing.is_baseline_reference_query(question):
         return None
-    compared_spaces = db_parsing.extract_compared_spaces(question)
-    if len(compared_spaces) < 2:
+    if db_parsing.is_temporal_period_comparison(question):
+        return None
+    # Single-space fallback: fetch aggregation for the resolved lab
+    if resolved_lab_name:
+        window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+        rows = [agg] if agg else []
         return {
-            "operation_type": "comparison",
-            "rows": [],
-            "fallback_answer": (
-                "I need two explicit spaces for cross-space comparison (for example: "
-                "'smart_lab vs concrete_lab')."
-            ),
+            "operation_type": "aggregation",
+            "rows": rows,
+            "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
             "metrics_used": [metric_alias],
-            "compared_spaces": compared_spaces,
+            "compared_spaces": [resolved_lab_name],
         }
-
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-    rows = []
-    for slug in compared_spaces[:2]:
-        agg = api_client.fetch_aggregation_row(slug, metric_alias, window_hours)
-        if agg:
-            rows.append(agg)
-    rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
-    return {
-        "operation_type": "comparison",
-        "rows": rows,
-        "fallback_answer": db_helpers.build_comparison_answer(metric_alias, rows, window_label),
-        "metrics_used": [metric_alias],
-        "compared_spaces": compared_spaces[:2],
-    }
+    return None
 
 
 def _handle_default(
@@ -910,6 +1140,17 @@ def execute_intent_query(
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
         ),
+        lambda: _handle_temporal_comparison(
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+            requested_metrics=requested_metrics,
+        ),
         lambda: _handle_aggregation_multi(
             question=question,
             intent=intent,
@@ -925,6 +1166,15 @@ def execute_intent_query(
             intent=intent,
             metric_alias=metric_alias,
             unit=unit,
+            requested_metrics=requested_metrics,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
+        ),
+        lambda: _handle_anomaly_multi(
+            intent=intent,
+            explicit_metrics=explicit_metrics,
             requested_metrics=requested_metrics,
             window_start=window_start,
             window_end=window_end,

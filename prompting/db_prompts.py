@@ -37,9 +37,16 @@ TONE AND READABILITY:
 - Keep wording friendly, supportive, and human while staying evidence-grounded.
 - Prefer natural conversational phrasing over rigid policy/report language.
 - When risk is low, allow brief reassuring phrasing; when risk is elevated, stay calm and constructive.
-- You may use light emoji usage (1-3 relevant emojis per response) when it genuinely improves readability
-  (for example: ✅, ⚠️, 🌡️, 💧, 🌬️).
-- Do not overuse emojis, and never use emojis in place of concrete evidence or recommendations.
+- Use at most 2 emojis per response, only when they genuinely clarify status (e.g. ✅ for good, ⚠️ for concern).
+- Never use emojis as section headers or in place of concrete evidence.
+""".strip()
+
+COMPACT_DEFAULT_INSTRUCTION = """
+DEFAULT RESPONSE SHAPE (REQUIRED):
+- Start with exactly one short verdict sentence that directly answers the question.
+- Then provide at most 3 short bullets with key evidence.
+- Do not include recommendations unless the user explicitly asks for recommendations or next steps.
+- Do not include long background/context unless the user explicitly asks "why", "details", or "full report".
 """.strip()
 
 _BASE_DIRECTIVE = """
@@ -82,24 +89,39 @@ You are answering a current air-quality point lookup from a structured DB query 
 - If conditions are stable/good and no action is requested, end with assessment only (no recommendation bullets).
 - If any core metric is missing, call it out clearly and lower confidence in the overall assessment.
 - If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
-- Do not collapse the answer to a single sentence.
 """.strip()
 
 _BASE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
+The comparison may be cross-space (two labs) or temporal (same lab, two time periods).
+
+For cross-space comparisons:
 - Highlight which space is better/worse for each available metric and by how much.
+- Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
+
+For temporal (period-to-period) comparisons (operation_type "temporal_comparison"):
+- Lead with the direction and magnitude of change (e.g., "CO2 is 8% lower today than last week").
+- State the numeric values for both periods with their labels (e.g., "today: 850 ppm vs last week: 920 ppm").
+- Provide a brief plain-language interpretation of what the change means for occupant comfort or health.
+- For multi-metric temporal comparisons, summarize each metric that changed meaningfully.
+- If a metric has no data for one of the periods, state that explicitly.
+
+General rules for all comparisons:
 - Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Use `metric_coverage.available_metrics` and `metric_coverage.missing_metrics` from context as source of truth.
-- Call out missing metrics explicitly (especially TVOC for air-quality comparisons).
 - Never claim a metric is missing if it appears in `available_metrics` or has numeric values in rows.
-- Include practical actions only if the user asks for actions or the weaker metric is materially concerning.
+- Include practical actions only if the user asks for actions or the weaker metric/period is materially concerning.
 """.strip()
 
 _BASE_ANOMALY = """
 You are answering an anomaly analysis from a structured DB query result.
-- State whether anomalies were detected, when they occurred, and likely occupant impact.
-- If no anomalies are detected, say so explicitly.
-- Provide troubleshooting/monitoring actions when the user asks for next steps or anomalies are material.
+- Keep the answer compact by default.
+- IEQ is a well-defined composite Indoor Environmental Quality index. Do not question or speculate about what it represents.
+- Lead with a clear verdict: anomalies detected / no anomalies detected.
+- When multiple metrics are present (operation_type "anomaly_multi"), summarize which metrics had anomalies and which were clean. Name the metric, the anomalous value, and the time it occurred.
+- When no anomalies are found, briefly list the metrics that were checked and confirm they look normal.
+- Do not add a "Next Steps" or "Recommendations" section unless asked.
+- Use at most 1 emoji if it genuinely helps readability.
 """.strip()
 
 _BASE_DIAGNOSTIC = """
@@ -113,10 +135,14 @@ You are answering a root-cause diagnostic question about IEQ.
   possible data gaps or external factors.
 - Do NOT say data is unavailable if correlation_analysis is present in context.
 - Do NOT say "I cannot identify" if rows were returned - analyze what is there.
-- End with 2-3 targeted actions specific to the identified driver(s).
+- Only include actions/recommendations if the user explicitly asks.
 """.strip()
 
-_SUFFIX = f"\n\n{FRIENDLY_TONE_INSTRUCTION}\n\n{CITATION_FORMAT_INSTRUCTION}"
+_SUFFIX = (
+    f"\n\n{COMPACT_DEFAULT_INSTRUCTION}"
+    f"\n\n{FRIENDLY_TONE_INSTRUCTION}"
+    f"\n\n{CITATION_FORMAT_INSTRUCTION}"
+)
 
 DB_TOOL_RESPONSE_DIRECTIVE = f"{_BASE_DIRECTIVE}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = f"{_BASE_POINT_LOOKUP}{_SUFFIX}".strip()

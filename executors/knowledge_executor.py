@@ -37,10 +37,11 @@ except ImportError:
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from card-based retrieval context.
-- Answer the user's question directly and naturally.
-- For assessments, give an overall picture, highlight key metrics, note confidence if data is incomplete, and offer practical takeaways.
-- If the question is about risks, lead with the risk level and main drivers.
-- Ground recommendations in what the context actually says.
+- Start with exactly one short verdict sentence answering the question directly.
+- Then provide at most 3 short bullets with key grounded evidence.
+- If the question is about risks, lead with risk level and main drivers.
+- Do not provide recommendations unless the user explicitly asks for recommendations or next steps.
+- Do not include long background/context unless the user explicitly asks "why", "details", or "full report".
 """.strip()
 
 _TARGET_TZ = timezone(timedelta(hours=4))

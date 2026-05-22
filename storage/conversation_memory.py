@@ -37,7 +37,9 @@ _FOLLOW_UP_HINTS = (
     "also",
     "how about",
     "same",
-    "there",
+    "over there",
+    "in there",
+    "right there",
     "that room",
     "same room",
     "same lab",
@@ -70,6 +72,13 @@ _DEFINITIONAL_PHRASES = (
     "how do",
     "what do you mean",
     "tell me about",
+)
+# Questions with an explicit analytical intent carry their own metric scope — don't
+# inject a prior metric that would mislead the LLM router (e.g. appending "(ieq)" to
+# an anomaly question causes it to route as a current-status IEQ query instead).
+_ANALYTICAL_INTENT_RE = re.compile(
+    r"\b(anomal|spike|outlier|unusual|abnormal|deviation|"
+    r"trend|average|avg|compare|comparison|versus|vs)\b"
 )
 
 
@@ -221,15 +230,20 @@ def apply_routing_memory(
         carried_lab = memory.lab_name
 
     skip_time_phrase = _is_definitional_question(base_question)
+    # Questions with explicit analytical intent (anomaly, trend, comparison) already
+    # imply their own metric scope — injecting a prior metric would mislead the router.
+    skip_metric_carry = _is_definitional_question(base_question) or bool(
+        _ANALYTICAL_INTENT_RE.search(base_question.lower())
+    )
 
     if not skip_time_phrase and not has_time_window_hint and memory.time_phrase:
         effective_question = f"{effective_question} ({memory.time_phrase})"
         carried_time = memory.time_phrase
 
-    if not has_metric_reference and memory.metric:
+    if not skip_metric_carry and not has_metric_reference and memory.metric:
         effective_question = f"{effective_question} ({memory.metric})"
         carried_metric = memory.metric
-    elif not has_metric_reference and memory.topic_phrase:
+    elif not skip_metric_carry and not has_metric_reference and memory.topic_phrase:
         effective_question = f"{effective_question} ({memory.topic_phrase})"
         carried_metric = memory.topic_phrase
 

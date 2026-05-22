@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
 import time
 from typing import List, Optional
 
+import httpx
 import requests
 
 try:
@@ -47,6 +49,10 @@ _ANOMALY_RE = re.compile(r"\b(anomal|spike|outlier|unusual|abnormal|deviation)\b
 _AGGREGATION_RE = re.compile(r"\b(trend|average|avg|mean|sum|over\s+the|last\s+\d|past\s+\d|history|historical|weekly|daily)\b")
 _CURRENT_RE = re.compile(r"\b(current|now|right now|latest|at this moment|most recent)\b")
 _DEFINITION_RE = re.compile(r"\b(what\s+is|what\s+does|meaning\s+of|definition|define|explain)\b")
+_METRIC_VALUE_REQUEST_RE = re.compile(
+    r"\b(?:what(?:'s|\s+is)|how\s+is)\s+the\s+(?:current\s+)?"
+    r"(co2|pm\s*2\.?\s*5|pm25|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b"
+)
 
 _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
@@ -54,15 +60,15 @@ _SYSTEM_PROMPT = (
     '  "intent": one of [definition_explanation, current_status_db, aggregation_db, '
     "comparison_db, anomaly_analysis_db]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
-    '  "second_lab": second lab name for comparisons, else null\n'
+    '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, tvoc, humidity, temperature, light, sound, ieq]\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n\n'
     "Routing rules:\n"
-    "- definition_explanation: conceptual questions, what is X, how does X work, explain\n"
-    "- current_status_db: current/latest readings without a time range\n"
+    "- definition_explanation: conceptual questions about what a metric means (e.g. 'what is CO2?', 'what does IEQ mean?', 'explain TVOC')\n"
+    "- current_status_db: current/latest readings without a time range; ALSO use this when the question asks for the current value of a known metric using 'what is the [metric]?', 'what's the [metric]?', or 'how is the [metric]?' (definite article + metric name = value request, NOT a definition)\n"
     "- aggregation_db: trends, averages, summaries over a time window\n"
-    "- comparison_db: comparing two or more labs/spaces\n"
+    "- comparison_db: comparing two or more metrics within the same lab (e.g. 'how does humidity compare with comfort levels?', 'compare CO2 and temperature', 'humidity vs CO2'); OR comparing the same lab across two time periods (e.g. 'today vs last week'). Never use this for cross-space comparisons.\n"
     "- anomaly_analysis_db: anomalies, spikes, outliers, unusual readings\n\n"
     "Output only the JSON object, no markdown, no explanation."
 )
@@ -89,6 +95,8 @@ def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
     elif _AGGREGATION_RE.search(q):
         intent = IntentType.AGGREGATION_DB
     elif _CURRENT_RE.search(q):
+        intent = IntentType.CURRENT_STATUS_DB
+    elif _METRIC_VALUE_REQUEST_RE.search(q):
         intent = IntentType.CURRENT_STATUS_DB
     elif _DEFINITION_RE.search(q) and not lab_name:
         intent = IntentType.DEFINITION_EXPLANATION
@@ -203,6 +211,49 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
             plan = _parse_llm_response(raw, question, lab_name)
             if plan is not None:
                 return plan
+        except Exception:
+            pass
+
+    return _fallback_plan(question, lab_name)
+
+
+async def plan_route_async(question: str, lab_name: Optional[str] = None) -> RoutePlan:
+    """Async version of plan_route — uses httpx so the event loop is never blocked."""
+    base_url = router_base_url()
+    model = router_model()
+    timeout = router_timeout_seconds()
+    temperature = router_temperature()
+    thinking = router_thinking_enabled()
+    max_retries = router_max_retries()
+    jitter_ms = router_retry_jitter_ms()
+
+    user_message = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
+    options: dict = {"temperature": temperature, "num_predict": 256}
+    if thinking:
+        options["think"] = True
+
+    for attempt in range(max_retries):
+        if attempt > 0:
+            await asyncio.sleep((jitter_ms / 1000.0) * (1 + random.random()))
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{base_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": user_message},
+                        ],
+                        "stream": False,
+                        "options": options,
+                    },
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("message", {}).get("content", "")
+                plan = _parse_llm_response(raw, question, lab_name)
+                if plan is not None:
+                    return plan
         except Exception:
             pass
 

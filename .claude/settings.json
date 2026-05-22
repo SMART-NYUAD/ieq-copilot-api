@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(curl -s -X POST \"http://127.0.0.1:8001/query\" -H \"Content-Type: application/json\" -d '{\"question\": \"What is CO2?\", \"k\": 5, \"lab_name\": \"smart_lab\"}')",
+      "Bash(curl -s 'https://api.smart-crg.com/spaces/smart_lab/indoor-data?type=IAQ&interval=1&timeframe=48' -H 'accept: application/json')",
+      "Bash(curl -s 'https://api.smart-crg.com/spaces/smart_lab/indoor-data?type=ITC&interval=1&timeframe=48' -H 'accept: application/json')"
+    ]
+  }
+}

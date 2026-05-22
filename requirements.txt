@@ -7,4 +7,5 @@ pandas
 psycopg2-binary
 langchain-core
 langchain-ollama
+sentence-transformers
 

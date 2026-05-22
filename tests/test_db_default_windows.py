@@ -78,7 +78,38 @@ class DbDefaultWindowTests(unittest.TestCase):
         metric_alias, _ = pick_metric("What is the temperature and CO2 in smart_lab?")
         self.assertEqual(metric_alias, "temperature")
 
-    def test_invariants_block_comparison_without_explicit_second_space(self):
+    def test_invariants_block_deictic_room_reference_without_explicit_lab(self):
+        # "in the room" with no explicit lab in the question and no request_lab_name
+        # should trigger lab_scope_not_justified, even if resolved from conversation context.
+        result = validate_db_execution_invariants(
+            question="Is there any anomaly in the room?",
+            intent=IntentType.ANOMALY_ANALYSIS_DB,
+            selected_metric="ieq",
+            resolved_lab_name="smart_lab",  # carried over from context, NOT from this question
+            request_lab_name=None,
+            explicit_metrics=[],
+            hinted_metrics=[],
+            planner_hints={},
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("lab_scope_not_justified", result["violations"])
+
+    def test_invariants_allow_deictic_when_request_lab_name_provided(self):
+        # When the API caller explicitly sends lab_name, deictic reference is fine.
+        result = validate_db_execution_invariants(
+            question="Is there any anomaly in the room?",
+            intent=IntentType.ANOMALY_ANALYSIS_DB,
+            selected_metric="ieq",
+            resolved_lab_name="smart_lab",
+            request_lab_name="smart_lab",  # explicit API parameter
+            explicit_metrics=[],
+            hinted_metrics=[],
+            planner_hints={},
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_invariants_allow_within_space_comparison(self):
+        # Within-space metric comparisons no longer require a second space.
         result = validate_db_execution_invariants(
             question="Compare humidity in smart_lab this morning",
             intent=IntentType.COMPARISON_DB,
@@ -98,8 +129,8 @@ class DbDefaultWindowTests(unittest.TestCase):
                 }
             },
         )
-        self.assertFalse(result["allowed"])
-        self.assertIn("comparison_second_space_not_justified", result["violations"])
+        self.assertTrue(result["allowed"])
+        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
 
     def test_invariants_allow_single_lab_baseline_reference_comparison(self):
         result = validate_db_execution_invariants(
@@ -598,7 +629,8 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertIn("sound", metrics_used)
         self.assertIn("light", metrics_used)
 
-    def test_comparison_handler_never_falls_back_to_global_two_labs(self):
+    def test_comparison_handler_runs_single_lab_aggregation(self):
+        # Within-space comparison with a single metric falls back to aggregation for that lab.
         class _Cursor:
             def execute(self, _sql, _params):
                 return None
@@ -624,7 +656,9 @@ class DbDefaultWindowTests(unittest.TestCase):
             explicit_metrics=["humidity"],
             hinted_metrics=[],
         )
-        self.assertIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())
+        # Should return an aggregation result, not a cross-space error
+        self.assertNotIn("need two explicit spaces", str(result.get("fallback_answer") or "").lower())
+        self.assertIn("humidity", str(result.get("metrics_used") or "").lower())
 
     def test_baseline_reference_comparison_runs_single_lab_path(self):
         class _Cursor:

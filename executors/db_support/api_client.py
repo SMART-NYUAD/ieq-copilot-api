@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import httpx
 
 API_BASE_URL = "https://api.smart-crg.com"
+_MAX_CONCURRENT_API_CALLS = 6
+_T = TypeVar("_T")
 
 # Sensor metrics available via /metrics/{type}/agg-summary
 _SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature"}
@@ -37,6 +40,30 @@ def _api_sensor_slug(metric: str) -> Optional[str]:
 def _score_type(metric: str) -> Optional[str]:
     """Return the API score type string (IEQ, IAQ, …) or None."""
     return _SCORE_METRIC_MAP.get(metric.lower())
+
+
+def _run_parallel_tasks(tasks: Dict[str, Callable[[], _T]]) -> Dict[str, Optional[_T]]:
+    """Run independent API tasks concurrently with bounded worker count."""
+    if not tasks:
+        return {}
+    if len(tasks) == 1:
+        key, task = next(iter(tasks.items()))
+        try:
+            return {key: task()}
+        except Exception:
+            return {key: None}
+
+    results: Dict[str, Optional[_T]] = {}
+    max_workers = min(_MAX_CONCURRENT_API_CALLS, len(tasks))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            try:
+                results[key] = future.result()
+            except Exception:
+                results[key] = None
+    return results
 
 
 def window_hours_from_datetimes(window_start: datetime, window_end: Optional[datetime] = None) -> int:
@@ -203,6 +230,40 @@ def fetch_aggregation_row(
     return None
 
 
+def fetch_ieq_latest_with_subindices(slug: str, timeframe: int = 48) -> Dict[str, Any]:
+    """Fetch latest value for each IEQ sub-index via separate indoor-data calls.
+
+    The API returns newest-first; we pick the reading with the latest bucket.
+    """
+    score_types = {"iaq": "IAQ", "itc": "ITC", "iac": "IAC", "iil": "IIL"}
+    responses = _run_parallel_tasks(
+        {
+            key: (
+                lambda score_type=score_type: fetch_indoor_data(
+                    slug,
+                    score_type,
+                    interval=1,
+                    timeframe=timeframe,
+                )
+            )
+            for key, score_type in score_types.items()
+        }
+    )
+    result: Dict[str, Any] = {}
+    for key in ("iaq", "itc", "iac", "iil"):
+        data = responses.get(key)
+        if not data:
+            continue
+        readings = data.get("readings") or []
+        if not readings:
+            continue
+        latest = max(readings, key=lambda r: str(r.get("bucket") or ""))
+        val = latest.get("value")
+        if val is not None:
+            result[key] = val
+    return result
+
+
 def fetch_multi_metric_point_row(slug: str, metrics: List[str]) -> Dict[str, Any]:
     """Return a single row with the latest average for each metric using /metrics endpoint."""
     row: Dict[str, Any] = {"lab_space": slug}
@@ -220,14 +281,17 @@ def fetch_multi_metric_point_row(slug: str, metrics: List[str]) -> Dict[str, Any
         elif score and metric == "ieq":
             pass  # already set above
         elif score:
-            # ITC/IAC/IAQ/IIL not in /metrics, skip (data comes from indoor-data endpoint)
             row[metric] = None
+    if "ieq" in metrics:
+        sub = fetch_ieq_latest_with_subindices(slug)
+        if sub.get("ieq") is not None and row.get("ieq") is None:
+            row["ieq"] = sub["ieq"]
+        for key in ("iaq", "itc", "iac", "iil"):
+            if sub.get(key) is not None:
+                row[key] = sub[key]
     return row
 
 
-# NOTE: Sequential — one HTTP call per metric. Latency scales linearly with
-# len(metrics). Callers (_handle_aggregation_multi, _handle_comparison_multi,
-# _handle_point_lookup) should limit metrics to what is actually needed.
 def fetch_multi_metric_agg_row(
     slug: str,
     metrics: List[str],
@@ -235,8 +299,20 @@ def fetch_multi_metric_agg_row(
 ) -> Dict[str, Any]:
     """Return a row with avg/min/max/stddev_placeholder for each metric."""
     row: Dict[str, Any] = {"lab_space": slug, "reading_count": 0}
+    agg_by_metric = _run_parallel_tasks(
+        {
+            metric: (
+                lambda metric_name=metric: fetch_aggregation_row(
+                    slug,
+                    metric_name,
+                    window_hours,
+                )
+            )
+            for metric in metrics
+        }
+    )
     for metric in metrics:
-        agg = fetch_aggregation_row(slug, metric, window_hours)
+        agg = agg_by_metric.get(metric)
         if agg:
             row[metric] = agg.get("avg_value")
             row[f"{metric}_min"] = agg.get("min_value")
@@ -303,9 +379,22 @@ def fetch_merged_timeseries(
     interval_hours: int = 1,
 ) -> List[Dict[str, Any]]:
     """Fetch per-bucket time series for multiple metrics, merged by timestamp."""
+    series_by_metric = _run_parallel_tasks(
+        {
+            metric: (
+                lambda metric_name=metric: fetch_timeseries_rows(
+                    slug,
+                    metric_name,
+                    window_hours,
+                    interval_hours,
+                )
+            )
+            for metric in metrics
+        }
+    )
     by_bucket: Dict[str, Dict[str, Any]] = {}
     for metric in metrics:
-        series = fetch_timeseries_rows(slug, metric, window_hours, interval_hours)
+        series = series_by_metric.get(metric) or []
         for row in series:
             bucket = str(row.get("bucket") or "")
             if not bucket:

@@ -5,27 +5,29 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from fastapi.concurrency import run_in_threadpool
+
 try:
-    from executors.db_query_executor import run_db_query, stream_db_query, stream_db_tokens
+    from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_query, stream_db_tokens
     from executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
         stream_knowledge_tokens,
     )
     from query_routing.intent_classifier import IntentType
-    from query_routing.llm_router_planner import plan_route
+    from query_routing.llm_router_planner import plan_route, plan_route_async
     from query_routing.metadata_builders import derive_ui_contract
     from query_routing.router_types import RoutePlan, RouteExecutor
     from storage.conversation_memory import apply_routing_memory, extract_routing_memory
 except ImportError:
-    from ..executors.db_query_executor import run_db_query, stream_db_query, stream_db_tokens
+    from ..executors.db_query_executor import prepare_db_query, run_db_query, stream_db_query, stream_db_tokens
     from ..executors.knowledge_executor import (
         answer_env_question_with_metadata,
         stream_answer_env_question,
         stream_knowledge_tokens,
     )
     from .intent_classifier import IntentType
-    from .llm_router_planner import plan_route
+    from .llm_router_planner import plan_route, plan_route_async
     from .metadata_builders import derive_ui_contract
     from .router_types import RoutePlan, RouteExecutor
     from ..storage.conversation_memory import apply_routing_memory, extract_routing_memory
@@ -194,6 +196,10 @@ def execute_query(
     return _execute_db(effective_question, k, effective_lab, route)
 
 
+def _status_event(stage: str, message: str) -> str:
+    return f"data: {json.dumps({'event': 'status', 'stage': stage, 'message': message})}\n\n"
+
+
 async def stream_query(
     question: str,
     k: int,
@@ -202,7 +208,9 @@ async def stream_query(
     conversation_context: str = "",
 ) -> AsyncIterator[str]:
     effective_question, effective_lab = _resolve_context(question, lab_name, conversation_context)
-    route = plan_route(effective_question, effective_lab)
+
+    yield _status_event("routing", "Classifying question…")
+    route = await plan_route_async(effective_question, effective_lab)
     executor = _choose_executor(route)
     use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA
 
@@ -210,6 +218,7 @@ async def stream_query(
     yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
 
     if use_knowledge_executor:
+        yield _status_event("searching_knowledge", "Searching knowledge base…")
         async for chunk in stream_knowledge_tokens(
             user_question=effective_question,
             k=max(1, min(k, 8)),
@@ -219,11 +228,23 @@ async def stream_query(
         return
 
     planner_hints = _build_planner_hints(route)
+
+    yield _status_event("querying_db", "Fetching sensor data…")
+    query_context = await run_in_threadpool(
+        prepare_db_query,
+        effective_question,
+        route.intent,
+        effective_lab,
+        planner_hints,
+    )
+
+    yield _status_event("building_response", "Building response…")
     async for chunk in stream_db_tokens(
         question=effective_question,
         intent=route.intent,
         lab_name=effective_lab,
         planner_hints=planner_hints,
+        query_context=query_context,
     ):
         yield chunk
 

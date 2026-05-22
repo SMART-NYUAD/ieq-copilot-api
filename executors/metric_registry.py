@@ -66,6 +66,34 @@ METRICS: Dict[str, Dict[str, Any]] = {
         "unit": "%",
         "display": "Air Contribution",
     },
+    "iaq": {
+        "column": "iaq_value",
+        "unit": "index",
+        "display": "IAQ Sub-index",
+        "good_above": 75,
+        "warning_above": 50,
+    },
+    "itc": {
+        "column": "itc_value",
+        "unit": "index",
+        "display": "ITC Sub-index",
+        "good_above": 75,
+        "warning_above": 50,
+    },
+    "iac": {
+        "column": "iac_value",
+        "unit": "index",
+        "display": "IAC Sub-index",
+        "good_above": 75,
+        "warning_above": 50,
+    },
+    "iil": {
+        "column": "iil_value",
+        "unit": "index",
+        "display": "IIL Sub-index",
+        "good_above": 75,
+        "warning_above": 50,
+    },
 }
 
 # Aliases: non-canonical names → canonical names

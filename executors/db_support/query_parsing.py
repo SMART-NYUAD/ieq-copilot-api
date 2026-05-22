@@ -41,14 +41,33 @@ _BASELINE_REFERENCE_HINTS = (
     "reference",
     "deviation",
 )
+_TEMPORAL_CURRENT_PATTERNS = (
+    r"\btoday\b",
+    r"\bthis\s+week\b",
+    r"\bthis\s+month\b",
+)
+_TEMPORAL_REFERENCE_PATTERNS = (
+    r"\byesterday\b",
+    r"\blast\s+week\b",
+    r"\blast\s+month\b",
+    r"\blast\s+\d+\s+days?\b",
+    r"\blast\s+\d+\s+hours?\b",
+)
 _DEICTIC_SCOPE_HINTS = (
-    " there",
     " over there",
+    " in there",
+    " right there",
     " that room",
     " this room",
     " same room",
     " same lab",
     " same space",
+    " in the room",
+    " in this room",
+    " the room",
+    " the lab",
+    " in the lab",
+    " in here",
 )
 _GLOBAL_SCOPE_HINTS = (
     "all labs",
@@ -296,6 +315,87 @@ def is_baseline_reference_query(question: str) -> bool:
     return any(token in q for token in _BASELINE_REFERENCE_HINTS)
 
 
+def is_temporal_period_comparison(question: str) -> bool:
+    """Return True when the question compares within the same lab across two explicit time periods."""
+    q = str(question or "").strip().lower()
+    has_current = any(re.search(pat, q) is not None for pat in _TEMPORAL_CURRENT_PATTERNS)
+    has_reference = any(re.search(pat, q) is not None for pat in _TEMPORAL_REFERENCE_PATTERNS)
+    return has_current and has_reference
+
+
+def extract_temporal_comparison_windows(
+    question: str,
+) -> Optional[Tuple[datetime, datetime, str, datetime, datetime, str]]:
+    """
+    Extract both time windows for a temporal period comparison query.
+    Returns (current_start, current_end, current_label, ref_start, ref_end, ref_label)
+    or None if both periods cannot be resolved.
+    """
+    q = str(question or "").strip().lower()
+    now = datetime.now(db_time_windows.TARGET_TZ)
+
+    current_start: Optional[datetime] = None
+    current_end: Optional[datetime] = None
+    current_label: str = ""
+
+    if re.search(r"\btoday\b", q):
+        current_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_end = now
+        current_label = "today"
+    elif re.search(r"\bthis\s+week\b", q):
+        current_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        current_end = now
+        current_label = "this week"
+    elif re.search(r"\bthis\s+month\b", q):
+        current_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        current_end = now
+        current_label = "this month"
+
+    if current_start is None:
+        return None
+
+    ref_start: Optional[datetime] = None
+    ref_end: Optional[datetime] = None
+    ref_label: str = ""
+
+    if re.search(r"\byesterday\b", q):
+        ref_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        ref_end = ref_start + timedelta(days=1)
+        ref_label = "yesterday"
+    elif re.search(r"\blast\s+week\b", q):
+        start_of_week = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        ref_start = start_of_week - timedelta(days=7)
+        ref_end = start_of_week
+        ref_label = "last week"
+    elif re.search(r"\blast\s+month\b", q):
+        this_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if now.month == 1:
+            ref_start = this_month_start.replace(year=now.year - 1, month=12)
+        else:
+            ref_start = this_month_start.replace(month=now.month - 1)
+        ref_end = this_month_start
+        ref_label = "last month"
+    else:
+        days_m = re.search(r"\blast\s+(\d+)\s+days?\b", q)
+        if days_m:
+            days = max(1, min(int(days_m.group(1)), 366))
+            ref_start = now - timedelta(days=days)
+            ref_end = now
+            ref_label = f"last {days} days"
+        else:
+            hours_m = re.search(r"\blast\s+(\d+)\s+hours?\b", q)
+            if hours_m:
+                hours = max(1, min(int(hours_m.group(1)), 24 * 31))
+                ref_start = now - timedelta(hours=hours)
+                ref_end = now
+                ref_label = f"last {hours} hours"
+
+    if ref_start is None:
+        return None
+
+    return (current_start, current_end, current_label, ref_start, ref_end, ref_label)
+
+
 def is_generic_air_quality_scope_query(question: str) -> bool:
     """Detect broad IEQ/air-quality asks where metric/time defaults are acceptable."""
     q = str(question or "").strip().lower()
@@ -413,8 +513,10 @@ def validate_db_execution_invariants(
         or has_explicit_second_space
         or has_global_scope_hint
     )
-    if has_deictic_scope_hint and resolved_lab_name is None and not request_lab_name:
-        # Pronoun-style scope ("there"/"same room") should not fan out globally.
+    if has_deictic_scope_hint and not has_explicit_lab_scope and not request_lab_name:
+        # Vague room references ("in the room", "here", etc.) without an explicit lab
+        # name in the question should not silently use a lab inferred from conversation
+        # context — ask for clarification instead. This applies to all DB intents.
         lab_justified = False
     if (
         not has_global_scope_hint
@@ -446,19 +548,6 @@ def validate_db_execution_invariants(
         violations.append("lab_scope_not_justified")
     if not db_scope_justified:
         violations.append("db_scope_not_justified")
-    single_lab_metric_comparison = (
-        intent == IntentType.COMPARISON_DB
-        and len(explicit_metrics) >= 2
-        and (resolved_lab_name is not None or has_lab_hint or bool(request_lab_name))
-    )
-    if (
-        intent == IntentType.COMPARISON_DB
-        and not is_baseline_query
-        and not has_explicit_second_space
-        and not single_lab_metric_comparison
-    ):
-        violations.append("comparison_second_space_not_justified")
-
     allowed = len(violations) == 0
     return {
         "allowed": allowed,
@@ -497,6 +586,12 @@ def planner_card_controls(planner_hints: Optional[Dict[str, Any]]) -> Tuple[bool
         max_cards = 2
     max_cards = max(1, min(4, max_cards))
     return needs_cards, card_topics, max_cards
+
+
+def has_explicit_time_hint(question: str) -> bool:
+    """Return True if the question contains an explicit time window reference."""
+    q = str(question or "").lower()
+    return _TIME_HINT_RE.search(q) is not None
 
 
 def wants_correlation(question: str) -> bool:

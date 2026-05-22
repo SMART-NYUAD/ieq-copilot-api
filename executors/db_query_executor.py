@@ -159,8 +159,21 @@ def _build_compact_llm_rows_and_summary(rows: List[Dict[str, Any]]) -> Tuple[Lis
 def _build_metric_coverage(rows: List[Dict[str, Any]], metrics_used: List[str]) -> Dict[str, Any]:
     available: List[str] = []
     missing: List[str] = []
-    for metric in list(metrics_used or []):
-        has_value = any(row.get(metric) is not None for row in rows or [])
+    normalized_metrics = [str(metric or "").strip().lower() for metric in list(metrics_used or []) if metric]
+    single_metric_mode = len(normalized_metrics) == 1
+    for metric in normalized_metrics:
+        has_value = False
+        for row in rows or []:
+            if row.get(metric) is not None:
+                has_value = True
+                break
+            row_metric = str(row.get("metric") or "").strip().lower()
+            if row_metric == metric and row.get("value") is not None:
+                has_value = True
+                break
+            if single_metric_mode and row.get("value") is not None:
+                has_value = True
+                break
         if has_value:
             available.append(metric)
         else:
@@ -226,11 +239,6 @@ def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
         return (
             "I can answer this with measured data, but I need the lab first. "
             "Which lab should I use (for example: smart_lab, concrete_lab, or shores_office)?"
-        )
-    if "comparison_second_space_not_justified" in violations:
-        return (
-            "I can run cross-space comparison once both spaces are explicit. "
-            "Please name two labs (for example: smart_lab vs concrete_lab)."
         )
     if "metric_not_justified" in violations and "time_window_not_justified" in violations:
         return (
@@ -410,6 +418,7 @@ def prepare_db_query(
     return {
         "intent": intent,
         "metric_alias": metric_alias,
+        "metrics_used": metrics_used,
         "window_label": window_label,
         "rows": rows,
         "payload": payload,
@@ -465,6 +474,7 @@ def _render_db_answer_with_llm(
     correlation: Optional[Dict[str, Any]] = None,
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    metrics_used: Optional[List[str]] = None,
 ) -> Tuple[str, bool, List[Dict[str, Any]]]:
     llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
     payload = db_helpers.build_db_payload(
@@ -482,7 +492,7 @@ def _render_db_answer_with_llm(
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     payload["metric_coverage"] = _build_metric_coverage(
         rows=rows,
-        metrics_used=_infer_metrics_from_rows(rows=rows, fallback_metric=metric_alias),
+        metrics_used=list(metrics_used or _infer_metrics_from_rows(rows=rows, fallback_metric=metric_alias)),
     )
     if correlation:
         if isinstance(correlation, dict) and "correlations" in correlation:
@@ -577,6 +587,7 @@ def run_db_query(
         correlation=context.get("correlation"),
         knowledge_cards=context.get("knowledge_cards"),
         guideline_records=context.get("guideline_records"),
+        metrics_used=list(context.get("metrics_used") or []),
     )
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
@@ -628,6 +639,7 @@ def run_db_query(
         "footnotes": footnotes,
         "indexed_sources": indexed_sources,
         "data": context["rows"],
+        "metrics_used": list(context.get("metrics_used") or []),
         "cards_retrieved": int(context.get("cards_retrieved") or 0),
         "correlation": context.get("correlation"),
         "timescale": context["timescale"],
@@ -648,14 +660,20 @@ async def stream_db_tokens(
     think: Optional[bool] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncIterator[str]:
+    from fastapi.concurrency import run_in_threadpool
+
     query_text = str(question or "").strip()
-    context = query_context or prepare_db_query(
-        question=question,
-        intent=intent,
-        lab_name=lab_name,
-        planner_hints=planner_hints,
-        guideline_records=guideline_records,
-    )
+    if query_context is None:
+        context = await run_in_threadpool(
+            prepare_db_query,
+            question,
+            intent,
+            lab_name,
+            planner_hints,
+            guideline_records,
+        )
+    else:
+        context = query_context
     if context.get("invariant_violation"):
         fallback = str(context.get("fallback_answer") or "")
         yield f"data: {json.dumps({'event': 'token', 'text': fallback})}\n\n"
@@ -676,7 +694,7 @@ async def stream_db_tokens(
         rows=list(context.get("rows") or []),
         context_payload=dict(context.get("payload") or {}),
     )
-    guideline_records = get_thresholds_for_metrics(citation_metrics)
+    guideline_records = await run_in_threadpool(get_thresholds_for_metrics, citation_metrics)
     numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
     context["indexed_sources"] = indexed_sources
 

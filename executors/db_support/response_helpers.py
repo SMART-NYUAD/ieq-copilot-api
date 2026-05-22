@@ -386,6 +386,35 @@ def build_anomaly_answer(
     )
 
 
+def build_multi_metric_anomaly_answer(
+    metric_results: List[Dict[str, Any]],
+    window_label: str,
+    lab_name: Optional[str],
+) -> str:
+    """Summarize anomaly detection across multiple metrics."""
+    scope = lab_name or "selected scope"
+    flagged = [(r["metric"], r["anomalies"], r["rows"]) for r in metric_results if r.get("anomalies")]
+    if not flagged:
+        metrics_checked = ", ".join(r["metric"] for r in metric_results if r.get("rows"))
+        return (
+            f"No strong anomalies were detected for {scope} in {window_label} "
+            f"across metrics checked: {metrics_checked}."
+        )
+    parts = []
+    for metric, anomalies, rows in flagged:
+        top = sorted(anomalies, key=lambda x: float(x.get("score") or 0.0), reverse=True)[:2]
+        details = ", ".join(
+            f"{item['bucket']} ({float(item.get('value') or 0.0):.2f})"
+            for item in top
+            if item.get("bucket") is not None
+        )
+        parts.append(f"{metric}: {len(anomalies)} anomaly point(s) — {details}")
+    return (
+        f"Anomalies detected for {scope} in {window_label}:\n"
+        + "\n".join(f"  • {p}" for p in parts)
+    )
+
+
 def build_comparison_answer(metric_alias: str, rows: List[Dict], window_label: str) -> str:
     if len(rows) < 2:
         return (
@@ -398,6 +427,63 @@ def build_comparison_answer(metric_alias: str, rows: List[Dict], window_label: s
     return (
         f"In {window_label}, {left.get('lab_space')} is {abs(delta):.2f} {direction} than "
         f"{right.get('lab_space')} for average {metric_alias}."
+    )
+
+
+def build_temporal_comparison_answer(
+    metric_aliases: List[str],
+    rows: List[Dict[str, Any]],
+    current_label: str,
+    ref_label: str,
+    lab_name: Optional[str],
+    unit: str = "value",
+) -> str:
+    scope = lab_name or "selected scope"
+    if not rows:
+        return (
+            f"I couldn't find enough data to compare {current_label} against {ref_label} "
+            f"for {scope}."
+        )
+    row = rows[0]
+    if len(metric_aliases) == 1:
+        metric = metric_aliases[0]
+        current_avg = row.get("avg_value")
+        ref_avg = row.get("reference_avg")
+        if current_avg is None or ref_avg is None:
+            return (
+                f"I couldn't find enough {metric} data to compare {current_label} against "
+                f"{ref_label} for {scope}."
+            )
+        delta = float(row.get("delta_value") or (float(current_avg) - float(ref_avg)))
+        pct = row.get("delta_percent")
+        direction = "higher" if delta >= 0 else "lower"
+        pct_text = f" ({abs(float(pct)):.1f}% {direction})" if pct is not None else f" ({direction})"
+        return (
+            f"In {scope}, average {metric} for {current_label} is {float(current_avg):.2f} {unit} "
+            f"vs {float(ref_avg):.2f} {unit} for {ref_label}{pct_text}."
+        )
+    parts: List[str] = []
+    for metric in metric_aliases:
+        current_v = row.get(f"{metric}_current")
+        ref_v = row.get(f"{metric}_reference")
+        delta_v = row.get(f"{metric}_delta")
+        if current_v is None or ref_v is None:
+            continue
+        if delta_v is None:
+            delta_v = float(current_v) - float(ref_v)
+        direction = "higher" if float(delta_v) >= 0 else "lower"
+        parts.append(
+            f"{metric}: {float(current_v):.2f} ({current_label}) vs {float(ref_v):.2f} ({ref_label}) "
+            f"— {abs(float(delta_v)):.2f} {direction}"
+        )
+    if not parts:
+        return (
+            f"I found data for {scope} but couldn't compute comparable values "
+            f"for {current_label} vs {ref_label}."
+        )
+    return (
+        f"Period comparison for {scope} — {current_label} vs {ref_label}:\n"
+        + "\n".join(f"  • {p}" for p in parts)
     )
 
 
