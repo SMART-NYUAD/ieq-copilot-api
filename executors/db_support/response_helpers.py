@@ -309,6 +309,302 @@ def build_timeseries_answer(metric_alias: str, rows: List[Dict], window_label: s
     )
 
 
+def normalize_series_rows(rows: List[Dict[str, Any]], metric_alias: str) -> List[Dict[str, Any]]:
+    """Extract chronological bucket/value points from handler rows."""
+    points: List[Dict[str, Any]] = []
+    metric_key = str(metric_alias or "").strip().lower()
+    for row in rows or []:
+        row_metric = str(row.get("metric") or "").strip().lower()
+        if metric_key and row_metric and row_metric != metric_key:
+            continue
+        bucket = row.get("bucket")
+        value = row.get("value")
+        if value is None and metric_key and row.get(metric_key) is not None:
+            value = row.get(metric_key)
+        if bucket is None or value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        points.append(
+            {
+                "at": bucket,
+                "value": numeric_value,
+                "lab_space": row.get("lab_space"),
+            }
+        )
+    points.sort(key=lambda point: str(point.get("at") or ""))
+    return points
+
+
+def _trend_direction(percent_change: Optional[float]) -> str:
+    if percent_change is None:
+        return "unknown"
+    if percent_change > 2.0:
+        return "rising"
+    if percent_change < -2.0:
+        return "falling"
+    return "stable"
+
+
+def build_backend_semantic_state(analysis: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not analysis or not analysis.get("window_stats"):
+        return None
+    return {
+        key: analysis[key]
+        for key in (
+            "window_stats",
+            "change_analysis",
+            "notable_events",
+            "data_granularity",
+            "granularity_note",
+        )
+        if key in analysis
+    }
+
+
+_MULTI_METRIC_OPERATIONS = frozenset(
+    {
+        "comparison",
+        "comparison_multi_metric",
+        "temporal_comparison",
+        "baseline_reference_comparison",
+        "anomaly_multi",
+    }
+)
+
+
+def _should_attach_authoritative_bounds(
+    *,
+    operation_type: Optional[str],
+    metrics_used: Optional[List[str]],
+) -> bool:
+    if str(operation_type or "").strip().lower() in _MULTI_METRIC_OPERATIONS:
+        return False
+    normalized = [str(m or "").strip().lower() for m in list(metrics_used or []) if m]
+    return len(normalized) <= 1
+
+
+def _build_authoritative_bounds_block(
+    *,
+    metric: str,
+    unit: str,
+    window_stats: Dict[str, Any],
+    notable_events: List[Any],
+    display_start: str = "",
+    display_end: str = "",
+    window_label: str = "",
+) -> Dict[str, Any]:
+    min_value = float(window_stats["min"])
+    max_value = float(window_stats["max"])
+    mean_raw = window_stats.get("mean")
+    mean_value = float(mean_raw) if mean_raw is not None else None
+    unit_display = unit or metric_registry.metric_unit(metric) or "value"
+    rules = [
+        f"These bounds apply only to {metric} ({unit_display}), not other metrics in the question.",
+        "Every value you cite for this metric must fall within allowed_value_min and allowed_value_max.",
+        "Use peak_value/peak_at and trough_value/trough_at for extrema; do not invent other peaks or times.",
+        "If notable_events_count is 0, do not describe spikes, surges, or brief peaks.",
+        "Values are hourly averages; do not claim sub-hour spikes.",
+    ]
+    if metric == "ieq":
+        rules.append(
+            "IEQ is a unitless index (0–100) where higher = better, lower = worse. "
+            "Score bands: >75 high quality, 51–75 medium, 26–50 moderate, ≤25 low quality. "
+            "Never append % or %RH to IEQ values. "
+            "A high ITC score means GOOD thermal comfort (comfortable), NOT hot/warm/stuffy. "
+            "These bands apply to IEQ and all sub-indices (IAQ, ITC, IAC, IIL)."
+        )
+    elif metric == "humidity" or unit_display.lower() in {"%rh", "%"}:
+        rules.append("Express humidity in %RH only.")
+    elif metric == "co2" or unit_display.lower() == "ppm":
+        rules.append("Express CO2 in ppm only.")
+    block: Dict[str, Any] = {
+        "metric": metric,
+        "unit": unit_display,
+        "allowed_value_min": round(min_value, 4),
+        "allowed_value_max": round(max_value, 4),
+        "window_mean": round(mean_value, 4) if mean_value is not None else None,
+        "peak_value": round(max_value, 4),
+        "peak_at": window_stats.get("max_at"),
+        "trough_value": round(min_value, 4),
+        "trough_at": window_stats.get("min_at"),
+        "notable_events_count": len(notable_events),
+        "rules": rules,
+    }
+    if display_start and display_end:
+        block["analysis_window_display"] = f"{display_start} to {display_end}"
+    elif window_label:
+        block["analysis_window_label"] = window_label
+    return block
+
+
+def enrich_backend_semantic_state(
+    analysis: Optional[Dict[str, Any]],
+    *,
+    operation_type: Optional[str] = None,
+    metrics_used: Optional[List[str]] = None,
+    display_start: str = "",
+    display_end: str = "",
+    window_label: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Attach authoritative_bounds for single-metric time-series answers only."""
+    state = build_backend_semantic_state(analysis)
+    if not state or not _should_attach_authoritative_bounds(
+        operation_type=operation_type,
+        metrics_used=metrics_used,
+    ):
+        return state
+
+    ts = (analysis or {}).get("time_series") or {}
+    metric = str(ts.get("metric") or "").strip().lower()
+    unit = str(ts.get("unit") or "").strip()
+    if not metric:
+        return state
+
+    state["authoritative_bounds"] = _build_authoritative_bounds_block(
+        metric=metric,
+        unit=unit,
+        window_stats=state["window_stats"],
+        notable_events=list(state.get("notable_events") or []),
+        display_start=display_start,
+        display_end=display_end,
+        window_label=window_label,
+    )
+    return state
+
+
+def build_time_series_analysis(
+    *,
+    series_rows: List[Dict[str, Any]],
+    metric_alias: str,
+    unit: str,
+    api_trend_pct: Optional[float] = None,
+    aggregation_summary: Optional[Dict[str, Any]] = None,
+    max_points: int = 48,
+) -> Dict[str, Any]:
+    """Derive spike/trend context for the LLM from hourly bucket rows."""
+    points = normalize_series_rows(series_rows, metric_alias)
+    analysis: Dict[str, Any] = {
+        "data_granularity": "hourly_average",
+        "granularity_note": (
+            "Values are hourly averages from the sensor API. "
+            "Sub-hour spikes may not be visible in this data."
+        ),
+    }
+    if not points:
+        return analysis
+
+    values = [float(point["value"]) for point in points]
+    point_count = len(values)
+    mean_value = sum(values) / point_count
+    min_value = min(values)
+    max_value = max(values)
+    min_idx = values.index(min_value)
+    max_idx = values.index(max_value)
+
+    window_stats: Dict[str, Any] = {
+        "min": round(min_value, 4),
+        "max": round(max_value, 4),
+        "mean": round(mean_value, 4),
+        "range": round(max_value - min_value, 4),
+        "point_count": point_count,
+        "min_at": points[min_idx]["at"],
+        "max_at": points[max_idx]["at"],
+    }
+    if point_count > 1:
+        window_stats["stddev"] = round(float(pd.Series(values).std(ddof=0)), 4)
+    if aggregation_summary:
+        for source_key, target_key in (
+            ("min_value", "api_min_value"),
+            ("max_value", "api_max_value"),
+            ("avg_value", "api_avg_value"),
+        ):
+            if aggregation_summary.get(source_key) is not None:
+                window_stats[target_key] = aggregation_summary.get(source_key)
+
+    first_value = values[0]
+    last_value = values[-1]
+    absolute_change = last_value - first_value
+    percent_change = (absolute_change / first_value * 100.0) if first_value else None
+    change_analysis: Dict[str, Any] = {
+        "first_value": round(first_value, 4),
+        "last_value": round(last_value, 4),
+        "absolute_change": round(absolute_change, 4),
+        "percent_change": round(percent_change, 2) if percent_change is not None else None,
+        "direction": _trend_direction(percent_change),
+    }
+    if api_trend_pct is not None:
+        try:
+            change_analysis["api_trend_pct"] = round(float(api_trend_pct), 2)
+        except (TypeError, ValueError):
+            pass
+
+    if point_count >= 4:
+        recent_values = values[-3:]
+        prior_values = values[-6:-3] if point_count >= 6 else values[:-3]
+        if prior_values:
+            recent_avg = sum(recent_values) / len(recent_values)
+            prior_avg = sum(prior_values) / len(prior_values)
+            change_analysis["recent_3h_avg"] = round(recent_avg, 4)
+            change_analysis["prior_3h_avg"] = round(prior_avg, 4)
+            if prior_avg:
+                change_analysis["recent_vs_prior_pct"] = round(
+                    (recent_avg - prior_avg) / prior_avg * 100.0,
+                    2,
+                )
+
+    if point_count >= 2:
+        max_jump = 0.0
+        max_jump_at: Optional[Any] = None
+        for idx in range(1, point_count):
+            jump = abs(values[idx] - values[idx - 1])
+            if jump > max_jump:
+                max_jump = jump
+                max_jump_at = points[idx]["at"]
+        change_analysis["max_hour_over_hour_jump"] = round(max_jump, 4)
+        change_analysis["max_jump_at"] = max_jump_at
+
+    anomaly_input = [
+        {"lab_space": point.get("lab_space"), "bucket": point["at"], "value": point["value"]}
+        for point in points
+    ]
+    anomalies = detect_anomaly_points(anomaly_input)
+    notable_events: List[Dict[str, Any]] = []
+    for anomaly in anomalies:
+        try:
+            value = float(anomaly.get("value"))
+        except (TypeError, ValueError):
+            continue
+        vs_mean_pct = ((value - mean_value) / mean_value * 100.0) if mean_value else None
+        notable_events.append(
+            {
+                "type": "spike" if value > mean_value else "dip",
+                "at": anomaly.get("bucket"),
+                "value": round(value, 4),
+                "z_score": round(float(anomaly.get("score") or 0.0), 2),
+                "vs_window_mean_pct": round(vs_mean_pct, 2) if vs_mean_pct is not None else None,
+            }
+        )
+
+    compact_points = points[-max_points:]
+    analysis.update(
+        {
+            "window_stats": window_stats,
+            "change_analysis": change_analysis,
+            "notable_events": notable_events,
+            "time_series": {
+                "metric": metric_alias,
+                "unit": unit,
+                "interval": "1h",
+                "points": [{"at": point["at"], "value": round(point["value"], 4)} for point in compact_points],
+            },
+        }
+    )
+    return analysis
+
+
 def detect_anomaly_points(rows: List[Dict[str, Any]], z_threshold: float = 2.5) -> List[Dict[str, Any]]:
     if len(rows) < 8:
         return []

@@ -585,6 +585,20 @@ class DbDefaultWindowTests(unittest.TestCase):
             ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"],
         )
 
+    def test_comfort_comparison_expands_metrics_beyond_humidity(self):
+        from executors.db_support.query_handlers import _requested_metrics
+
+        metrics = _requested_metrics(
+            "How does humidity compare with comfort levels today?",
+            explicit_metrics=["humidity"],
+            hinted_metrics=[],
+            intent=IntentType.COMPARISON_DB,
+        )
+        self.assertIn("humidity", metrics)
+        self.assertIn("ieq", metrics)
+        self.assertIn("itc", metrics)
+        self.assertGreaterEqual(len(metrics), 3)
+
     def test_comfort_assessment_pack_includes_sound_and_light(self):
         class _Cursor:
             def execute(self, _sql, _params):

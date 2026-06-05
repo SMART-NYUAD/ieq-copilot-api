@@ -45,7 +45,7 @@ COMPACT_DEFAULT_INSTRUCTION = """
 DEFAULT RESPONSE SHAPE (REQUIRED):
 - Start with exactly one short verdict sentence that directly answers the question.
 - Then provide at most 3 short bullets with key evidence.
-- Do not include recommendations unless the user explicitly asks for recommendations or next steps.
+- If the user asked for recommendations, next steps, or advice, provide specific actionable ones. If they did not ask, omit the recommendations section entirely.
 - Do not include long background/context unless the user explicitly asks "why", "details", or "full report".
 """.strip()
 
@@ -58,15 +58,29 @@ You are answering from a structured DB query result.
   2) metric-by-metric interpretation,
   3) explicit analysis window using the provided time bounds ("from ... to ..."),
   4) stability/trend summary and notable peaks/dips when those stats are available,
-  5) missing-metric coverage note (especially TVOC, PM2.5, CO2, humidity),
+  5) missing-metric coverage note only when those missing metrics are needed for the user's asked scope
+     (for example pollutant-focused assessment with CO2/PM2.5/TVOC),
   6) confidence qualifier tied to metric coverage.
 - For risk-focused questions, lead with the main risk level and concrete risk drivers first.
-- Provide recommendations only when asked, when conditions are concerning, or when user asks for next steps.
-- If recommendations are not needed, do not add a "Recommendations" section.
+- When the user asks for recommendations, next steps, or advice, you MUST provide specific actionable ones grounded in the data — never skip or refuse when asked.
+- If the user did not ask for recommendations, do not add a "Recommendations" section.
 - When `display_start` and `display_end` are present in measured room facts, copy those values verbatim
     when mentioning the analysis window. Do not rewrite or infer date/month values.
+- Backend Semantic State may include pre-computed trend analysis (`window_stats`, `change_analysis`, `notable_events`).
+  When `authoritative_bounds` is present, it applies only to that bounds.metric with bounds.unit — not to other metrics.
+  Use `authoritative_bounds` / `window_stats` for peaks, dips, and trends of that single metric only.
+  Use `time_series.points` in measured room facts for bucket-level detail when needed.
+  Respect `granularity_note`: values are hourly averages, not raw sub-hour spikes.
+- TIME-SERIES NUMERIC GROUNDING (only when `authoritative_bounds` is present for the metric you are describing):
+  - Cite only values between `allowed_value_min` and `allowed_value_max` with the correct `unit`.
+  - Use `peak_value`/`peak_at` and `trough_value`/`trough_at` for extrema — do not invent other peaks.
+  - If `notable_events_count` is 0, do not describe spikes or brief surges.
+  - IEQ is unitless (0–100); higher = better, lower = worse. Never use % or %RH for IEQ. Humidity uses %RH. CO2 uses ppm.
+  - A high ITC value means GOOD thermal comfort (comfortable). A low ITC value means poor thermal comfort. Do not interpret a high ITC as hot, warm, or stuffy.
+  - Do not cite guideline thresholds (e.g. 65% RH limits) as measured room readings.
 - If a metric was requested but not available, explicitly state it as "not available in this window".
 - If recommendations are included, keep them actionable and grounded in provided measurements/guidelines.
+- OCCUPANCY HOURS: These spaces operate 9 AM–5 PM. When describing trends, peaks, or dips across a 24-hour or multi-day window, note whether key events fall within occupied hours or off-hours. Off-hours lows are expected baseline behavior, not causes for concern.
 """.strip()
 
 _BASE_POINT_LOOKUP = """
@@ -80,20 +94,32 @@ You are answering a point lookup from a structured DB query result.
 
 _BASE_AIR_QUALITY_POINT_LOOKUP = """
 You are answering a current air-quality point lookup from a structured DB query result.
+- If conversation history mentions a different metric (e.g. temperature), ignore it unless the
+  current question explicitly asks about that metric; center on pollutants and IEQ/IAQ scope.
 - First, directly answer the exact question asked.
 - Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Provide an overall current air-quality status in plain language.
 - Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, TVOC, humidity, and IEQ when present).
+- If IEQ is present and IEQ sub-indices are available in rows/context, report every available sub-index explicitly:
+  IAQ (air quality), ITC (thermal comfort), IAC (acoustic comfort), and IIL (illumination).
+- Never swap sub-index meanings (IAC is acoustic comfort, not air quality).
+- IEQ scale is 0–100 where HIGHER = BETTER. A high ITC (e.g. 90+) means EXCELLENT thermal comfort — do NOT describe it as warm, hot, or stuffy. A low IAQ (e.g. <30) means poor air quality.
 - Explain what occupants would likely notice/feel.
-- Add recommendations only when the user asks for them or risk/quality concerns justify action.
-- If conditions are stable/good and no action is requested, end with assessment only (no recommendation bullets).
-- If any core metric is missing, call it out clearly and lower confidence in the overall assessment.
+- If the user asks for recommendations or actions, you MUST provide them. If conditions are stable and no recommendations were requested, end with the assessment only.
+- Only call out missing metrics when they are needed for the specific question type.
+  Do not add pollutant-missing disclaimers for IEQ/sub-index-only questions.
 - If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
 """.strip()
 
 _BASE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 The comparison may be cross-space (two labs) or temporal (same lab, two time periods).
+
+For metric-vs-comfort questions (e.g. humidity vs comfort / IEQ / thermal):
+- Compare each requested metric using values in `rows` and `metric_coverage` — not a single-metric trend summary.
+- Report humidity in %RH; IEQ and sub-indices (IAQ, ITC, IAC, IIL) as unitless scores (0–100), never with % or %RH.
+- Ignore `authoritative_bounds` unless it matches the metric you are discussing; it does not apply to multi-metric comparisons.
+- Answer how the metrics relate for occupants today (aligned, trade-off, or independent), using measured values only.
 
 For cross-space comparisons:
 - Highlight which space is better/worse for each available metric and by how much.
@@ -120,6 +146,7 @@ You are answering an anomaly analysis from a structured DB query result.
 - Lead with a clear verdict: anomalies detected / no anomalies detected.
 - When multiple metrics are present (operation_type "anomaly_multi"), summarize which metrics had anomalies and which were clean. Name the metric, the anomalous value, and the time it occurred.
 - When no anomalies are found, briefly list the metrics that were checked and confirm they look normal.
+- OCCUPANCY HOURS CONTEXT: These are working spaces operating 9 AM–5 PM. Metric drops during off-hours (evenings, nights, weekends) are expected unoccupied-condition behavior and must NOT be flagged as anomalies. Only flag off-hours events that are genuinely unusual for an unoccupied space (e.g. a CO2 spike at 2 AM).
 - Do not add a "Next Steps" or "Recommendations" section unless asked.
 - Use at most 1 emoji if it genuinely helps readability.
 """.strip()
@@ -135,7 +162,7 @@ You are answering a root-cause diagnostic question about IEQ.
   possible data gaps or external factors.
 - Do NOT say data is unavailable if correlation_analysis is present in context.
 - Do NOT say "I cannot identify" if rows were returned - analyze what is there.
-- Only include actions/recommendations if the user explicitly asks.
+- When the user asks for actions, recommendations, or what to do, provide specific actionable ones. Omit this section only when the user did not ask.
 """.strip()
 
 _SUFFIX = (

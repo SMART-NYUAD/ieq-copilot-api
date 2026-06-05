@@ -9,18 +9,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import calendar
 import re
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from query_routing.intent_classifier import IntentType
     from executors.db_support import time_windows as db_time_windows
-    from executors.db_support import api_client as db_api
     from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 except ImportError:
     from ...query_routing.intent_classifier import IntentType
     from . import time_windows as db_time_windows
-    from . import api_client as db_api
     from ..metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 
 _SPACE_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
@@ -102,44 +99,8 @@ _TIME_HINT_RE = re.compile(
     r")\b"
 )
 
-_LAB_NAMES_CACHE: Tuple[str, ...] = tuple()
-_LAB_NAMES_CACHE_TS: float = 0.0
-_LAB_NAMES_CACHE_TTL_SECONDS = 300.0
-
-
-def get_known_lab_names() -> Tuple[str, ...]:
-    """Fetch known space slugs from the REST API with short-lived cache."""
-    global _LAB_NAMES_CACHE
-    global _LAB_NAMES_CACHE_TS
-    now = time.time()
-    if _LAB_NAMES_CACHE and (now - _LAB_NAMES_CACHE_TS) < _LAB_NAMES_CACHE_TTL_SECONDS:
-        return _LAB_NAMES_CACHE
-    try:
-        spaces = db_api.fetch_spaces()
-        names = [str(s.get("slug") or "").strip().lower() for s in spaces if s.get("slug")]
-        resolved = tuple(sorted(set(n for n in names if n)))
-        if resolved:
-            _LAB_NAMES_CACHE = resolved
-            _LAB_NAMES_CACHE_TS = now
-        return resolved
-    except Exception:
-        return _LAB_NAMES_CACHE
-
-
-def build_lab_alias_map() -> Dict[str, str]:
-    alias_map: Dict[str, str] = {}
-    for canonical in get_known_lab_names():
-        alias_map[canonical] = canonical
-        alias_map[canonical.replace("_", " ")] = canonical
-        if canonical.endswith("_lab"):
-            base = canonical[: -len("_lab")].strip("_")
-            if base:
-                alias_map[base] = canonical
-                alias_map[base.replace("_", " ")] = canonical
-    return alias_map
-
-
 def resolve_lab_alias(raw_lab: Optional[str]) -> Optional[str]:
+    """Normalize a client-provided lab slug without remote validation."""
     raw = str(raw_lab or "").strip().lower()
     if not raw:
         return None
@@ -147,54 +108,23 @@ def resolve_lab_alias(raw_lab: Optional[str]) -> Optional[str]:
     token = re.sub(r"\s+", " ", token).strip()
     if not token:
         return None
-    alias_map = build_lab_alias_map()
-    if not alias_map:
-        return token.replace(" ", "_")
-
-    candidates: List[str] = []
-
-    def _push(value: str) -> None:
-        normalized = str(value or "").strip().lower()
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
-
-    _push(token)
-    _push(token.replace(" ", "_"))
-    _push(token.replace("_", " "))
-
-    if token.endswith(" lab"):
-        base = token[: -len(" lab")].strip()
-        _push(base)
-        _push(f"{base}_lab")
-    if token.endswith("_lab"):
-        base = token[: -len("_lab")].strip("_")
-        _push(base)
-        _push(base.replace("_", " "))
-    if " " not in token and "_" not in token:
-        _push(f"{token}_lab")
-
-    for candidate in candidates:
-        canonical = alias_map.get(candidate)
-        if canonical:
-            return canonical
     return token.replace(" ", "_")
 
 
 def resolve_labs_from_question(question: str) -> List[str]:
     q = (question or "").lower()
-    alias_map = build_lab_alias_map()
-    if not alias_map:
-        return []
-    hits: List[Tuple[int, str]] = []
-    for alias, canonical in alias_map.items():
-        pattern = rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])"
-        for match in re.finditer(pattern, q):
-            hits.append((match.start(), canonical))
-    hits.sort(key=lambda item: item[0])
     ordered_unique: List[str] = []
-    for _, canonical in hits:
-        if canonical not in ordered_unique:
-            ordered_unique.append(canonical)
+
+    def _append(lab: Optional[str]) -> None:
+        if lab and lab not in ordered_unique:
+            ordered_unique.append(lab)
+
+    for match in _SPACE_TOKEN_RE.finditer(q):
+        _append(resolve_lab_alias(match.group(1)))
+
+    for match in re.finditer(r"\b([a-z0-9]+)\s+lab\b", q):
+        _append(resolve_lab_alias(f"{match.group(1)}_lab"))
+
     return ordered_unique
 
 

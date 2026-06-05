@@ -278,7 +278,23 @@ def _build_prompt_text_from_messages(messages: List[Any]) -> str:
     return "\n\n".join(prompt_parts)
 
 
-def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Optional[bool]) -> str:
+def resolve_ollama_think(think: Optional[bool] = None) -> bool:
+    if think is not None:
+        return bool(think)
+    try:
+        from core_settings import ollama_thinking_enabled
+    except ImportError:
+        from ..core_settings import ollama_thinking_enabled
+    return ollama_thinking_enabled()
+
+
+def apply_ollama_think_to_payload(payload: Dict[str, Any], think: Optional[bool] = None) -> bool:
+    enabled = resolve_ollama_think(think)
+    payload["think"] = enabled
+    return enabled
+
+
+def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Optional[bool] = None) -> str:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
     payload: Dict[str, Any] = {
@@ -287,8 +303,7 @@ def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Option
         "stream": False,
         "temperature": temperature,
     }
-    if think is True:
-        payload["think"] = True
+    include_thinking = apply_ollama_think_to_payload(payload, think)
 
     with httpx.Client(timeout=120.0) as client:
         response = client.post(f"{base_url}/api/generate", json=payload)
@@ -296,7 +311,7 @@ def _generate_ollama_text(prompt_text: str, *, temperature: float, think: Option
         event = response.json()
 
     response_text = _coerce_chunk_text(event.get("response"))
-    if think is not False:
+    if include_thinking:
         thinking_text = _coerce_chunk_text(event.get("thinking"))
         if thinking_text:
             return f"<think>{thinking_text}</think>{response_text}"
@@ -351,7 +366,7 @@ def answer_env_question_with_metadata(
         context_data=grounded_context,
     )
     prompt_text = _build_prompt_text_from_messages(messages)
-    answer = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
+    answer = _generate_ollama_text(prompt_text, temperature=0.4)
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
         guideline_records=effective_guideline_records,
@@ -438,11 +453,9 @@ async def stream_knowledge_tokens(
         "stream": True,
         "temperature": 0.4,
     }
-    if think is True:
-        ollama_payload["think"] = True
+    include_thinking = apply_ollama_think_to_payload(ollama_payload, think)
 
     in_thinking_block = False
-    include_thinking = think is not False
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", f"{base_url}/api/generate", json=ollama_payload) as response:
@@ -524,11 +537,9 @@ async def stream_answer_env_question(
         "stream": True,
         "temperature": 0.4,
     }
-    if think is True:
-        payload["think"] = True
+    include_thinking = apply_ollama_think_to_payload(payload, think)
 
     in_thinking_block = False
-    include_thinking = think is not False
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", f"{base_url}/api/generate", json=payload) as response:
             response.raise_for_status()

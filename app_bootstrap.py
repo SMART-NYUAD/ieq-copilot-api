@@ -1,6 +1,9 @@
 """FastAPI application bootstrap."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
@@ -13,12 +16,30 @@ except ImportError:
     from .http_routes.query_routes import router as query_router
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    try:
+        from executors.db_support.api_client import warm_client
+
+        await run_in_threadpool(warm_client)
+    except Exception:
+        pass
+    yield
+    try:
+        from executors.db_support.api_client import close_client
+
+        close_client()
+    except Exception:
+        pass
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
     app = FastAPI(
         title="Environment Cards RAG API",
         description="API for indoor air quality queries with knowledge-card grounding",
         version="3.0.0",
+        lifespan=_lifespan,
     )
     app.add_middleware(
         CORSMiddleware,

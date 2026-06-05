@@ -4,14 +4,23 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import httpx
 
-API_BASE_URL = "https://api.smart-crg.com"
+API_BASE_URL = "http://192.168.50.99:7001"
 _MAX_CONCURRENT_API_CALLS = 6
 _T = TypeVar("_T")
+
+_METRICS_CACHE_TTL_SECONDS = 45.0
+_SPACES_CACHE_TTL_SECONDS = 300.0
+_AGG_CACHE_TTL_SECONDS = 45.0
+_INDOOR_CACHE_TTL_SECONDS = 45.0
+
+_CLIENT: Optional[httpx.Client] = None
+_RESPONSE_CACHE: Dict[str, Tuple[float, Any]] = {}
 
 # Sensor metrics available via /metrics/{type}/agg-summary
 _SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature"}
@@ -25,6 +34,45 @@ _SCORE_METRIC_MAP: Dict[str, str] = {
     "iac": "IAC",
     "iil": "IIL",
 }
+
+
+def _get_client() -> httpx.Client:
+    global _CLIENT
+    if _CLIENT is None or _CLIENT.is_closed:
+        _CLIENT = httpx.Client(
+            timeout=httpx.Timeout(15.0, connect=10.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _CLIENT
+
+
+def _cache_get(key: str, ttl_seconds: float) -> Optional[Any]:
+    entry = _RESPONSE_CACHE.get(key)
+    if not entry:
+        return None
+    cached_at, value = entry
+    if (time.time() - cached_at) >= ttl_seconds:
+        return None
+    return value
+
+
+def _cache_set(key: str, value: Any) -> None:
+    _RESPONSE_CACHE[key] = (time.time(), value)
+
+
+def warm_client() -> None:
+    """Open the shared connection pool (optionally prefetch spaces list)."""
+    try:
+        fetch_spaces()
+    except Exception:
+        pass
+
+
+def close_client() -> None:
+    global _CLIENT
+    if _CLIENT is not None and not _CLIENT.is_closed:
+        _CLIENT.close()
+    _CLIENT = None
 
 
 def _api_sensor_slug(metric: str) -> Optional[str]:
@@ -85,29 +133,46 @@ def window_hours_from_datetimes(window_start: datetime, window_end: Optional[dat
 
 def fetch_spaces() -> List[Dict[str, Any]]:
     """GET /spaces/ — returns list of space dicts."""
+    cache_key = "spaces"
+    cached = _cache_get(cache_key, _SPACES_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(f"{API_BASE_URL}/spaces/", headers={"accept": "application/json"})
-            resp.raise_for_status()
-            return list(resp.json().get("spaces") or [])
+        resp = _get_client().get(f"{API_BASE_URL}/spaces/", headers={"accept": "application/json"})
+        resp.raise_for_status()
+        spaces = list(resp.json().get("spaces") or [])
+        _cache_set(cache_key, spaces)
+        return spaces
     except Exception:
+        stale = _RESPONSE_CACHE.get(cache_key)
+        if stale is not None:
+            return stale[1]
         return []
 
 
 def fetch_space_metrics(slug: str) -> Optional[Dict[str, Any]]:
     """GET /spaces/{slug}/metrics — returns the space dict with avg_metrics and ieq."""
+    cache_key = f"space_metrics:{slug}"
+    cached = _cache_get(cache_key, _METRICS_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(
-                f"{API_BASE_URL}/spaces/{slug}/metrics",
-                headers={"accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("success"):
-                return (data.get("data") or {}).get("space")
+        resp = _get_client().get(
+            f"{API_BASE_URL}/spaces/{slug}/metrics",
+            headers={"accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            space = (data.get("data") or {}).get("space")
+            if space is not None:
+                _cache_set(cache_key, space)
+            return space
     except Exception:
         pass
+    stale = _RESPONSE_CACHE.get(cache_key)
+    if stale is not None:
+        return stale[1]
     return None
 
 
@@ -121,19 +186,28 @@ def fetch_metric_agg_summary(
     api_slug = _api_sensor_slug(metric)
     if not api_slug:
         return None
+    cache_key = f"agg:{slug}:{api_slug}:{window_hours}:{interval_hours}"
+    cached = _cache_get(cache_key, _AGG_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(
-                f"{API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/agg-summary",
-                params={"window_hours": window_hours, "interval_hours": interval_hours},
-                headers={"accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("success"):
-                return data.get("data")
+        resp = _get_client().get(
+            f"{API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/agg-summary",
+            params={"window_hours": window_hours, "interval_hours": interval_hours},
+            headers={"accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            payload = data.get("data")
+            if payload is not None:
+                _cache_set(cache_key, payload)
+            return payload
     except Exception:
         pass
+    stale = _RESPONSE_CACHE.get(cache_key)
+    if stale is not None:
+        return stale[1]
     return None
 
 
@@ -144,19 +218,28 @@ def fetch_indoor_data(
     timeframe: int = 48,
 ) -> Optional[Dict[str, Any]]:
     """GET /spaces/{slug}/indoor-data — returns data dict."""
+    cache_key = f"indoor:{slug}:{score_type}:{interval}:{timeframe}"
+    cached = _cache_get(cache_key, _INDOOR_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(
-                f"{API_BASE_URL}/spaces/{slug}/indoor-data",
-                params={"type": score_type, "interval": interval, "timeframe": timeframe},
-                headers={"accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("success"):
-                return data.get("data")
+        resp = _get_client().get(
+            f"{API_BASE_URL}/spaces/{slug}/indoor-data",
+            params={"type": score_type, "interval": interval, "timeframe": timeframe},
+            headers={"accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            payload = data.get("data")
+            if payload is not None:
+                _cache_set(cache_key, payload)
+            return payload
     except Exception:
         pass
+    stale = _RESPONSE_CACHE.get(cache_key)
+    if stale is not None:
+        return stale[1]
     return None
 
 
@@ -341,33 +424,38 @@ def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str,
             row[f"{m}_stddev"] = None
         return row
 
-    per_space: List[Dict[str, Any]] = [
-        fetch_multi_metric_agg_row(slug, metrics, window_hours) for slug in slugs
-    ]
+    per_space = list(
+        _run_parallel_tasks(
+            {
+                slug: (lambda space_slug=slug: fetch_multi_metric_agg_row(space_slug, metrics, window_hours))
+                for slug in slugs
+            }
+        ).values()
+    )
     row = {"lab_space": "all_labs", "reading_count": 0}
     for metric in metrics:
-        vals = [r[metric] for r in per_space if r.get(metric) is not None]
-        mins = [r.get(f"{metric}_min") for r in per_space if r.get(f"{metric}_min") is not None]
-        maxs = [r.get(f"{metric}_max") for r in per_space if r.get(f"{metric}_max") is not None]
+        vals = [r[metric] for r in per_space if r and r.get(metric) is not None]
+        mins = [r.get(f"{metric}_min") for r in per_space if r and r.get(f"{metric}_min") is not None]
+        maxs = [r.get(f"{metric}_max") for r in per_space if r and r.get(f"{metric}_max") is not None]
         row[metric] = sum(vals) / len(vals) if vals else None
         row[f"{metric}_min"] = min(mins) if mins else None
         row[f"{metric}_max"] = max(maxs) if maxs else None
         row[f"{metric}_stddev"] = None
-    row["reading_count"] = sum(r.get("reading_count", 0) for r in per_space)
+    row["reading_count"] = sum((r or {}).get("reading_count", 0) for r in per_space)
     return row
 
 
 def fetch_all_spaces_agg_rows_for_metric(metric: str, window_hours: int) -> List[Dict[str, Any]]:
     """Return per-space aggregation rows for a single metric (for ranking/comparison)."""
     spaces = fetch_spaces()
-    rows: List[Dict[str, Any]] = []
-    for space in spaces:
-        slug = space.get("slug")
-        if not slug:
-            continue
-        agg = fetch_aggregation_row(slug, metric, window_hours)
-        if agg:
-            rows.append(agg)
+    slugs = [s.get("slug") for s in spaces if s.get("slug")]
+    agg_by_slug = _run_parallel_tasks(
+        {
+            slug: (lambda space_slug=slug: fetch_aggregation_row(space_slug, metric, window_hours))
+            for slug in slugs
+        }
+    )
+    rows: List[Dict[str, Any]] = [agg for agg in agg_by_slug.values() if agg]
     rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
     return rows
 

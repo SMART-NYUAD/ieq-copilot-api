@@ -31,27 +31,6 @@ _TIME_PHRASES = (
     "this month",
     "last month",
 )
-_FOLLOW_UP_HINTS = (
-    "what about",
-    "and what about",
-    "also",
-    "how about",
-    "same",
-    "over there",
-    "in there",
-    "right there",
-    "that room",
-    "same room",
-    "same lab",
-    "same space",
-)
-_CLARIFICATION_SELECTION_HINTS = (
-    "data-backed answer",
-    "exact values",
-    "from the database",
-    "high-level conceptual explanation",
-    "conceptual explanation",
-)
 _TOPIC_PHRASES = (
     "air quality",
     "indoor air quality",
@@ -140,36 +119,42 @@ def _extract_topic_phrase(question: str) -> Optional[str]:
     return None
 
 
+def _latest_metric_and_topic(user_lines: list[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return (metric, topic) from the single most-recent turn that mentions either.
+
+    Scanning independently would let an older explicit metric (e.g. "temperature"
+    from turn 2) shadow a more recently discussed topic phrase (e.g. "air quality"
+    from turn 4).  By scanning once in reverse we always surface the newest context.
+    """
+    for candidate in reversed(user_lines):
+        metrics = _extract_requested_metrics(candidate)
+        topic = _extract_topic_phrase(candidate)
+        if metrics or topic:
+            return (metrics[0] if metrics else None), topic
+    return None, None
+
+
 def _is_definitional_question(question: str) -> bool:
     q = str(question or "").strip().lower()
     return any(phrase in q for phrase in _DEFINITIONAL_PHRASES)
 
 
-def _should_apply_memory(question: str, current_signals: Dict[str, Any]) -> bool:
-    q = str(question or "").strip().lower()
-    if not q:
-        return False
-    token_count = len([item for item in re.split(r"\s+", q) if item])
-    has_followup_hint = any(hint in q for hint in _FOLLOW_UP_HINTS)
-    has_clarification_selection_hint = any(hint in q for hint in _CLARIFICATION_SELECTION_HINTS)
-    has_lab_reference = bool(current_signals.get("has_lab_reference"))
-    has_time_window_hint = bool(current_signals.get("has_time_window_hint"))
-    has_metric_reference = bool(current_signals.get("has_metric_reference"))
-    if has_followup_hint:
-        return True
-    # Clarification-choice replies (e.g. "data-backed answer...") should carry
-    # prior lab/time scope even when they are verbose.
-    if has_clarification_selection_hint:
-        return True
-    # Lab-only clarification replies (e.g. "smart_lab") should inherit missing
-    # metric/time context from the immediate prior user turn.
-    if token_count <= 3 and has_lab_reference and not has_time_window_hint and not has_metric_reference:
-        return True
-    if token_count <= 6 and (has_time_window_hint or has_metric_reference) and not has_lab_reference:
-        return True
-    if token_count <= 4 and not (has_lab_reference or has_time_window_hint or has_metric_reference):
-        return True
-    return False
+def compute_question_signals(question: str) -> Dict[str, Any]:
+    """Return whether the current question already names a lab, metric, or time window."""
+    try:
+        from executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
+    except ImportError:
+        try:
+            from ..executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
+        except ImportError:
+            return {}
+    q = str(question or "")
+    return {
+        "has_lab_reference": bool(extract_space_from_question(q)),
+        "has_metric_reference": bool(_extract_requested_metrics(q)),
+        "has_time_window_hint": bool(_requested_time_phrase(q)),
+        "has_topic_reference": bool(_extract_topic_phrase(q)),
+    }
 
 
 def extract_routing_memory(conversation_context: str, current_signals: Dict[str, Any]) -> RoutingMemory:
@@ -181,10 +166,7 @@ def extract_routing_memory(conversation_context: str, current_signals: Dict[str,
     previous_user = str(user_lines[-1] or "").strip()
     previous_lab = _latest_value_from_user_lines(user_lines, extract_space_from_question)
     previous_time = _latest_value_from_user_lines(user_lines, _requested_time_phrase)
-    previous_metric = _latest_value_from_user_lines(
-        user_lines, lambda text: (_extract_requested_metrics(text) or [None])[0]
-    )
-    previous_topic = _latest_value_from_user_lines(user_lines, _extract_topic_phrase)
+    previous_metric, previous_topic = _latest_metric_and_topic(user_lines)
     return RoutingMemory(
         lab_name=previous_lab,
         metric=previous_metric,
@@ -200,17 +182,16 @@ def apply_routing_memory(
     memory: RoutingMemory,
     current_signals: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Dict[str, Any]]:
-    """Apply structured carry-over without injecting raw conversation text."""
+    """Fill missing lab/metric/time from prior turns when the question omits them."""
     base_question = str(question or "").strip()
     signals = dict(current_signals or {})
     if not base_question:
-        return base_question, (lab_name or "").strip() or None, {"applied": False}
-    if not _should_apply_memory(base_question, signals):
         return base_question, (lab_name or "").strip() or None, {"applied": False}
 
     has_lab_reference = bool(signals.get("has_lab_reference"))
     has_time_window_hint = bool(signals.get("has_time_window_hint"))
     has_metric_reference = bool(signals.get("has_metric_reference"))
+    has_topic_reference = bool(signals.get("has_topic_reference"))
 
     effective_question = base_question
     effective_lab = (lab_name or "").strip() or None
@@ -230,10 +211,12 @@ def apply_routing_memory(
         carried_lab = memory.lab_name
 
     skip_time_phrase = _is_definitional_question(base_question)
-    # Questions with explicit analytical intent (anomaly, trend, comparison) already
-    # imply their own metric scope — injecting a prior metric would mislead the router.
-    skip_metric_carry = _is_definitional_question(base_question) or bool(
-        _ANALYTICAL_INTENT_RE.search(base_question.lower())
+    # Do not inject a prior single-metric scope when the user asked a broad topic
+    # (e.g. air quality) or an analytical question with its own scope.
+    skip_metric_carry = (
+        _is_definitional_question(base_question)
+        or has_topic_reference
+        or bool(_ANALYTICAL_INTENT_RE.search(base_question.lower()))
     )
 
     if not skip_time_phrase and not has_time_window_hint and memory.time_phrase:

@@ -13,22 +13,17 @@ if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
 from http_routes.route_helpers import execute_non_stream_query
+from storage.conversation_context import ConversationContext
 
 
 class QueryRuntimeContextTests(unittest.TestCase):
-    def test_execute_non_stream_query_passes_context_separately(self):
+    def test_execute_non_stream_query_passes_context_to_executor(self):
         seen = {}
 
-        def _fake_execute_query(
-            latest_user_question,
-            k,
-            lab_name,
-            allow_clarify,
-            endpoint_key,
-            conversation_context,
-        ):
-            seen["latest_user_question"] = latest_user_question
-            seen["conversation_context"] = conversation_context
+        def _fake_execute_query(ctx, k, allow_clarify, endpoint_key):
+            seen["effective_question"] = ctx.effective_question
+            seen["llm_history"] = ctx.llm_history
+            seen["conversation_id"] = ctx.conversation_id
             return {
                 "answer": "ok",
                 "timescale": "knowledge",
@@ -37,25 +32,31 @@ class QueryRuntimeContextTests(unittest.TestCase):
                 "metadata": {"executor": "knowledge_qa"},
             }
 
+        prior_block = (
+            "Previous conversation context (most recent last):\n"
+            "User: Explain PM2.5\nAssistant: PM2.5 is particulate matter."
+        )
+        ctx = ConversationContext(
+            conversation_id="test-conv-id",
+            original_question="What does IEQ mean?",
+            raw_block=prior_block,
+            effective_question="What does IEQ mean?",
+            effective_lab=None,
+            routing_snippet="User: Explain PM2.5\nAssistant: PM2.5 is particulate matter.",
+            llm_history="User: Explain PM2.5\nAssistant: PM2.5 is particulate matter.",
+        )
+
         result = asyncio.run(
             execute_non_stream_query(
-                question="What does IEQ mean?",
-                latest_user_question="What does IEQ mean?",
-                conversation_context=(
-                    "Previous conversation context (most recent last):\n"
-                    "User: Explain PM2.5\nAssistant: PM2.5 is particulate matter."
-                ),
+                ctx=ctx,
                 k=4,
-                lab_name=None,
                 allow_clarify=True,
-                conversation_id=None,
-                context_applied=True,
                 endpoint_key="query_sync",
                 execute_query_fn=_fake_execute_query,
             )
         )
-        self.assertEqual(seen["latest_user_question"], "What does IEQ mean?")
-        self.assertIn("Previous conversation context", seen["conversation_context"])
+        self.assertEqual(seen["effective_question"], "What does IEQ mean?")
+        self.assertIn("PM2.5", seen["llm_history"])
         self.assertEqual(result["result"]["answer"], "ok")
 
 

@@ -113,6 +113,7 @@ def _requested_metrics(
         return full_pack
 
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
+    is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
     analytical_intents = {
         IntentType.AGGREGATION_DB,
         IntentType.COMPARISON_DB,
@@ -154,13 +155,16 @@ def _requested_metrics(
                 and trend_like_phrase
             )
             or planner_context_expansion
+            or (
+                intent == IntentType.COMPARISON_DB
+                and is_comfort_assessment_query
+            )
         ):
             return metrics
     if is_diagnostic_query_text(question):
         required_pack = ["co2", "pm25", "tvoc", "humidity", "temperature", "ieq", "sound", "light"]
         return required_pack + [m for m in metrics if m not in required_pack]
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
-    is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
     if not is_air_quality_query:
         q = str(question or "").lower()
         if (
@@ -179,7 +183,7 @@ def _requested_metrics(
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
-        ["ieq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound", "light"]
+        ["ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound", "light"]
         if is_comfort_assessment_query
         else ["co2", "pm25", "tvoc", "humidity", "ieq"]
     )
@@ -678,8 +682,12 @@ def _handle_point_lookup(
     window_note = ""
     rows: List[Dict[str, Any]] = []
     trend_rows: List[Dict[str, Any]] = []
+    api_trend_pct: Optional[float] = None
 
     has_time_window = db_parsing.has_explicit_time_hint(question)
+    fetch_hours = max(window_hours, 6)
+    if resolved_lab_name:
+        trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_hours)
 
     if not has_time_window and resolved_lab_name and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}:
         # No explicit time window — use /spaces/{slug}/metrics for the live current value.
@@ -687,15 +695,17 @@ def _handle_point_lookup(
         if space:
             api_slug = api_client._api_sensor_slug(metric_alias)
             avg_by_type = {m["type"]: m["avg_value"] for m in (space.get("avg_metrics") or [])}
+            trend_by_type = {m["type"]: m.get("trend") for m in (space.get("avg_metrics") or [])}
+            if api_slug and trend_by_type.get(api_slug) is not None:
+                try:
+                    api_trend_pct = float(trend_by_type[api_slug])
+                except (TypeError, ValueError):
+                    api_trend_pct = None
             val = avg_by_type.get(api_slug) if api_slug else None
             if val is not None:
                 rows = [{"lab_space": resolved_lab_name, "bucket": space.get("last_updated"), "value": val}]
-                trend_rows = rows
 
     if not rows:
-        # Explicit time window or no current value available — use agg-summary timeseries.
-        fetch_hours = max(window_hours, 6)
-        trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name or "", metric_alias, fetch_hours)
         rows = [trend_rows[-1]] if trend_rows else []
 
     series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
@@ -705,6 +715,8 @@ def _handle_point_lookup(
     return {
         "operation_type": "point_lookup",
         "rows": rows,
+        "time_series_rows": trend_rows,
+        "api_trend_pct": api_trend_pct,
         "fallback_answer": fallback_answer,
         "metrics_used": [metric_alias],
         "window_start": window_start,
@@ -796,6 +808,7 @@ def _handle_anomaly(
     return {
         "operation_type": "anomaly",
         "rows": rows,
+        "time_series_rows": rows,
         "fallback_answer": db_helpers.build_anomaly_answer(
             metric_alias=metric_alias,
             rows=rows,
@@ -999,9 +1012,16 @@ def _handle_comparison(
         window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
         agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
         rows = [agg] if agg else []
+        time_series_rows = api_client.fetch_timeseries_rows(
+            resolved_lab_name,
+            metric_alias,
+            max(window_hours, 6),
+        )
         return {
             "operation_type": "aggregation",
             "rows": rows,
+            "time_series_rows": time_series_rows,
+            "aggregation_summary": agg,
             "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
             "metrics_used": [metric_alias],
             "compared_spaces": [resolved_lab_name],
@@ -1043,15 +1063,19 @@ def _handle_default(
         return {
             "operation_type": "timeseries",
             "rows": rows,
+            "time_series_rows": rows,
             "fallback_answer": db_helpers.build_timeseries_answer(metric_alias, rows, window_label),
             "metrics_used": [metric_alias],
         }
 
     # Default aggregation — include IEQ contribution sub-scores from /spaces/
+    time_series_rows: List[Dict[str, Any]] = []
+    aggregation_summary: Optional[Dict[str, Any]] = None
     if resolved_lab_name:
         agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
         rows = []
         if agg:
+            aggregation_summary = agg
             # Enrich with contribution fields from /spaces/ summary
             spaces = api_client.fetch_spaces()
             space_summary = next((s for s in spaces if s.get("slug") == resolved_lab_name), None)
@@ -1063,12 +1087,19 @@ def _handle_default(
                 agg["contri_acoustic"] = sub.get("iac")
                 agg["contri_acustic"] = sub.get("iac")
             rows = [agg]
+        time_series_rows = api_client.fetch_timeseries_rows(
+            resolved_lab_name,
+            metric_alias,
+            max(window_hours, 6),
+        )
     else:
         rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_hours)[:10]
 
     return {
         "operation_type": "aggregation",
         "rows": rows,
+        "time_series_rows": time_series_rows,
+        "aggregation_summary": aggregation_summary,
         "fallback_answer": db_helpers.build_aggregation_answer(metric_alias, rows, window_label),
         "metrics_used": [metric_alias],
     }

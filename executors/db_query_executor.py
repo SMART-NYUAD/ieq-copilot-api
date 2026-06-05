@@ -19,12 +19,14 @@ try:
     from executors.knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
+        apply_ollama_think_to_payload,
         search_knowledge_cards,
     )
 except ImportError:
     from .knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
+        apply_ollama_think_to_payload,
         search_knowledge_cards,
     )
 try:
@@ -174,6 +176,9 @@ def _build_metric_coverage(rows: List[Dict[str, Any]], metrics_used: List[str]) 
             if single_metric_mode and row.get("value") is not None:
                 has_value = True
                 break
+            if single_metric_mode and row.get("avg_value") is not None:
+                has_value = True
+                break
         if has_value:
             available.append(metric)
         else:
@@ -196,6 +201,61 @@ def _infer_metrics_from_rows(rows: List[Dict[str, Any]], fallback_metric: str) -
     if fallback_metric and fallback_metric not in inferred:
         inferred.insert(0, fallback_metric)
     return inferred
+
+
+def _attach_time_series_context(
+    *,
+    payload: Dict[str, Any],
+    branch_result: Dict[str, Any],
+    rows: List[Dict[str, Any]],
+    metric_alias: str,
+    unit: str,
+    resolved_lab_name: Optional[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> Dict[str, Any]:
+    series_rows = list(branch_result.get("time_series_rows") or [])
+    if not series_rows:
+        series_rows = [row for row in rows if row.get("bucket") is not None]
+    if len(series_rows) < 2 and resolved_lab_name and metric_alias:
+        try:
+            from executors.db_support import api_client as db_api
+
+            window_hours = db_api.window_hours_from_datetimes(window_start, window_end)
+            fetched = db_api.fetch_timeseries_rows(resolved_lab_name, metric_alias, max(window_hours, 6))
+            if fetched:
+                series_rows = fetched
+        except Exception:
+            pass
+
+    aggregation_summary = branch_result.get("aggregation_summary")
+    if not aggregation_summary and rows and rows[0].get("avg_value") is not None:
+        aggregation_summary = rows[0]
+
+    analysis = db_helpers.build_time_series_analysis(
+        series_rows=series_rows,
+        metric_alias=metric_alias,
+        unit=unit,
+        api_trend_pct=branch_result.get("api_trend_pct"),
+        aggregation_summary=aggregation_summary,
+    )
+    if analysis.get("time_series"):
+        payload["time_series"] = _serialize_timestamp_value(analysis["time_series"])
+
+    backend_semantic_state = db_helpers.enrich_backend_semantic_state(
+        analysis,
+        operation_type=str(branch_result.get("operation_type") or ""),
+        metrics_used=list(branch_result.get("metrics_used") or []),
+        display_start=str(payload.get("display_start") or ""),
+        display_end=str(payload.get("display_end") or ""),
+        window_label=str(payload.get("window") or ""),
+    )
+    return {
+        "time_series_analysis": _serialize_timestamp_value(analysis),
+        "backend_semantic_state": (
+            _serialize_timestamp_value(backend_semantic_state) if backend_semantic_state else None
+        ),
+    }
 
 
 def _collect_citation_metrics(
@@ -291,7 +351,11 @@ def prepare_db_query(
         default_hours=db_parsing.default_window_hours_for_intent(intent),
     )
     display_start, display_end = db_parsing.format_display_window_bounds(window_start, window_end)
-    resolved_lab_name = db_parsing.resolve_lab_alias(lab_name) or db_parsing.extract_space_from_question(query_text)
+    resolved_lab_name = (
+        db_parsing.resolve_lab_alias(lab_name)
+        if lab_name
+        else db_parsing.extract_space_from_question(query_text)
+    )
     compared_spaces = db_parsing.extract_compared_spaces(query_text)
     invariant = db_parsing.validate_db_execution_invariants(
         question=query_text,
@@ -398,8 +462,19 @@ def prepare_db_query(
     if isinstance(correlation_data, dict) and "correlations" in correlation_data:
         payload["correlation_analysis"] = _serialize_timestamp_value(correlation_data)
     payload["metric_coverage"] = _build_metric_coverage(rows=rows, metrics_used=metrics_used)
+    payload["operation_type"] = operation_type
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
+    ts_context = _attach_time_series_context(
+        payload=payload,
+        branch_result=branch_result,
+        rows=rows,
+        metric_alias=metric_alias,
+        unit=unit,
+        resolved_lab_name=resolved_lab_name,
+        window_start=window_start,
+        window_end=window_end,
+    )
     metric_pair = None
     correlation_value = None
     if isinstance(correlation_data, dict):
@@ -436,6 +511,8 @@ def prepare_db_query(
         "guideline_records": guideline_records,
         "cards_retrieved": len(knowledge_cards),
         "correlation": correlation_data,
+        "time_series_analysis": ts_context.get("time_series_analysis"),
+        "backend_semantic_state": ts_context.get("backend_semantic_state"),
         "sources": db_helpers.build_db_sources(
             operation_type=operation_type,
             metric_alias=metric_alias,
@@ -463,6 +540,42 @@ def prepare_db_query(
     }
 
 
+def _build_db_prompt_text(
+    *,
+    question: str,
+    intent: IntentType,
+    context_data: str,
+) -> str:
+    prompt_template = get_shared_prompt_template(
+        response_directive=db_helpers.db_response_directive(intent, question=question)
+    )
+    messages = prompt_template.format_messages(
+        question=question,
+        context_label="Structured DB Query Result with knowledge grounding",
+        context_data=context_data,
+    )
+    return _build_prompt_text_from_messages(messages)
+
+
+def _build_db_context_data(
+    *,
+    payload: Dict[str, Any],
+    backend_semantic_state: Optional[Dict[str, Any]],
+    knowledge_cards: Optional[List[Dict[str, Any]]],
+    numbered_sources_block: str,
+    conversation_context: str = "",
+) -> str:
+    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(knowledge_cards)
+    return build_grounded_context_sections(
+        measured_room_facts=payload,
+        backend_semantic_state=backend_semantic_state,
+        knowledge_cards=interpretation_cards,
+        communication_guardrails=guardrails,
+        numbered_sources_block=numbered_sources_block,
+        conversation_history=conversation_context or None,
+    )
+
+
 def _render_db_answer_with_llm(
     question: str,
     intent: IntentType,
@@ -475,56 +588,53 @@ def _render_db_answer_with_llm(
     knowledge_cards: Optional[List[Dict[str, Any]]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     metrics_used: Optional[List[str]] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    backend_semantic_state: Optional[Dict[str, Any]] = None,
+    conversation_context: str = "",
 ) -> Tuple[str, bool, List[Dict[str, Any]]]:
-    llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
-    payload = db_helpers.build_db_payload(
-        intent,
-        metric_alias,
-        window_label,
-        llm_rows,
-        window_start=str((time_window or {}).get("start") or ""),
-        window_end=str((time_window or {}).get("end") or ""),
-        display_start=str((time_window or {}).get("display_start") or ""),
-        display_end=str((time_window or {}).get("display_end") or ""),
-        knowledge_cards=knowledge_cards,
-    )
-    if row_summary:
-        payload["row_summary"] = _serialize_timestamp_value(row_summary)
-    payload["metric_coverage"] = _build_metric_coverage(
-        rows=rows,
-        metrics_used=list(metrics_used or _infer_metrics_from_rows(rows=rows, fallback_metric=metric_alias)),
-    )
-    if correlation:
-        if isinstance(correlation, dict) and "correlations" in correlation:
-            payload["correlation_analysis"] = _serialize_timestamp_value(correlation)
-        else:
-            payload["correlation"] = {
-                "metric_x": correlation.get("metric_x"),
-                "metric_y": correlation.get("metric_y"),
-                "correlation": correlation.get("correlation"),
-                "row_count": correlation.get("row_count"),
-            }
+    if payload is None:
+        llm_rows, row_summary = _build_compact_llm_rows_and_summary(rows)
+        payload = db_helpers.build_db_payload(
+            intent,
+            metric_alias,
+            window_label,
+            llm_rows,
+            window_start=str((time_window or {}).get("start") or ""),
+            window_end=str((time_window or {}).get("end") or ""),
+            display_start=str((time_window or {}).get("display_start") or ""),
+            display_end=str((time_window or {}).get("display_end") or ""),
+            knowledge_cards=knowledge_cards,
+        )
+        if row_summary:
+            payload["row_summary"] = _serialize_timestamp_value(row_summary)
+        payload["metric_coverage"] = _build_metric_coverage(
+            rows=rows,
+            metrics_used=list(metrics_used or _infer_metrics_from_rows(rows=rows, fallback_metric=metric_alias)),
+        )
+        if correlation:
+            if isinstance(correlation, dict) and "correlations" in correlation:
+                payload["correlation_analysis"] = _serialize_timestamp_value(correlation)
+            else:
+                payload["correlation"] = {
+                    "metric_x": correlation.get("metric_x"),
+                    "metric_y": correlation.get("metric_y"),
+                    "correlation": correlation.get("correlation"),
+                    "row_count": correlation.get("row_count"),
+                }
+    else:
+        payload = dict(payload)
     effective_guideline_records = list(guideline_records or [])
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
-    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(knowledge_cards)
-    context_data = build_grounded_context_sections(
-        measured_room_facts=payload,
-        backend_semantic_state=None,
-        knowledge_cards=interpretation_cards,
-        communication_guardrails=guardrails,
+    context_data = _build_db_context_data(
+        payload=payload,
+        backend_semantic_state=backend_semantic_state,
+        knowledge_cards=knowledge_cards,
         numbered_sources_block=numbered_sources_block,
+        conversation_context=conversation_context,
     )
-    prompt_template = get_shared_prompt_template(
-        response_directive=db_helpers.db_response_directive(intent, question=question)
-    )
+    prompt_text = _build_db_prompt_text(question=question, intent=intent, context_data=context_data)
     try:
-        messages = prompt_template.format_messages(
-            question=question,
-            context_label="Structured DB Query Result with knowledge grounding",
-            context_data=context_data,
-        )
-        prompt_text = _build_prompt_text_from_messages(messages)
-        text = _generate_ollama_text(prompt_text, temperature=0.4, think=False)
+        text = _generate_ollama_text(prompt_text, temperature=0.4)
         if text:
             return text, True, indexed_sources
     except Exception:
@@ -538,6 +648,7 @@ def run_db_query(
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    conversation_context: str = "",
 ) -> Dict:
     query_text = str(question or "").strip()
     context = prepare_db_query(
@@ -588,6 +699,9 @@ def run_db_query(
         knowledge_cards=context.get("knowledge_cards"),
         guideline_records=context.get("guideline_records"),
         metrics_used=list(context.get("metrics_used") or []),
+        payload=context.get("payload"),
+        backend_semantic_state=context.get("backend_semantic_state"),
+        conversation_context=conversation_context,
     )
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
@@ -651,6 +765,14 @@ def run_db_query(
     }
 
 
+def _sse_token_event(text: str) -> str:
+    return f"data: {json.dumps({'event': 'token', 'text': text})}\n\n"
+
+
+def _sse_done_event() -> str:
+    return f"data: {json.dumps({'event': 'done'})}\n\n"
+
+
 async def stream_db_tokens(
     question: str,
     intent: IntentType,
@@ -659,6 +781,7 @@ async def stream_db_tokens(
     query_context: Optional[Dict[str, Any]] = None,
     think: Optional[bool] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    conversation_context: str = "",
 ) -> AsyncIterator[str]:
     from fastapi.concurrency import run_in_threadpool
 
@@ -681,6 +804,7 @@ async def stream_db_tokens(
         return
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
+    backend_semantic_state = context.get("backend_semantic_state")
     source_metrics: List[str] = []
     for src in list(context.get("sources") or []):
         for metric in list(src.get("metrics_used") or []):
@@ -698,29 +822,14 @@ async def stream_db_tokens(
     numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
     context["indexed_sources"] = indexed_sources
 
-    prompt_template = get_shared_prompt_template(
-        response_directive=db_helpers.db_response_directive(intent, question=query_text)
-    )
-    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(context.get("knowledge_cards"))
-    context_data = build_grounded_context_sections(
-        measured_room_facts=payload,
-        backend_semantic_state=None,
-        knowledge_cards=interpretation_cards,
-        communication_guardrails=guardrails,
+    context_data = _build_db_context_data(
+        payload=payload,
+        backend_semantic_state=backend_semantic_state,
+        knowledge_cards=context.get("knowledge_cards"),
         numbered_sources_block=numbered_sources_block,
+        conversation_context=conversation_context,
     )
-    messages = prompt_template.format_messages(
-        question=query_text,
-        context_label="Structured DB Query Result with knowledge grounding",
-        context_data=context_data,
-    )
-
-    prompt_parts = []
-    for m in messages:
-        role = getattr(m, "type", "user").upper()
-        content = str(getattr(m, "content", "") or "")
-        prompt_parts.append(f"{role}:\n{content}")
-    prompt_text = "\n\n".join(prompt_parts)
+    prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
 
     import os
     import httpx
@@ -734,13 +843,13 @@ async def stream_db_tokens(
         "stream": True,
         "temperature": 0.4,
     }
-    if think is True:
-        ollama_payload["think"] = True
+    include_thinking = apply_ollama_think_to_payload(ollama_payload, think)
 
     in_thinking_block = False
     emitted_anything = False
-    include_thinking = think is not False
     try:
+        import httpx
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", api_url, json=ollama_payload) as response:
                 response.raise_for_status()
@@ -759,29 +868,29 @@ async def stream_db_tokens(
                         if not in_thinking_block:
                             in_thinking_block = True
                             emitted_anything = True
-                            yield f"data: {json.dumps({'event': 'token', 'text': '<think>'})}\n\n"
-                        yield f"data: {json.dumps({'event': 'token', 'text': thinking_text})}\n\n"
+                            yield _sse_token_event("<think>")
+                        yield _sse_token_event(thinking_text)
                         emitted_anything = True
 
                     if response_text:
                         if in_thinking_block:
                             in_thinking_block = False
-                            yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+                            yield _sse_token_event("</think>")
                         emitted_anything = True
-                        yield f"data: {json.dumps({'event': 'token', 'text': response_text})}\n\n"
+                        yield _sse_token_event(response_text)
     except Exception:
         fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
-        yield f"data: {json.dumps({'event': 'token', 'text': fb})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        yield _sse_token_event(fb)
+        yield _sse_done_event()
         return
 
     if include_thinking and in_thinking_block:
-        yield f"data: {json.dumps({'event': 'token', 'text': '</think>'})}\n\n"
+        yield _sse_token_event("</think>")
     elif not emitted_anything:
         fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
-        yield f"data: {json.dumps({'event': 'token', 'text': fb})}\n\n"
+        yield _sse_token_event(fb)
 
-    yield f"data: {json.dumps({'event': 'done'})}\n\n"
+    yield _sse_done_event()
 
 
 async def stream_db_query(
@@ -792,6 +901,7 @@ async def stream_db_query(
     query_context: Optional[Dict[str, Any]] = None,
     think: Optional[bool] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    conversation_context: str = "",
 ) -> AsyncIterator[str]:
     query_text = str(question or "").strip()
     context = query_context or prepare_db_query(
@@ -801,11 +911,14 @@ async def stream_db_query(
         planner_hints=planner_hints,
         guideline_records=guideline_records,
     )
+    from fastapi.concurrency import run_in_threadpool
+
     if context.get("invariant_violation"):
         yield str(context.get("fallback_answer") or "")
         return
-    payload = context["payload"]
+    measured_payload = context["payload"]
     fallback_answer = context["fallback_answer"]
+    backend_semantic_state = context.get("backend_semantic_state")
     source_metrics: List[str] = []
     for src in list(context.get("sources") or []):
         for metric in list(src.get("metrics_used") or []):
@@ -819,33 +932,18 @@ async def stream_db_query(
         rows=list(context.get("rows") or []),
         context_payload=dict(context.get("payload") or {}),
     )
-    guideline_records = get_thresholds_for_metrics(citation_metrics)
+    guideline_records = await run_in_threadpool(get_thresholds_for_metrics, citation_metrics)
     numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
     context["indexed_sources"] = indexed_sources
 
-    prompt_template = get_shared_prompt_template(
-        response_directive=db_helpers.db_response_directive(intent, question=query_text)
-    )
-    interpretation_cards, guardrails = db_helpers.split_knowledge_cards(context.get("knowledge_cards"))
-    context_data = build_grounded_context_sections(
-        measured_room_facts=payload,
-        backend_semantic_state=None,
-        knowledge_cards=interpretation_cards,
-        communication_guardrails=guardrails,
+    context_data = _build_db_context_data(
+        payload=measured_payload,
+        backend_semantic_state=backend_semantic_state,
+        knowledge_cards=context.get("knowledge_cards"),
         numbered_sources_block=numbered_sources_block,
+        conversation_context=conversation_context,
     )
-    messages = prompt_template.format_messages(
-        question=query_text,
-        context_label="Structured DB Query Result with knowledge grounding",
-        context_data=context_data,
-    )
-
-    prompt_parts = []
-    for m in messages:
-        role = getattr(m, "type", "user").upper()
-        content = str(getattr(m, "content", "") or "")
-        prompt_parts.append(f"{role}:\n{content}")
-    prompt_text = "\n\n".join(prompt_parts)
+    prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
 
     import os
     import httpx
@@ -853,23 +951,21 @@ async def stream_db_query(
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
     api_url = f"{base_url}/api/generate"
-    payload = {
+    ollama_payload = {
         "model": model,
         "prompt": prompt_text,
         "stream": True,
         "temperature": 0.4,
     }
-    # Some model/runtime combos emit more raw reasoning when think=False is passed
-    # explicitly. We only pass think=True and use server-side filtering for think=False.
-    if think is True:
-        payload["think"] = True
+    include_thinking = apply_ollama_think_to_payload(ollama_payload, think)
 
     in_thinking_block = False
     emitted_anything = False
-    include_thinking = think is not False
     try:
+        import httpx
+
         async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", api_url, json=payload) as response:
+            async with client.stream("POST", api_url, json=ollama_payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line:
@@ -902,5 +998,4 @@ async def stream_db_query(
     if include_thinking and in_thinking_block:
         yield "</think>"
     elif not emitted_anything:
-        # Streaming may complete without tokens in error/edge cases.
         yield db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")

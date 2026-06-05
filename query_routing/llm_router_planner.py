@@ -65,6 +65,9 @@ _SYSTEM_PROMPT = (
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n\n'
     "Routing rules:\n"
+    "- When Prior conversation is present, use it only to fill missing lab/time slots. "
+    "The current Question sets metric/topic scope; do not route to a prior-turn metric when "
+    "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature).\n"
     "- definition_explanation: conceptual questions about what a metric means (e.g. 'what is CO2?', 'what does IEQ mean?', 'explain TVOC')\n"
     "- current_status_db: current/latest readings without a time range; ALSO use this when the question asks for the current value of a known metric using 'what is the [metric]?', 'what's the [metric]?', or 'how is the [metric]?' (definite article + metric name = value request, NOT a definition)\n"
     "- aggregation_db: trends, averages, summaries over a time window\n"
@@ -175,7 +178,21 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     )
 
 
-def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
+def _build_router_user_message(question: str, lab_name: Optional[str], conversation_context: str) -> str:
+    """Build the user message for the router, including a compact prior-context snippet."""
+    base = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
+    if not conversation_context:
+        return base
+    ctx_lines = [
+        line for line in conversation_context.strip().splitlines()
+        if line.strip() and not line.startswith("Previous conversation context")
+    ]
+    # Keep last 4 lines (≈ 2 prior turns) to avoid ballooning the router prompt.
+    snippet = "\n".join(ctx_lines[-4:])
+    return f"Prior conversation:\n{snippet}\n\n{base}"
+
+
+def plan_route(question: str, lab_name: Optional[str] = None, conversation_context: str = "") -> RoutePlan:
     base_url = router_base_url()
     model = router_model()
     timeout = router_timeout_seconds()
@@ -184,10 +201,8 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
 
-    user_message = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
-    options: dict = {"temperature": temperature, "num_predict": 256}
-    if thinking:
-        options["think"] = True
+    user_message = _build_router_user_message(question, lab_name, conversation_context)
+    options: dict = {"temperature": temperature, "num_predict": 256, "think": thinking}
 
     for attempt in range(max_retries):
         if attempt > 0:
@@ -217,7 +232,7 @@ def plan_route(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     return _fallback_plan(question, lab_name)
 
 
-async def plan_route_async(question: str, lab_name: Optional[str] = None) -> RoutePlan:
+async def plan_route_async(question: str, lab_name: Optional[str] = None, conversation_context: str = "") -> RoutePlan:
     """Async version of plan_route — uses httpx so the event loop is never blocked."""
     base_url = router_base_url()
     model = router_model()
@@ -227,10 +242,8 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None) -> Rou
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
 
-    user_message = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
-    options: dict = {"temperature": temperature, "num_predict": 256}
-    if thinking:
-        options["think"] = True
+    user_message = _build_router_user_message(question, lab_name, conversation_context)
+    options: dict = {"temperature": temperature, "num_predict": 256, "think": thinking}
 
     for attempt in range(max_retries):
         if attempt > 0:

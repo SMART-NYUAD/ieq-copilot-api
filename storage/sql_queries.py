@@ -2,7 +2,6 @@
 
 ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL = """
 SELECT
-    c.knowledge_card_id,
     c.card_type,
     c.topic,
     c.title,

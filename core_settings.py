@@ -149,6 +149,12 @@ def router_thinking_enabled() -> bool:
     return _parse_bool(os.getenv("OLLAMA_ROUTER_THINKING", "false"), default=False)
 
 
+def ollama_thinking_enabled() -> bool:
+    """Whether answer-generation Ollama calls use model thinking mode."""
+    ensure_env_loaded()
+    return _parse_bool(os.getenv("OLLAMA_THINKING", "false"), default=False)
+
+
 def router_max_retries() -> int:
     ensure_env_loaded()
     raw = (os.getenv("OLLAMA_ROUTER_MAX_RETRIES", "2") or "2").strip()

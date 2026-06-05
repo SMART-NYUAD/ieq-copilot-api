@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+import json
+from typing import Any, Dict, Optional
 
 from fastapi.concurrency import run_in_threadpool
 
 try:
-    from storage.conversation_store import append_conversation_turn, build_compact_context
+    from storage.conversation_context import ConversationContext, build_conversation_context
+    from storage.conversation_store import append_conversation_turn
     from query_routing.query_orchestrator import execute_query as _default_execute_query
 except ImportError:
-    from ..storage.conversation_store import append_conversation_turn, build_compact_context
+    from ..storage.conversation_context import ConversationContext, build_conversation_context
+    from ..storage.conversation_store import append_conversation_turn
     from ..query_routing.query_orchestrator import execute_query as _default_execute_query
 
 
@@ -21,14 +24,17 @@ SSE_HEADERS: Dict[str, str] = {
 }
 
 
-def build_query_inputs(
+def build_query_context(
     question: str,
+    lab_name: Optional[str],
     conversation_id: Optional[str],
-) -> Tuple[str, Optional[str], str, bool]:
-    normalized_conversation_id, context_block = build_compact_context(conversation_id)
-    if context_block:
-        return str(question or "").strip(), normalized_conversation_id, context_block, True
-    return str(question or "").strip(), normalized_conversation_id, "", False
+) -> ConversationContext:
+    """Build the canonical ConversationContext for one HTTP turn."""
+    return build_conversation_context(
+        question=question,
+        lab_name=lab_name,
+        conversation_id=conversation_id,
+    )
 
 
 def persist_turn(conversation_id: Optional[str], question: str, answer: str) -> Optional[int]:
@@ -66,38 +72,45 @@ def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
     return meta
 
 
+def _collect_token_text(chunk: str, in_think: bool) -> tuple[str, bool]:
+    """Parse one SSE chunk, return (text_to_keep, new_in_think_state)."""
+    if not chunk.startswith("data:"):
+        return "", in_think
+    try:
+        payload = json.loads(chunk[5:].strip())
+    except (json.JSONDecodeError, AttributeError):
+        return "", in_think
+    if payload.get("event") != "token":
+        return "", in_think
+    text = payload.get("text", "")
+    if text == "<think>":
+        return "", True
+    if text == "</think>":
+        return "", False
+    if in_think:
+        return "", in_think
+    return text, in_think
+
+
 async def execute_non_stream_query(
     *,
-    question: str,
-    latest_user_question: str,
-    conversation_context: str,
+    ctx: ConversationContext,
     k: int,
-    lab_name: Optional[str],
     allow_clarify: bool,
-    conversation_id: Optional[str],
-    context_applied: bool,
     endpoint_key: str = "query_sync",
     execute_query_fn: Any = None,
 ) -> Dict[str, Any]:
     fn = execute_query_fn if execute_query_fn is not None else _default_execute_query
-    result = await run_in_threadpool(
-        fn,
-        latest_user_question,
-        k,
-        lab_name,
-        allow_clarify,
-        endpoint_key,
-        conversation_context,
-    )
+    result = await run_in_threadpool(fn, ctx, k, allow_clarify, endpoint_key)
     turn_index = persist_turn(
-        conversation_id=conversation_id,
-        question=question,
+        conversation_id=ctx.conversation_id,
+        question=ctx.original_question,
         answer=str(result.get("answer") or ""),
     )
     metadata = attach_conversation_metadata(
         dict(result.get("metadata") or {}),
-        conversation_id=conversation_id,
-        conversation_context_applied=context_applied,
+        conversation_id=ctx.conversation_id,
+        conversation_context_applied=bool(ctx.raw_block),
         turn_index=turn_index,
     )
     return {"result": result, "turn_index": turn_index, "metadata": metadata}

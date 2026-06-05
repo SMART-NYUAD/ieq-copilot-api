@@ -1,5 +1,7 @@
 """Routed query endpoints (sync + stream)."""
 
+import json
+import re
 from typing import Dict
 
 from fastapi import APIRouter, HTTPException
@@ -12,7 +14,7 @@ try:
     from http_routes.route_helpers import (
         SSE_HEADERS,
         attach_conversation_metadata,
-        build_query_inputs,
+        build_query_context,
         persist_turn,
     )
     from runtime_errors import log_exception, stream_error_payload
@@ -22,7 +24,7 @@ except ImportError:
     from .route_helpers import (
         SSE_HEADERS,
         attach_conversation_metadata,
-        build_query_inputs,
+        build_query_context,
         persist_turn,
     )
     from ..runtime_errors import log_exception, stream_error_payload
@@ -50,29 +52,24 @@ async def query_cards(request: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     try:
         k = _normalize_k(request.k)
-        lab_name = _normalize_lab(request.lab_name)
-        latest_user_question, conversation_id, conversation_context, context_applied = build_query_inputs(
-            question=question,
-            conversation_id=request.conversation_id,
-        )
+        ctx = build_query_context(question, _normalize_lab(request.lab_name), request.conversation_id)
+
         result = await run_in_threadpool(
             execute_query,
-            latest_user_question,
+            ctx,
             k,
-            lab_name,
             _normalize_allow_clarify(request.allow_clarify),
             "query_sync",
-            conversation_context,
         )
         turn_index = persist_turn(
-            conversation_id=conversation_id,
+            conversation_id=ctx.conversation_id,
             question=question,
             answer=str(result.get("answer") or ""),
         )
         metadata = attach_conversation_metadata(
             dict(result.get("metadata") or {}),
-            conversation_id=conversation_id,
-            conversation_context_applied=context_applied,
+            conversation_id=ctx.conversation_id,
+            conversation_context_applied=bool(ctx.raw_block),
             turn_index=turn_index,
         )
         return QueryResponse(
@@ -80,7 +77,7 @@ async def query_cards(request: QueryRequest):
             timescale=result["timescale"],
             cards_retrieved=result["cards_retrieved"],
             recent_card=result["recent_card"],
-            conversation_id=conversation_id,
+            conversation_id=ctx.conversation_id,
             turn_index=turn_index,
             metadata=metadata,
             footnotes=list(result.get("footnotes") or []),
@@ -98,25 +95,39 @@ async def query_cards_stream(request: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
     k = _normalize_k(request.k)
-    lab_name = _normalize_lab(request.lab_name)
-    latest_user_question, conversation_id, conversation_context, _ = build_query_inputs(
-        question=question,
-        conversation_id=request.conversation_id,
-    )
+    ctx = build_query_context(question, _normalize_lab(request.lab_name), request.conversation_id)
 
     async def _generate():
+        accumulated: list[str] = []
+        in_think = False
         try:
-            async for chunk in stream_query(
-                question=latest_user_question,
-                k=k,
-                lab_name=lab_name,
-                endpoint_key="query_stream",
-                conversation_context=conversation_context,
-            ):
+            async for chunk in stream_query(ctx, k=k, endpoint_key="query_stream"):
+                try:
+                    raw = chunk.removeprefix("data: ").strip()
+                    if raw:
+                        evt = json.loads(raw)
+                        if evt.get("event") == "token":
+                            text = str(evt.get("text") or "")
+                            if "<think>" in text:
+                                in_think = True
+                            if not in_think:
+                                accumulated.append(text)
+                            if "</think>" in text:
+                                in_think = False
+                except Exception:
+                    pass
                 yield chunk
         except Exception as exc:
             log_exception(exc, scope="query.stream")
             yield stream_error_payload(exc)
+            return
+
+        full_answer = re.sub(r"<think>.*?</think>", "", "".join(accumulated), flags=re.DOTALL).strip()
+        persist_turn(
+            conversation_id=ctx.conversation_id,
+            question=question,
+            answer=full_answer,
+        )
 
     return StreamingResponse(
         _generate(),
