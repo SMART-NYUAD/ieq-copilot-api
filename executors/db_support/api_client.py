@@ -23,9 +23,11 @@ _CLIENT: Optional[httpx.Client] = None
 _RESPONSE_CACHE: Dict[str, Tuple[float, Any]] = {}
 
 # Sensor metrics available via /metrics/{type}/agg-summary
-_SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature"}
+_SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature", "voc"}
 # "sound" in this codebase == "noise" in the API
 _SOUND_ALIASES = {"sound", "noise"}
+# Internal canonical "tvoc" == "voc" in the API
+_VOC_ALIASES = {"tvoc", "voc"}
 # Score metrics available via /indoor-data?type=...
 _SCORE_METRIC_MAP: Dict[str, str] = {
     "ieq": "IEQ",
@@ -78,6 +80,8 @@ def close_client() -> None:
 def _api_sensor_slug(metric: str) -> Optional[str]:
     """Return the API sensor slug or None if this metric is not a sensor type."""
     m = metric.lower()
+    if m in _VOC_ALIASES:
+        return "voc"
     if m in _SENSOR_METRICS:
         return m
     if m in _SOUND_ALIASES:

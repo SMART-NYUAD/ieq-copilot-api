@@ -11,7 +11,7 @@ except ImportError:
     from . import metric_registry
     from .db_support import api_client
 
-_SENSOR_METRICS = ["co2", "pm25", "humidity", "temperature", "light", "sound"]
+_SENSOR_METRICS = ["co2", "pm25", "tvoc", "humidity", "temperature", "light", "sound"]
 
 _UNIT_OVERRIDES: Dict[str, str] = {
     "pm25": "ug/m3",

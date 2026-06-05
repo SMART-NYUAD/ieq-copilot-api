@@ -22668,8 +22668,8 @@
     ]
   },
   "test-conv-id": {
-    "updated_at": "2026-06-01T08:07:35.475958+00:00",
-    "last_turn_index": 2,
+    "updated_at": "2026-06-05T07:22:12.151029+00:00",
+    "last_turn_index": 3,
     "turns": [
       {
         "turn_index": 1,
@@ -22680,6 +22680,12 @@
       {
         "turn_index": 2,
         "timestamp": "2026-06-01T08:07:35.475933+00:00",
+        "user": "What does IEQ mean?",
+        "assistant": "ok"
+      },
+      {
+        "turn_index": 3,
+        "timestamp": "2026-06-05T07:22:12.151007+00:00",
         "user": "What does IEQ mean?",
         "assistant": "ok"
       }
