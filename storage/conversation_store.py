@@ -1,25 +1,29 @@
-"""Bounded conversation context with in-memory cache and JSON disk persistence."""
+"""Bounded conversation context with SQLite persistence.
+
+Thread model: WAL-mode SQLite with per-thread connections for reads;
+a module-level write lock serialises INSERT/UPDATE/DELETE so each
+conversation write is atomic without blocking concurrent readers.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 import re
-import json
+import sqlite3
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 
-_STORE_LOCK = Lock()
-_MEMORY_STORE: Dict[str, Any] = {}
-_STORE_LOADED = False
+_WRITE_LOCK = threading.Lock()
+_local = threading.local()
 
-_STORE_FILE_PATH = Path(
+_DB_PATH = Path(
     os.getenv(
-        "CONVERSATION_STORE_PATH",
-        str(Path(__file__).resolve().parents[1] / "data" / "conversation_turns.json"),
+        "CONVERSATION_DB_PATH",
+        str(Path(__file__).resolve().parents[1] / "data" / "conv.db"),
     )
 )
 
@@ -27,8 +31,47 @@ _MAX_TURNS_PER_CONVERSATION = max(4, int(os.getenv("CONVERSATION_MAX_TURNS", "24
 _RECENT_TURNS_FOR_CONTEXT = max(2, int(os.getenv("CONVERSATION_CONTEXT_TURNS", "12")))
 _MAX_CONTEXT_CHARS = max(400, int(os.getenv("CONVERSATION_CONTEXT_MAX_CHARS", "4000")))
 _MAX_MESSAGE_CHARS = max(300, int(os.getenv("CONVERSATION_MESSAGE_MAX_CHARS", "2000")))
+_MAX_CONVERSATIONS = max(50, int(os.getenv("CONVERSATION_MAX_STORED", "500")))
 
 _CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def _open_connection() -> sqlite3.Connection:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id              TEXT PRIMARY KEY,
+            updated_at      TEXT NOT NULL,
+            last_turn_index INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS turns (
+            conversation_id TEXT    NOT NULL,
+            turn_index      INTEGER NOT NULL,
+            ts              TEXT    NOT NULL,
+            user            TEXT    NOT NULL DEFAULT '',
+            assistant       TEXT    NOT NULL DEFAULT '',
+            PRIMARY KEY (conversation_id, turn_index)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at)"
+    )
+    conn.commit()
+    return conn
+
+
+def _conn() -> sqlite3.Connection:
+    """Return this thread's SQLite connection, opening it if needed."""
+    c = getattr(_local, "conn", None)
+    if c is None:
+        _local.conn = _open_connection()
+    return _local.conn
 
 
 def _utc_now() -> str:
@@ -43,8 +86,6 @@ def _sanitize_assistant_text(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-
-    # Remove historical forced labels from older prompt variants.
     text = re.sub(
         r"^\s*General explanation\s*\(not site-specific policy\)\s*:\s*",
         "",
@@ -60,38 +101,24 @@ def _sanitize_assistant_text(value: str) -> str:
     return text.strip()
 
 
-def _read_store() -> Dict[str, Any]:
-    return _MEMORY_STORE
-
-
-def _write_store(payload: Dict[str, Any]) -> None:
-    global _MEMORY_STORE  # pylint: disable=global-statement
-    _MEMORY_STORE = payload
-
-
-def _load_store_from_disk() -> None:
-    global _STORE_LOADED  # pylint: disable=global-statement
-    if _STORE_LOADED:
+def _evict_oldest_conversations(conn: sqlite3.Connection) -> None:
+    """Delete oldest conversations (by updated_at) when over the cap."""
+    count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+    overflow = count - _MAX_CONVERSATIONS
+    if overflow <= 0:
         return
-
-    _STORE_LOADED = True
-    try:
-        _STORE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not _STORE_FILE_PATH.exists():
-            _STORE_FILE_PATH.write_text("{}\n", encoding="utf-8")
-            _write_store({})
-            return
-
-        raw = _STORE_FILE_PATH.read_text(encoding="utf-8").strip() or "{}"
-        parsed = json.loads(raw)
-        _write_store(parsed if isinstance(parsed, dict) else {})
-    except Exception:
-        _write_store({})
-
-
-def _persist_store_to_disk(payload: Dict[str, Any]) -> None:
-    _STORE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STORE_FILE_PATH.write_text(f"{json.dumps(payload, ensure_ascii=True, indent=2)}\n", encoding="utf-8")
+    old_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM conversations ORDER BY updated_at ASC LIMIT ?",
+            (overflow,),
+        ).fetchall()
+    ]
+    if not old_ids:
+        return
+    placeholders = ",".join("?" * len(old_ids))
+    conn.execute(f"DELETE FROM turns WHERE conversation_id IN ({placeholders})", old_ids)
+    conn.execute(f"DELETE FROM conversations WHERE id IN ({placeholders})", old_ids)
 
 
 def normalize_conversation_id(conversation_id: Optional[str]) -> str:
@@ -110,33 +137,35 @@ def append_conversation_turn(
     cid = normalize_conversation_id(conversation_id)
     user_text = _trim_text(user_message)
     assistant_text = _trim_text(_sanitize_assistant_text(assistant_message))
+    now = _utc_now()
 
-    with _STORE_LOCK:
-        _load_store_from_disk()
-        store = _read_store()
-        bucket = store.get(cid) if isinstance(store.get(cid), dict) else {}
-        turns = bucket.get("turns") if isinstance(bucket.get("turns"), list) else []
-        last_turn_index = int(bucket.get("last_turn_index") or 0)
-        turn_index = last_turn_index + 1
+    with _WRITE_LOCK:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT last_turn_index FROM conversations WHERE id = ?", (cid,)
+        ).fetchone()
+        last_index = row["last_turn_index"] if row else 0
+        turn_index = last_index + 1
 
-        turns.append(
-            {
-                "turn_index": turn_index,
-                "timestamp": _utc_now(),
-                "user": user_text,
-                "assistant": assistant_text,
-            }
+        conn.execute(
+            "INSERT OR REPLACE INTO conversations (id, updated_at, last_turn_index) VALUES (?, ?, ?)",
+            (cid, now, turn_index),
         )
-        if len(turns) > _MAX_TURNS_PER_CONVERSATION:
-            turns = turns[-_MAX_TURNS_PER_CONVERSATION:]
-
-        store[cid] = {
-            "updated_at": _utc_now(),
-            "last_turn_index": turn_index,
-            "turns": turns,
-        }
-        _write_store(store)
-        _persist_store_to_disk(store)
+        conn.execute(
+            "INSERT OR REPLACE INTO turns (conversation_id, turn_index, ts, user, assistant) VALUES (?, ?, ?, ?, ?)",
+            (cid, turn_index, now, user_text, assistant_text),
+        )
+        # Trim turns that exceed the per-conversation cap
+        conn.execute(
+            """DELETE FROM turns
+               WHERE conversation_id = ?
+                 AND turn_index <= (
+                     SELECT MAX(turn_index) - ? FROM turns WHERE conversation_id = ?
+                 )""",
+            (cid, _MAX_TURNS_PER_CONVERSATION, cid),
+        )
+        _evict_oldest_conversations(conn)
+        conn.commit()
 
     return turn_index
 
@@ -148,27 +177,24 @@ def build_compact_context(conversation_id: Optional[str]) -> Tuple[Optional[str]
         return normalize_conversation_id(None), ""
     cid = normalize_conversation_id(raw)
 
-    with _STORE_LOCK:
-        _load_store_from_disk()
-        store = _read_store()
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT user, assistant FROM turns
+           WHERE conversation_id = ?
+           ORDER BY turn_index DESC
+           LIMIT ?""",
+        (cid, _RECENT_TURNS_FOR_CONTEXT),
+    ).fetchall()
 
-    bucket = store.get(cid)
-    if not isinstance(bucket, dict):
+    if not rows:
         return cid, ""
-
-    turns = bucket.get("turns")
-    if not isinstance(turns, list) or not turns:
-        return cid, ""
-
-    recent_turns: List[Dict[str, Any]] = [item for item in turns if isinstance(item, dict)][
-        -_RECENT_TURNS_FOR_CONTEXT:
-    ]
 
     lines: List[str] = []
-    for turn in recent_turns:
-        user_text = _trim_text(str(turn.get("user") or ""), max_chars=320)
-        assistant_text = _trim_text(str(turn.get("assistant") or ""), max_chars=320)
-        assistant_text = _sanitize_assistant_text(assistant_text)
+    for row in reversed(rows):  # oldest first
+        user_text = _trim_text(str(row["user"] or ""), max_chars=320)
+        assistant_text = _trim_text(
+            _sanitize_assistant_text(str(row["assistant"] or "")), max_chars=320
+        )
         if not user_text and not assistant_text:
             continue
         if user_text:

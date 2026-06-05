@@ -1105,6 +1105,87 @@ def _handle_default(
     }
 
 
+def _handle_forecast(
+    *,
+    intent: IntentType,
+    metric_alias: str,
+    resolved_lab_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Fetch 6-hour ahead predictions from the Smart CRG predictions API."""
+    if intent != IntentType.FORECAST_DB:
+        return None
+    if not resolved_lab_name:
+        return {
+            "operation_type": "forecast",
+            "rows": [],
+            "fallback_answer": (
+                "I need a lab name to fetch the forecast. "
+                "Which lab should I check (for example: smart_lab, concrete_lab)?"
+            ),
+            "metrics_used": [metric_alias],
+            "time_series_rows": [],
+        }
+
+    data = api_client.fetch_predictions(resolved_lab_name, metric_alias)
+    if data is None:
+        return {
+            "operation_type": "forecast",
+            "rows": [],
+            "fallback_answer": (
+                f"The forecast service is currently unavailable for {metric_alias} "
+                f"in {resolved_lab_name}. Please try again in a moment."
+            ),
+            "metrics_used": [metric_alias],
+            "time_series_rows": [],
+        }
+
+    # Normalise varying API response shapes
+    predictions = (
+        data.get("predictions")
+        or data.get("forecast")
+        or (data.get("data") or {}).get("predictions")
+        or []
+    )
+    rows = []
+    for item in predictions:
+        bucket = item.get("timestamp") or item.get("time") or item.get("bucket")
+        value = (
+            item.get("predicted_value")
+            or item.get("value")
+            or item.get("prediction")
+        )
+        if bucket is not None:
+            rows.append(
+                {
+                    "lab_space": resolved_lab_name,
+                    "bucket": bucket,
+                    "value": value,
+                    "is_forecast": True,
+                }
+            )
+
+    display = metric_registry.metric_display(metric_alias)
+    if not rows:
+        fallback = (
+            f"No prediction data was returned for {display} in {resolved_lab_name}. "
+            "The model may not have generated forecasts yet."
+        )
+    else:
+        n = len(rows)
+        fallback = (
+            f"Here are the next {n} predicted {display} readings for {resolved_lab_name} "
+            f"(covering up to 6 hours ahead)."
+        )
+
+    return {
+        "operation_type": "forecast",
+        "rows": rows,
+        "fallback_answer": fallback,
+        "metrics_used": [metric_alias],
+        "time_series_rows": rows,
+    }
+
+
 def execute_intent_query(
     *,
     question: str,
@@ -1135,6 +1216,11 @@ def execute_intent_query(
     )
 
     handlers = [
+        lambda: _handle_forecast(
+            intent=intent,
+            metric_alias=metric_alias,
+            resolved_lab_name=resolved_lab_name,
+        ),
         lambda: _handle_diagnostic(
             question=question,
             intent=intent,

@@ -19,7 +19,6 @@ try:
         router_model,
         router_retry_jitter_ms,
         router_temperature,
-        router_thinking_enabled,
         router_timeout_seconds,
     )
     from query_routing.intent_classifier import IntentType
@@ -31,7 +30,6 @@ except ImportError:
         router_model,
         router_retry_jitter_ms,
         router_temperature,
-        router_thinking_enabled,
         router_timeout_seconds,
     )
     from .intent_classifier import IntentType
@@ -49,16 +47,24 @@ _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
     '  "intent": one of [definition_explanation, current_status_db, point_lookup_db, '
-    "aggregation_db, comparison_db, anomaly_analysis_db]\n"
+    "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, tvoc, humidity, temperature, light, sound, ieq]\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n\n'
     "Routing rules:\n"
+    "- CRITICAL OVERRIDE: If the question contains the words 'forecast', 'predict', 'prediction', "
+    "'will be', 'going to be', or asks about FUTURE sensor values, ALWAYS use `forecast_db` — "
+    "with NO exceptions. This rule beats every other rule, including the definite-article "
+    "heuristic for current_status_db. 'Predict the X' means forecast_db, NOT current_status_db. "
+    "Never route these to `aggregation_db`, `current_status_db`, or any other intent. "
+    "Prior conversation showing historical/aggregation data does NOT change this. "
+    "`forecast_db` = future data only. `aggregation_db` = past data only.\n"
     "- When Prior conversation is present, use it only to fill missing lab/time slots. "
     "The current Question sets metric/topic scope; do not route to a prior-turn metric when "
-    "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature).\n\n"
+    "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature). "
+    "Prior context NEVER overrides the CRITICAL OVERRIDE rule above.\n\n"
     "Intent definitions:\n"
     "- definition_explanation: ONLY for conceptual/educational questions asking what a metric means, "
     "with no definite article before the metric name. "
@@ -75,7 +81,17 @@ _SYSTEM_PROMPT = (
     "- point_lookup_db: The user asks for a reading at a specific past moment (not a range or average). "
     "Examples: 'what was the CO2 at 3pm?', 'what was the temperature at 9am this morning?', "
     "'what did humidity read an hour ago?'.\n"
-    "- aggregation_db: Questions about trends, averages, or summaries across a time window. "
+    "- forecast_db: FUTURE/PREDICTED sensor values only — the system provides 6-hour ahead predictions. "
+    "Use whenever the user says 'forecast', 'predict', 'prediction', 'will', 'going to be', or asks about "
+    "what values will be in the future. NEVER use for historical/past data. "
+    "IMPORTANT: 'predict the X' constructions always map here even though they contain 'the' — "
+    "the predict/forecast keyword overrides the definite-article rule. "
+    "Examples: 'can you forecast the PM2.5?', 'forecast pm2.5', 'predict CO2 levels', "
+    "'predict the pm2.5', 'predict the CO2', 'predict the temperature', "
+    "'what will the temperature be?', 'give me a forecast', 'PM2.5 prediction', "
+    "'what is the expected air quality?', 'will humidity rise?', 'CO2 forecast'.\n"
+    "- aggregation_db: PAST data only — trends, historical averages, or summaries across a time window. "
+    "NEVER use for future/predicted values (that is `forecast_db`). "
     "Examples: 'average CO2 last 24 hours', 'how has humidity trended this week?', "
     "'daily temperature summary', 'CO2 over the past 7 days'.\n"
     "- comparison_db: Comparing two or more metrics in the same lab, or the same metric across two time periods. "
@@ -132,8 +148,6 @@ def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
 
 def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Optional[RoutePlan]:
     text = raw.strip()
-    # Strip thinking tags if present
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     # Extract JSON object
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
@@ -207,12 +221,11 @@ def plan_route(question: str, lab_name: Optional[str] = None, conversation_conte
     model = router_model()
     timeout = router_timeout_seconds()
     temperature = router_temperature()
-    thinking = router_thinking_enabled()
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
 
     user_message = _build_router_user_message(question, lab_name, conversation_context)
-    options: dict = {"temperature": temperature, "num_predict": 256, "think": thinking}
+    options: dict = {"temperature": temperature, "num_predict": 256}
 
     for attempt in range(max_retries):
         if attempt > 0:
@@ -248,12 +261,11 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None, conver
     model = router_model()
     timeout = router_timeout_seconds()
     temperature = router_temperature()
-    thinking = router_thinking_enabled()
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
 
     user_message = _build_router_user_message(question, lab_name, conversation_context)
-    options: dict = {"temperature": temperature, "num_predict": 256, "think": thinking}
+    options: dict = {"temperature": temperature, "num_predict": 256}
 
     for attempt in range(max_retries):
         if attempt > 0:

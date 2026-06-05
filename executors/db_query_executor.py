@@ -3,15 +3,19 @@
 from datetime import datetime, timedelta, timezone
 import calendar
 import json
+import os
 import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+import httpx
 import pandas as pd
 
 try:
+    from core_settings import ollama_base_url, ollama_model
     from query_routing.intent_classifier import IntentType
     from executors import metric_registry
 except ImportError:
+    from ..core_settings import ollama_base_url, ollama_model
     from ..query_routing.intent_classifier import IntentType
     from .. import metric_registry
 
@@ -19,14 +23,12 @@ try:
     from executors.knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
-        apply_ollama_think_to_payload,
         search_knowledge_cards,
     )
 except ImportError:
     from .knowledge_executor import (
         _build_prompt_text_from_messages,
         _generate_ollama_text,
-        apply_ollama_think_to_payload,
         search_knowledge_cards,
     )
 try:
@@ -789,7 +791,6 @@ async def stream_db_tokens(
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
     query_context: Optional[Dict[str, Any]] = None,
-    think: Optional[bool] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     conversation_context: str = "",
 ) -> AsyncIterator[str]:
@@ -841,11 +842,8 @@ async def stream_db_tokens(
     )
     prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
 
-    import os
-    import httpx
-
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+    base_url = ollama_base_url()
+    model = ollama_model()
     api_url = f"{base_url}/api/generate"
     ollama_payload = {
         "model": model,
@@ -853,13 +851,9 @@ async def stream_db_tokens(
         "stream": True,
         "temperature": 0.4,
     }
-    include_thinking = apply_ollama_think_to_payload(ollama_payload, think)
 
-    in_thinking_block = False
     emitted_anything = False
     try:
-        import httpx
-
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", api_url, json=ollama_payload) as response:
                 response.raise_for_status()
@@ -871,141 +865,18 @@ async def stream_db_tokens(
                     except json.JSONDecodeError:
                         continue
 
-                    thinking_text = str(event.get("thinking") or "")
                     response_text = str(event.get("response") or "")
-
-                    if include_thinking and thinking_text:
-                        if not in_thinking_block:
-                            in_thinking_block = True
-                            emitted_anything = True
-                            yield _sse_token_event("<think>")
-                        yield _sse_token_event(thinking_text)
-                        emitted_anything = True
-
                     if response_text:
-                        if in_thinking_block:
-                            in_thinking_block = False
-                            yield _sse_token_event("</think>")
                         emitted_anything = True
                         yield _sse_token_event(response_text)
     except Exception:
-        fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
-        yield _sse_token_event(fb)
+        yield _sse_token_event(str(fallback_answer or ""))
         yield _sse_done_event()
         return
 
-    if include_thinking and in_thinking_block:
-        yield _sse_token_event("</think>")
-    elif not emitted_anything:
-        fb = db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
-        yield _sse_token_event(fb)
+    if not emitted_anything:
+        yield _sse_token_event(str(fallback_answer or ""))
 
     yield _sse_done_event()
 
 
-async def stream_db_query(
-    question: str,
-    intent: IntentType,
-    lab_name: Optional[str],
-    planner_hints: Optional[Dict[str, Any]] = None,
-    query_context: Optional[Dict[str, Any]] = None,
-    think: Optional[bool] = None,
-    guideline_records: Optional[List[Dict[str, Any]]] = None,
-    conversation_context: str = "",
-) -> AsyncIterator[str]:
-    query_text = str(question or "").strip()
-    context = query_context or prepare_db_query(
-        question=question,
-        intent=intent,
-        lab_name=lab_name,
-        planner_hints=planner_hints,
-        guideline_records=guideline_records,
-    )
-    from fastapi.concurrency import run_in_threadpool
-
-    if context.get("invariant_violation"):
-        yield str(context.get("fallback_answer") or "")
-        return
-    measured_payload = context["payload"]
-    fallback_answer = context["fallback_answer"]
-    backend_semantic_state = context.get("backend_semantic_state")
-    source_metrics: List[str] = []
-    for src in list(context.get("sources") or []):
-        for metric in list(src.get("metrics_used") or []):
-            token = str(metric or "").strip().lower()
-            if token and token not in source_metrics:
-                source_metrics.append(token)
-    citation_metrics = _collect_citation_metrics(
-        question=query_text,
-        metric_alias=str(context.get("metric_alias") or "ieq"),
-        metrics_used=source_metrics,
-        rows=list(context.get("rows") or []),
-        context_payload=dict(context.get("payload") or {}),
-    )
-    guideline_records = await run_in_threadpool(get_thresholds_for_metrics, citation_metrics)
-    numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
-    context["indexed_sources"] = indexed_sources
-
-    context_data = _build_db_context_data(
-        payload=measured_payload,
-        backend_semantic_state=backend_semantic_state,
-        knowledge_cards=context.get("knowledge_cards"),
-        numbered_sources_block=numbered_sources_block,
-        conversation_context=conversation_context,
-    )
-    prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
-
-    import os
-    import httpx
-
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
-    api_url = f"{base_url}/api/generate"
-    ollama_payload = {
-        "model": model,
-        "prompt": prompt_text,
-        "stream": True,
-        "temperature": 0.4,
-    }
-    include_thinking = apply_ollama_think_to_payload(ollama_payload, think)
-
-    in_thinking_block = False
-    emitted_anything = False
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", api_url, json=ollama_payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    thinking_text = str(event.get("thinking") or "")
-                    response_text = str(event.get("response") or "")
-
-                    if include_thinking and thinking_text:
-                        if not in_thinking_block:
-                            in_thinking_block = True
-                            emitted_anything = True
-                            yield "<think>"
-                        yield thinking_text
-
-                    if response_text:
-                        if in_thinking_block:
-                            in_thinking_block = False
-                            yield "</think>"
-                        emitted_anything = True
-                        yield response_text
-    except Exception:
-        yield db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")
-        return
-
-    if include_thinking and in_thinking_block:
-        yield "</think>"
-    elif not emitted_anything:
-        yield db_helpers.ensure_think_prefix(fallback_answer) if include_thinking else str(fallback_answer or "")

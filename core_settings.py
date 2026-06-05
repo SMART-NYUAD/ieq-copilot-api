@@ -144,15 +144,23 @@ def router_timeout_seconds() -> float:
         return 20.0
 
 
-def router_thinking_enabled() -> bool:
+
+def ollama_base_url() -> str:
+    """Base URL for the answer-generation Ollama endpoint."""
     ensure_env_loaded()
-    return _parse_bool(os.getenv("OLLAMA_ROUTER_THINKING", "false"), default=False)
+    return (
+        os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434") or "http://127.0.0.1:11434"
+    ).rstrip("/")
 
 
-def ollama_thinking_enabled() -> bool:
-    """Whether answer-generation Ollama calls use model thinking mode."""
+def ollama_model() -> str:
+    """Model name for answer-generation Ollama calls."""
     ensure_env_loaded()
-    return _parse_bool(os.getenv("OLLAMA_THINKING", "false"), default=False)
+    return (
+        os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+        or "qwen3:30b-a3b-instruct-2507-q4_K_M"
+    ).strip()
+
 
 
 def router_max_retries() -> int:

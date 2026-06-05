@@ -812,14 +812,6 @@ def build_correlation_answer(
     )
 
 
-def ensure_think_prefix(text: str) -> str:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return "<think></think>"
-    if normalized.startswith("<think>"):
-        return normalized
-    return f"<think></think>{normalized}"
-
 
 def build_db_payload(
     intent: Any,

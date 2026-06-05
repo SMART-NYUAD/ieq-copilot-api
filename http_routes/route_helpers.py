@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -71,25 +70,6 @@ def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
             meta[attr] = val.value if hasattr(val, "value") else val
     return meta
 
-
-def _collect_token_text(chunk: str, in_think: bool) -> tuple[str, bool]:
-    """Parse one SSE chunk, return (text_to_keep, new_in_think_state)."""
-    if not chunk.startswith("data:"):
-        return "", in_think
-    try:
-        payload = json.loads(chunk[5:].strip())
-    except (json.JSONDecodeError, AttributeError):
-        return "", in_think
-    if payload.get("event") != "token":
-        return "", in_think
-    text = payload.get("text", "")
-    if text == "<think>":
-        return "", True
-    if text == "</think>":
-        return "", False
-    if in_think:
-        return "", in_think
-    return text, in_think
 
 
 async def execute_non_stream_query(

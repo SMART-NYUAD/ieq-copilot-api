@@ -65,7 +65,7 @@ def _run_breakdown(
 
         t2 = time.perf_counter()
         prompt_text = _build_knowledge_prompt(question, ctx["grounded_context"])
-        _generate_ollama_text(prompt_text, temperature=0.4, think=False)
+        _generate_ollama_text(prompt_text, temperature=0.4)
         timings["ollama_generate_ms"] = (time.perf_counter() - t2) * 1000.0
 
     else:

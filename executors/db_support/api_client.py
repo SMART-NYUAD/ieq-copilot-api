@@ -11,6 +11,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 import httpx
 
 API_BASE_URL = "http://192.168.50.99:7001"
+# Predictions (forecasts) are served from the public API, not the internal sensor host.
+# Override via PREDICTIONS_API_BASE_URL env var if needed.
+import os as _os
+_PREDICTIONS_API_BASE_URL = _os.getenv("PREDICTIONS_API_BASE_URL", "https://api.smart-crg.com").rstrip("/")
+del _os
 _MAX_CONCURRENT_API_CALLS = 6
 _T = TypeVar("_T")
 
@@ -18,6 +23,7 @@ _METRICS_CACHE_TTL_SECONDS = 45.0
 _SPACES_CACHE_TTL_SECONDS = 300.0
 _AGG_CACHE_TTL_SECONDS = 45.0
 _INDOOR_CACHE_TTL_SECONDS = 45.0
+_PREDICTIONS_CACHE_TTL_SECONDS = 120.0
 
 _CLIENT: Optional[httpx.Client] = None
 _RESPONSE_CACHE: Dict[str, Tuple[float, Any]] = {}
@@ -447,6 +453,38 @@ def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str,
         row[f"{metric}_stddev"] = None
     row["reading_count"] = sum((r or {}).get("reading_count", 0) for r in per_space)
     return row
+
+
+def fetch_predictions(slug: str, metric: str) -> Optional[Dict[str, Any]]:
+    """GET /spaces/{slug}/metrics/{metric}/predictions — returns next-6-hour forecast dict.
+
+    Tries the API slug first (e.g. 'voc' for tvoc), falls back to the canonical
+    name so the caller does not need to normalise before calling.
+    Returns the raw payload dict or None on failure.
+    """
+    api_slug = _api_sensor_slug(metric) or metric.lower()
+    cache_key = f"predictions:{slug}:{api_slug}"
+    cached = _cache_get(cache_key, _PREDICTIONS_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    try:
+        resp = _get_client().get(
+            f"{_PREDICTIONS_API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/predictions",
+            headers={"accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            payload = data.get("data") if data.get("success") else data
+            if payload is not None:
+                _cache_set(cache_key, payload)
+                return payload
+    except Exception:
+        pass
+    stale = _RESPONSE_CACHE.get(cache_key)
+    if stale is not None:
+        return stale[1]
+    return None
 
 
 def fetch_all_spaces_agg_rows_for_metric(metric: str, window_hours: int) -> List[Dict[str, Any]]:

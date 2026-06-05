@@ -1,7 +1,6 @@
 """Routed query endpoints (sync + stream)."""
 
 import json
-import re
 from typing import Dict
 
 from fastapi import APIRouter, HTTPException
@@ -99,7 +98,6 @@ async def query_cards_stream(request: QueryRequest):
 
     async def _generate():
         accumulated: list[str] = []
-        in_think = False
         try:
             async for chunk in stream_query(ctx, k=k, endpoint_key="query_stream"):
                 try:
@@ -107,13 +105,7 @@ async def query_cards_stream(request: QueryRequest):
                     if raw:
                         evt = json.loads(raw)
                         if evt.get("event") == "token":
-                            text = str(evt.get("text") or "")
-                            if "<think>" in text:
-                                in_think = True
-                            if not in_think:
-                                accumulated.append(text)
-                            if "</think>" in text:
-                                in_think = False
+                            accumulated.append(str(evt.get("text") or ""))
                 except Exception:
                     pass
                 yield chunk
@@ -122,11 +114,10 @@ async def query_cards_stream(request: QueryRequest):
             yield stream_error_payload(exc)
             return
 
-        full_answer = re.sub(r"<think>.*?</think>", "", "".join(accumulated), flags=re.DOTALL).strip()
         persist_turn(
             conversation_id=ctx.conversation_id,
             question=question,
-            answer=full_answer,
+            answer="".join(accumulated),
         )
 
     return StreamingResponse(

@@ -398,6 +398,7 @@ def validate_db_execution_invariants(
         IntentType.AGGREGATION_DB,
         IntentType.COMPARISON_DB,
         IntentType.ANOMALY_ANALYSIS_DB,
+        IntentType.FORECAST_DB,
     }
 
     metric_justified = has_metric_hint or metric_explicit_in_planner
@@ -414,6 +415,7 @@ def validate_db_execution_invariants(
     time_justified = has_time_hint or has_currentness_hint or intent in {
         IntentType.CURRENT_STATUS_DB,
         IntentType.POINT_LOOKUP_DB,
+        IntentType.FORECAST_DB,  # always "next 6 hours" — no user time phrase needed
     }
     if not time_justified and analytical_intent and has_db_scope:
         # Aggregation-like intents can safely use deterministic default windows.

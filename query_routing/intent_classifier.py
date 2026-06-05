@@ -10,4 +10,5 @@ class IntentType(str, Enum):
     AGGREGATION_DB = "aggregation_db"
     COMPARISON_DB = "comparison_db"
     ANOMALY_ANALYSIS_DB = "anomaly_analysis_db"
+    FORECAST_DB = "forecast_db"
     UNKNOWN_FALLBACK = "unknown_fallback"
