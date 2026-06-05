@@ -6,14 +6,9 @@ from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-try:
-    from core_settings import load_settings
-    from http_routes.health_routes import router as health_router
-    from http_routes.query_routes import router as query_router
-except ImportError:
-    from .core_settings import load_settings
-    from .http_routes.health_routes import router as health_router
-    from .http_routes.query_routes import router as query_router
+from core_settings import load_settings
+from http_routes.health_routes import router as health_router
+from http_routes.query_routes import router as query_router
 
 
 @asynccontextmanager

@@ -4,16 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi.concurrency import run_in_threadpool
-
-try:
-    from storage.conversation_context import ConversationContext, build_conversation_context
-    from storage.conversation_store import append_conversation_turn
-    from query_routing.query_orchestrator import execute_query as _default_execute_query
-except ImportError:
-    from ..storage.conversation_context import ConversationContext, build_conversation_context
-    from ..storage.conversation_store import append_conversation_turn
-    from ..query_routing.query_orchestrator import execute_query as _default_execute_query
+from storage.conversation_context import ConversationContext, build_conversation_context
+from storage.conversation_store import append_conversation_turn
 
 
 SSE_HEADERS: Dict[str, str] = {
@@ -69,28 +61,3 @@ def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
         if val is not None:
             meta[attr] = val.value if hasattr(val, "value") else val
     return meta
-
-
-
-async def execute_non_stream_query(
-    *,
-    ctx: ConversationContext,
-    k: int,
-    allow_clarify: bool,
-    endpoint_key: str = "query_sync",
-    execute_query_fn: Any = None,
-) -> Dict[str, Any]:
-    fn = execute_query_fn if execute_query_fn is not None else _default_execute_query
-    result = await run_in_threadpool(fn, ctx, k, allow_clarify, endpoint_key)
-    turn_index = persist_turn(
-        conversation_id=ctx.conversation_id,
-        question=ctx.original_question,
-        answer=str(result.get("answer") or ""),
-    )
-    metadata = attach_conversation_metadata(
-        dict(result.get("metadata") or {}),
-        conversation_id=ctx.conversation_id,
-        conversation_context_applied=bool(ctx.raw_block),
-        turn_index=turn_index,
-    )
-    return {"result": result, "turn_index": turn_index, "metadata": metadata}

@@ -32,8 +32,8 @@ _RESPONSE_CACHE: Dict[str, Tuple[float, Any]] = {}
 _SENSOR_METRICS = {"co2", "humidity", "light", "pm25", "temperature", "voc"}
 # "sound" in this codebase == "noise" in the API
 _SOUND_ALIASES = {"sound", "noise"}
-# Internal canonical "tvoc" == "voc" in the API
-_VOC_ALIASES = {"tvoc", "voc"}
+# Legacy alias "tvoc" maps to API slug "voc"
+_VOC_LEGACY_ALIASES = {"tvoc"}
 # Score metrics available via /indoor-data?type=...
 _SCORE_METRIC_MAP: Dict[str, str] = {
     "ieq": "IEQ",
@@ -86,7 +86,7 @@ def close_client() -> None:
 def _api_sensor_slug(metric: str) -> Optional[str]:
     """Return the API sensor slug or None if this metric is not a sensor type."""
     m = metric.lower()
-    if m in _VOC_ALIASES:
+    if m in _VOC_LEGACY_ALIASES:
         return "voc"
     if m in _SENSOR_METRICS:
         return m
@@ -458,7 +458,7 @@ def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str,
 def fetch_predictions(slug: str, metric: str) -> Optional[Dict[str, Any]]:
     """GET /spaces/{slug}/metrics/{metric}/predictions — returns next-6-hour forecast dict.
 
-    Tries the API slug first (e.g. 'voc' for tvoc), falls back to the canonical
+    Tries the API slug first (e.g. 'voc'), falls back to the canonical
     name so the caller does not need to normalise before calling.
     Returns the raw payload dict or None on failure.
     """

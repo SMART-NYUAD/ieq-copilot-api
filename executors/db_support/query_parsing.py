@@ -11,14 +11,9 @@ import calendar
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    from query_routing.intent_classifier import IntentType
-    from executors.db_support import time_windows as db_time_windows
-    from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
-except ImportError:
-    from ...query_routing.intent_classifier import IntentType
-    from . import time_windows as db_time_windows
-    from ..metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
+from query_routing.intent_classifier import IntentType
+from executors.db_support import time_windows as db_time_windows
+from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
 
 _SPACE_TOKEN_RE = re.compile(r"\b([a-z0-9]+_lab)\b")
 _CORRELATION_HINTS = (
@@ -222,7 +217,7 @@ def extract_metric_aliases(question: str) -> List[str]:
         "contri_air": "air_contribution",
         "pm25_avg": "pm25",
         "co2_avg": "co2",
-        "voc_avg": "tvoc",
+        "voc_avg": "voc",
         "temp_avg": "temperature",
         "humidity_avg": "humidity",
         "light_avg": "light",
@@ -402,7 +397,7 @@ def validate_db_execution_invariants(
     }
 
     metric_justified = has_metric_hint or metric_explicit_in_planner
-    if not metric_justified and selected in {"ieq", "co2", "pm25", "tvoc", "humidity"}:
+    if not metric_justified and selected in {"ieq", "co2", "pm25", "voc", "humidity"}:
         # Permit core IEQ defaults when user asks generic air-quality status.
         metric_justified = generic_air_quality_query or any(token in q for token in ("comfortable", "comfort"))
     if not metric_justified and analytical_intent and has_db_scope:

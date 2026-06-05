@@ -162,6 +162,25 @@ def ollama_model() -> str:
     ).strip()
 
 
+def ollama_temperature() -> float:
+    """Sampling temperature for the answer-generation model."""
+    ensure_env_loaded()
+    raw = (os.getenv("OLLAMA_TEMPERATURE", "0.4") or "0.4").strip()
+    try:
+        return max(0.0, min(2.0, float(raw)))
+    except ValueError:
+        return 0.4
+
+
+def ollama_timeout_seconds() -> float:
+    """HTTP timeout in seconds for answer-generation Ollama calls."""
+    ensure_env_loaded()
+    raw = (os.getenv("OLLAMA_TIMEOUT_SECONDS", "120") or "120").strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return 120.0
+
 
 def router_max_retries() -> int:
     ensure_env_loaded()

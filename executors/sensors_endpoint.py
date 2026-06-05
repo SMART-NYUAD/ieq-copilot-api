@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-try:
-    from executors import metric_registry
-    from executors.db_support import api_client
-except ImportError:
-    from . import metric_registry
-    from .db_support import api_client
+from executors import metric_registry
+from executors.db_support import api_client
 
-_SENSOR_METRICS = ["co2", "pm25", "tvoc", "humidity", "temperature", "light", "sound"]
+_SENSOR_METRICS = ["co2", "pm25", "voc", "humidity", "temperature", "light", "sound"]
 
 _UNIT_OVERRIDES: Dict[str, str] = {
     "pm25": "ug/m3",

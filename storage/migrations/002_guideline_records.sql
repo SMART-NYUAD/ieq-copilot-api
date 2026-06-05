@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS env_guideline_records (
     -- Classification
     metric              TEXT NOT NULL
                         CHECK (metric IN (
-                            'co2', 'pm25', 'tvoc', 'temperature',
+                            'co2', 'pm25', 'voc', 'temperature',
                             'humidity', 'light', 'sound', 'ieq', 'general'
                         )),
     citation_tier       TEXT NOT NULL

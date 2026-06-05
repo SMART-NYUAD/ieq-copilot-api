@@ -61,7 +61,7 @@ def normalize_metric_name(metric_name: Any) -> Any:
         return None
     lowered = value.lower()
     if lowered in {"tvoc", "tvoc_ugm3"}:
-        return "tvoc"
+        return "voc"
     return lowered
 
 

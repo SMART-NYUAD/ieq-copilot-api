@@ -14,12 +14,8 @@ for path in (CURRENT_DIR, REPO_ROOT):
     if path and path not in sys.path:
         sys.path.insert(0, path)
 
-try:
-    from app_bootstrap import app
-    from core_settings import load_settings
-except ImportError:
-    from RAG_API_SERVER.app_bootstrap import app
-    from RAG_API_SERVER.core_settings import load_settings
+from app_bootstrap import app
+from core_settings import load_settings
 
 
 if __name__ == "__main__":

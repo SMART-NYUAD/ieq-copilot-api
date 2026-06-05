@@ -3,10 +3,7 @@
 from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 
-try:
-    from executors.sensors_endpoint import get_sensor_latest
-except ImportError:
-    from ..executors.sensors_endpoint import get_sensor_latest
+from executors.sensors_endpoint import get_sensor_latest
 
 router = APIRouter()
 

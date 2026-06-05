@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import os
 
-try:
-    from core_settings import ensure_env_loaded
-except ImportError:
-    from ..core_settings import ensure_env_loaded
+from core_settings import ensure_env_loaded
 
 
 def load_database_url() -> str:

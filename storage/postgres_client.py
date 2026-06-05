@@ -9,10 +9,7 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import PoolError, ThreadedConnectionPool
 
-try:
-    from storage.db_config import DATABASE_URL
-except ImportError:
-    from .db_config import DATABASE_URL
+from storage.db_config import DATABASE_URL
 
 
 _POOL_LOCK = Lock()

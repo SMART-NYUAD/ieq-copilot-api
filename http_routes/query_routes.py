@@ -7,26 +7,15 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-try:
-    from http_schemas import QueryRequest, QueryResponse
-    from query_routing.query_orchestrator import execute_query, stream_query
-    from http_routes.route_helpers import (
-        SSE_HEADERS,
-        attach_conversation_metadata,
-        build_query_context,
-        persist_turn,
-    )
-    from runtime_errors import log_exception, stream_error_payload
-except ImportError:
-    from ..http_schemas import QueryRequest, QueryResponse
-    from ..query_routing.query_orchestrator import execute_query, stream_query
-    from .route_helpers import (
-        SSE_HEADERS,
-        attach_conversation_metadata,
-        build_query_context,
-        persist_turn,
-    )
-    from ..runtime_errors import log_exception, stream_error_payload
+from http_schemas import QueryRequest, QueryResponse
+from query_routing.query_orchestrator import execute_query, stream_query
+from http_routes.route_helpers import (
+    SSE_HEADERS,
+    attach_conversation_metadata,
+    build_query_context,
+    persist_turn,
+)
+from runtime_errors import log_exception, stream_error_payload
 
 
 router = APIRouter()

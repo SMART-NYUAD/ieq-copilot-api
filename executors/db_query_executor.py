@@ -10,52 +10,21 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 import pandas as pd
 
-try:
-    from core_settings import ollama_base_url, ollama_model
-    from query_routing.intent_classifier import IntentType
-    from executors import metric_registry
-except ImportError:
-    from ..core_settings import ollama_base_url, ollama_model
-    from ..query_routing.intent_classifier import IntentType
-    from .. import metric_registry
-
-try:
-    from executors.knowledge_executor import (
-        _build_prompt_text_from_messages,
-        _generate_ollama_text,
-        search_knowledge_cards,
-    )
-except ImportError:
-    from .knowledge_executor import (
-        _build_prompt_text_from_messages,
-        _generate_ollama_text,
-        search_knowledge_cards,
-    )
-try:
-    from executors.db_support import query_handlers as db_handlers
-    from executors.db_support import query_parsing as db_parsing
-    from executors.db_support import response_helpers as db_helpers
-except ImportError:
-    from .db_support import query_handlers as db_handlers
-    from .db_support import query_parsing as db_parsing
-    from .db_support import response_helpers as db_helpers
-try:
-    from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-except ImportError:
-    from ..prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-
-try:
-    from http_schemas import validate_tool_evidence
-except ImportError:
-    from ..http_schemas import validate_tool_evidence
-try:
-    from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
-except ImportError:
-    from ..evidence.citation_processor import build_numbered_sources_block, process_answer_citations
-try:
-    from storage.guideline_store import get_thresholds_for_metrics
-except ImportError:
-    from ..storage.guideline_store import get_thresholds_for_metrics
+from core_settings import ollama_base_url, ollama_model, ollama_temperature, ollama_timeout_seconds
+from query_routing.intent_classifier import IntentType
+from executors import metric_registry
+from executors.knowledge_executor import (
+    _build_prompt_text_from_messages,
+    _generate_ollama_text,
+    search_knowledge_cards,
+)
+from executors.db_support import query_handlers as db_handlers
+from executors.db_support import query_parsing as db_parsing
+from executors.db_support import response_helpers as db_helpers
+from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
+from http_schemas import validate_tool_evidence
+from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+from storage.guideline_store import get_thresholds_for_metrics
 
 
 LLM_PAYLOAD_MAX_RECENT_POINTS = 48
@@ -193,7 +162,7 @@ def _build_metric_coverage(rows: List[Dict[str, Any]], metrics_used: List[str]) 
 
 
 def _infer_metrics_from_rows(rows: List[Dict[str, Any]], fallback_metric: str) -> List[str]:
-    known_metrics = {"air_contribution", "co2", "pm25", "temperature", "humidity", "tvoc", "light", "sound", "ieq"}
+    known_metrics = {"air_contribution", "co2", "pm25", "temperature", "humidity", "voc", "light", "sound", "ieq"}
     inferred: List[str] = []
     for row in rows or []:
         for key in row.keys():
@@ -289,7 +258,7 @@ def _collect_citation_metrics(
             collected.append(token)
 
     if db_helpers.is_air_quality_query_text(question):
-        for metric in ("co2", "pm25", "tvoc", "humidity", "ieq"):
+        for metric in ("co2", "pm25", "voc", "humidity", "ieq"):
             if metric not in collected:
                 collected.append(metric)
     return collected
@@ -310,7 +279,7 @@ def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
     if "metric_not_justified" in violations:
         return (
             "I can run this once the metric is explicit. "
-            "Which metric should I use (for example: CO2, PM2.5, TVOC, humidity, temperature, light, or IEQ)?"
+            "Which metric should I use (for example: CO2, PM2.5, VOC, humidity, temperature, light, or IEQ)?"
         )
     if "time_window_not_justified" in violations:
         return (
@@ -646,7 +615,7 @@ def _render_db_answer_with_llm(
     )
     prompt_text = _build_db_prompt_text(question=question, intent=intent, context_data=context_data)
     try:
-        text = _generate_ollama_text(prompt_text, temperature=0.4)
+        text = _generate_ollama_text(prompt_text, temperature=ollama_temperature())
         if text:
             return text, True, indexed_sources
     except Exception:
@@ -842,20 +811,17 @@ async def stream_db_tokens(
     )
     prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
 
-    base_url = ollama_base_url()
-    model = ollama_model()
-    api_url = f"{base_url}/api/generate"
     ollama_payload = {
-        "model": model,
+        "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
-        "temperature": 0.4,
+        "temperature": ollama_temperature(),
     }
 
     emitted_anything = False
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", api_url, json=ollama_payload) as response:
+        async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
+            async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=ollama_payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line:

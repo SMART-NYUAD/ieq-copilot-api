@@ -12,35 +12,23 @@ from typing import List, Optional
 import httpx
 import requests
 
-try:
-    from core_settings import (
-        router_base_url,
-        router_max_retries,
-        router_model,
-        router_retry_jitter_ms,
-        router_temperature,
-        router_timeout_seconds,
-    )
-    from query_routing.intent_classifier import IntentType
-    from query_routing.router_types import RoutePlan
-except ImportError:
-    from ..core_settings import (
-        router_base_url,
-        router_max_retries,
-        router_model,
-        router_retry_jitter_ms,
-        router_temperature,
-        router_timeout_seconds,
-    )
-    from .intent_classifier import IntentType
-    from .router_types import RoutePlan
+from core_settings import (
+    router_base_url,
+    router_max_retries,
+    router_model,
+    router_retry_jitter_ms,
+    router_temperature,
+    router_timeout_seconds,
+)
+from query_routing.intent_classifier import IntentType
+from query_routing.router_types import RoutePlan
 
 
 _INTENT_VALUES = {i.value for i in IntentType} - {IntentType.UNKNOWN_FALLBACK.value}
 _METRIC_RE = re.compile(r"\b(co2|pm\s*2\.?\s*5|pm25|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b")
 _METRIC_CANONICAL = {
     "pm 2.5": "pm25", "pm2.5": "pm25", "pm 25": "pm25",
-    "voc": "tvoc", "temp": "temperature", "lux": "light", "noise": "sound",
+    "tvoc": "voc", "temp": "temperature", "lux": "light", "noise": "sound",
 }
 
 _SYSTEM_PROMPT = (
@@ -50,7 +38,7 @@ _SYSTEM_PROMPT = (
     "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
-    '  "metrics": list of relevant metrics from [co2, pm25, tvoc, humidity, temperature, light, sound, ieq]\n'
+    '  "metrics": list of relevant metrics from [co2, pm25, voc, humidity, temperature, light, sound, ieq]\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n\n'
     "Routing rules:\n"
@@ -68,7 +56,7 @@ _SYSTEM_PROMPT = (
     "Intent definitions:\n"
     "- definition_explanation: ONLY for conceptual/educational questions asking what a metric means, "
     "with no definite article before the metric name. "
-    "Examples: 'what is CO2?', 'what does IEQ mean?', 'explain TVOC', 'define humidity', 'what is pm2.5?'.\n"
+    "Examples: 'what is CO2?', 'what does IEQ mean?', 'explain VOC', 'define humidity', 'what is pm2.5?'.\n"
     "- current_status_db: The user wants the live/latest sensor reading right now, with no specific past "
     "timestamp. Covers informal, typo-variant, and assessment phrasing. The definite article 'the' before a "
     "metric always signals a value request, not a definition. Also use for opinion/assessment questions about "
@@ -267,11 +255,11 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None, conver
     user_message = _build_router_user_message(question, lab_name, conversation_context)
     options: dict = {"temperature": temperature, "num_predict": 256}
 
-    for attempt in range(max_retries):
-        if attempt > 0:
-            await asyncio.sleep((jitter_ms / 1000.0) * (1 + random.random()))
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(max_retries):
+            if attempt > 0:
+                await asyncio.sleep((jitter_ms / 1000.0) * (1 + random.random()))
+            try:
                 resp = await client.post(
                     f"{base_url}/api/chat",
                     json={
@@ -289,7 +277,7 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None, conver
                 plan = _parse_llm_response(raw, question, lab_name)
                 if plan is not None:
                     return plan
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     return _fallback_plan(question, lab_name)

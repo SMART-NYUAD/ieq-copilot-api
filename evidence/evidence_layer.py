@@ -8,10 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-try:
-    from http_schemas import validate_tool_evidence
-except ImportError:
-    from ..http_schemas import validate_tool_evidence
+from http_schemas import validate_tool_evidence
 
 
 def build_repaired_evidence(executor: str, lab_name: Optional[str], reason: str = "repaired_evidence") -> Dict[str, Any]:

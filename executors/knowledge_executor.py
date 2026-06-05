@@ -9,30 +9,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-try:
-    from storage.embeddings import embed_texts
-    from storage.postgres_client import get_cursor
-    from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
-except ImportError:
-    from ..storage.embeddings import embed_texts
-    from ..storage.postgres_client import get_cursor
-    from ..storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
-try:
-    from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-except ImportError:
-    from ..prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-try:
-    from http_schemas import validate_tool_evidence
-except ImportError:
-    from ..http_schemas import validate_tool_evidence
-try:
-    from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
-except ImportError:
-    from ..evidence.citation_processor import build_numbered_sources_block, process_answer_citations
-try:
-    from storage.guideline_store import search_guideline_records, wants_guideline_detail
-except ImportError:
-    from ..storage.guideline_store import search_guideline_records, wants_guideline_detail
+from core_settings import ollama_base_url, ollama_model, ollama_temperature, ollama_timeout_seconds
+from storage.embeddings import embed_texts
+from storage.postgres_client import get_cursor
+from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
+from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
+from http_schemas import validate_tool_evidence
+from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
+from storage.guideline_store import search_guideline_records, wants_guideline_detail
 
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
@@ -279,17 +263,15 @@ def _build_prompt_text_from_messages(messages: List[Any]) -> str:
 
 
 def _generate_ollama_text(prompt_text: str, *, temperature: float) -> str:
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
     payload: Dict[str, Any] = {
-        "model": model,
+        "model": ollama_model(),
         "prompt": prompt_text,
         "stream": False,
         "temperature": temperature,
     }
 
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(f"{base_url}/api/generate", json=payload)
+    with httpx.Client(timeout=ollama_timeout_seconds()) as client:
+        response = client.post(f"{ollama_base_url()}/api/generate", json=payload)
         response.raise_for_status()
         event = response.json()
 
@@ -350,7 +332,7 @@ def answer_env_question_with_metadata(
         context_data=grounded_context,
     )
     prompt_text = _build_prompt_text_from_messages(messages)
-    answer = _generate_ollama_text(prompt_text, temperature=0.4)
+    answer = _generate_ollama_text(prompt_text, temperature=ollama_temperature())
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
         guideline_records=effective_guideline_records,
@@ -434,18 +416,16 @@ async def stream_knowledge_tokens(
     )
     prompt_text = _build_prompt_text_from_messages(messages)
 
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
     ollama_payload = {
-        "model": model,
+        "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
-        "temperature": 0.4,
+        "temperature": ollama_temperature(),
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", f"{base_url}/api/generate", json=ollama_payload) as response:
+        async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
+            async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=ollama_payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line:
@@ -501,17 +481,15 @@ async def stream_answer_env_question(
     )
     prompt_text = _build_prompt_text_from_messages(messages)
 
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
     payload = {
-        "model": model,
+        "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
-        "temperature": 0.4,
+        "temperature": ollama_temperature(),
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        async with client.stream("POST", f"{base_url}/api/generate", json=payload) as response:
+    async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
+        async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line:

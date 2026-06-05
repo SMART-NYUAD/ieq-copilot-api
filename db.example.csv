@@ -1,8 +1,8 @@
-"card_id","space","window_start","window_end","pm25_mean","pm25_min","pm25_max","pm25_stddev","pm25_count","co2_mean","co2_min","co2_max","co2_stddev","co2_count","tvoc_mean","tvoc_min","tvoc_max","tvoc_stddev","tvoc_count","temperature_mean","temperature_min","temperature_max","temperature_stddev","temperature_count","humidity_mean","humidity_min","humidity_max","humidity_stddev","humidity_count","lux_mean","lux_min","lux_max","lux_stddev","lux_count","total_readings","pm25_level","co2_level","tvoc_level","temperature_level","humidity_level","lux_level","overall_air_label","summary_text","created_at","noise_mean","noise_min","noise_max","noise_stddev","noise_count","noise_level","ieq_index","itc","iiaq","iac","iil","ieq_temp_avg","ieq_humidity_avg","ieq_light_avg","ieq_sound_avg","ieq_pm25_avg","ieq_voc_avg","ieq_co2_avg","pmv_thermal","ppd_light","ppd_air","ppd_acoustic","ppd_thermal","ppd_pm25","ppd_voc","ppd_co2","contri_thermal","contri_light","contri_air","contri_acoustic","trend_stats","volatility_stats","anomaly_stats","canonical_text","card_confidence","card_confidence_score","card_confidence_label"
+"card_id","space","window_start","window_end","pm25_mean","pm25_min","pm25_max","pm25_stddev","pm25_count","co2_mean","co2_min","co2_max","co2_stddev","co2_count","voc_mean","voc_min","voc_max","voc_stddev","voc_count","temperature_mean","temperature_min","temperature_max","temperature_stddev","temperature_count","humidity_mean","humidity_min","humidity_max","humidity_stddev","humidity_count","lux_mean","lux_min","lux_max","lux_stddev","lux_count","total_readings","pm25_level","co2_level","voc_level","temperature_level","humidity_level","lux_level","overall_air_label","summary_text","created_at","noise_mean","noise_min","noise_max","noise_stddev","noise_count","noise_level","ieq_index","itc","iiaq","iac","iil","ieq_temp_avg","ieq_humidity_avg","ieq_light_avg","ieq_sound_avg","ieq_pm25_avg","ieq_voc_avg","ieq_co2_avg","pmv_thermal","ppd_light","ppd_air","ppd_acoustic","ppd_thermal","ppd_pm25","ppd_voc","ppd_co2","contri_thermal","contri_light","contri_air","contri_acoustic","trend_stats","volatility_stats","anomaly_stats","canonical_text","card_confidence","card_confidence_score","card_confidence_label"
 "0000605f-f135-40a3-aa1f-b394dbc6394f","kinesis_ctp","2026-02-08 06:00:00+00","2026-02-08 07:00:00+00","4.204411764705881","3.7","4.8","0.2222233806427715",68,"415.5735294117647","408","426","4.299656968165966",68,"54.521397058823574","0.09","118","54.69792137932623",136,"23.97014705882355","23.96","23.98","0.006577357601008593",68,"32.6718382352941","11","54.56","21.752061058657503",136,"68.48529411764706","68","69","0.5034996052651827",68,1020,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-08 06:00–07:00 in kinesis_ctp:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 416 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 55 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 55 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 24.0°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 68 lux, in the ""calm light"" band (Calm light levels).
@@ -13,7 +13,7 @@ Data quality was high based on 1020 readings.","2026-02-08 03:00:17.759995+00","
 "00080849-90ac-4cd3-8820-2a5a11f764f6","c1167","2025-12-16 00:00:00+00","2025-12-16 01:00:00+00","2.183333333333332","0.7","4","1.146227523231756",120,"439.65","427","452","7.158792152643193",60,"52.9078888888889","0.05","105","40.914282176534705",180,"25.399249983333316","24.26","26.549999","1.06678098366907",120,"38.56161103333336","11","54.09","19.582920829236652",180,"52.17550686666665","49.124012","57","2.833088020666532",120,1620,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-16 00:00–01:00 in c1167:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.52).
 CO₂ averaged 440 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 53 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.77).
+VOC averaged 53 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.77).
 Temperature was 25.4°C, at the upper edge of the comfort band.
 Humidity was 39%, within the comfort range.
 Illuminance was 52 lux, in the ""calm light"" band (Calm light levels).
@@ -24,7 +24,7 @@ Data quality was high based on 1620 readings.","2025-12-15 21:00:15.421575+00","
 "000d4c70-5707-495b-aaa4-88544fc9f6f6","libra_lab","2026-02-02 17:00:00+00","2026-02-02 18:00:00+00","2.891044776119403","2","3.7","0.3926334335181317",67,"439.2835820895522","427","448","4.702694167045659",67,"68.43791044776115","0.11","170","69.00806088988007",134,"22.119552238805994","22.08","22.19","0.03847206132360004",67,"27.075447761194024","8","49.47","18.793439729481975",134,"120.46268656716418","120","122","0.7034193156323644",67,1005,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-02 17:00–18:00 in libra_lab:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.14).
 CO₂ averaged 439 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 68 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 68 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 22.1°C, within the comfort band.
 Humidity was 27%, below the comfort range.
 Illuminance was 120 lux, in the ""calm light"" band (Calm light levels).
@@ -36,7 +36,7 @@ Data quality was high based on 1005 readings.","2026-02-02 13:00:26.411613+00","
 "000e0f1d-50fe-4c85-98db-0a98cc2cc7d8","shores_office","2026-01-06 03:00:00+00","2026-01-06 04:00:00+00","2.7861538461538453","2.4","3.3","0.21785669248737483",65,"439.96923076923076","434","446","3.372541839849947",65,"22.275999999999982","0.04","49","22.445197051878925",130,"21.893384615384633","21.87","21.93","0.014282520247329122",65,"35.03984615384616","11","59.24","24.132870085855906",130,"0","0","0","0",65,975,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-06 03:00–04:00 in shores_office:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 440 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 21.9°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -48,7 +48,7 @@ Data quality was high based on 975 readings.","2026-01-06 00:00:08.214263+00","4
 "000e1d62-3b71-45bc-aca9-5ac3ffc51738","shores_office","2025-11-25 06:00:00+00","2025-11-25 07:00:00+00","7.123333333333335","6","8.7","0.6700282479920854",60,"421.15","410","435","6.064134630230378",60,"16.63416666666665","0.03","34","16.680037612724526",120,"22.221666666666685","22.15","22.26","0.025655254635176258",60,"30.950666666666667","10","52.11","21.038580556224037",120,"187.26666666666668","0","426","206.91272758377676",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-25 06:00–07:00 in shores_office:
 PM2.5 averaged 7 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 421 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.2°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 187 lux, in the ""calm light"" band (Calm light levels).
@@ -60,7 +60,7 @@ Data quality was high based on 900 readings.","2025-11-25 03:59:40.658547+00","4
 "0016bf81-7c3c-454c-a5dc-e5b2a99f5f36","machine_shop","2026-02-07 18:00:00+00","2026-02-07 19:00:00+00","14.736923076923077","12.6","16.5","1.0663268188577968",65,"431.0153846153846","419","439","4.820179935996644",65,"8.240769230769224","0.02","20","8.323726209357696",130,"22.123692307692323","22.07","22.2","0.035950018722579455",65,"29.72453846153846","9","51.34","20.806857140108807",130,"129","129","129","0",65,975,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-07 18:00–19:00 in machine_shop:
 PM2.5 averaged 15 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.07).
 CO₂ averaged 431 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 8 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 8 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 22.1°C, within the comfort band.
 Humidity was 30%, below the comfort range.
 Illuminance was 129 lux, in the ""calm light"" band (Calm light levels).
@@ -72,7 +72,7 @@ Data quality was high based on 975 readings.","2026-02-07 14:00:25.950862+00","5
 "00174cdc-b41a-4753-ac74-5535de44b1c7","cities","2025-11-28 11:00:00+00","2025-11-28 12:00:00+00","7.7864406779661","7","9.2","0.40448248208887055",59,"504.1694915254237","496","512","4.148753624107803",59,"16.040423728813547","0.03","33","16.087958091237528",118,"23.378644067796625","23.31","23.46","0.04232296299836032",59,"33.82398305084746","11","57.18","22.92222346204999",118,"96.71186440677967","91","98","1.8199170827798827",59,885,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-28 11:00–12:00 in cities:
 PM2.5 averaged 8 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 504 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.4°C, within the comfort band.
 Humidity was 34%, within the comfort range.
 Illuminance was 97 lux, in the ""calm light"" band (Calm light levels).
@@ -84,7 +84,7 @@ Data quality was high based on 885 readings.","2025-11-28 08:00:21.069271+00","5
 "001cbf27-1d8a-43be-91ff-9253a761ec15","kinesis_ctp","2026-01-07 18:00:00+00","2026-01-07 19:00:00+00","1.7545454545454549","1.4","2.1","0.14799357385406253",66,"451.3030303030303","442","461","4.1841080180559285",66,"31.12780303030301","0.05","64","31.24113696151166",132,"23.433787878787886","23.35","23.5","0.045328379682730256",66,"29.369015151515146","10","49.03","19.442933756726916",132,"120.36363636363636","119","121","0.5154941956358633",66,990,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-07 18:00–19:00 in kinesis_ctp:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 451 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 31 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 31 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.4°C, within the comfort band.
 Humidity was 29%, below the comfort range.
 Illuminance was 120 lux, in the ""calm light"" band (Calm light levels).
@@ -96,7 +96,7 @@ Data quality was high based on 990 readings.","2026-01-07 14:00:17.599975+00","5
 "001cd801-6fc7-46ab-80cf-578e09d8027f","ccs_ad","2026-02-05 08:00:00+00","2026-02-05 09:00:00+00","6.007575757575756","4.9","7.3","0.5589304638354067",66,"479.6666666666667","470","492","5.40465136805848",66,"43.40393939393937","0.08","92","43.547409555784135",132,"24.736969696969695","23.5","25.61","0.6435573483428341",66,"32.32871212121213","11","55.88","20.77571344914714",132,"107.8030303030303","107","109","0.7064471665082954",66,990,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-05 08:00–09:00 in ccs_ad:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 480 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 43 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 43 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 24.7°C, at the upper edge of the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 108 lux, in the ""calm light"" band (Calm light levels).
@@ -108,7 +108,7 @@ Data quality was high based on 990 readings.","2026-02-05 05:00:18.063604+00","5
 "001fcbdf-1214-4343-a7f0-2f16d485c7b4","prep_area_centrifuge","2025-12-09 03:00:00+00","2025-12-09 04:00:00+00","5.7677966101694915","5.3","6.6","0.25081981303118916",59,"445.5593220338983","435","452","4.153399880449742",59,"20.782711864406764","0.04","44","20.85017844769881",118,"20.248983050847453","20.24","20.26","0.007587402275514811",59,"35.69822033898304","10","61.48","25.807841140380265",118,"1","1","1","0",59,885,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-09 03:00–04:00 in prep_area_centrifuge:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.04).
 CO₂ averaged 446 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.2°C, within the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 1 lux, in the ""calm light"" band (Calm light levels).
@@ -120,7 +120,7 @@ Data quality was high based on 885 readings.","2025-12-09 00:00:22.722447+00","4
 "002150ed-8622-4de1-898a-c82f01ad8670","prep_area_centrifuge","2025-11-30 20:00:00+00","2025-11-30 21:00:00+00","11.891666666666667","11","12.7","0.3697418552828752",60,"430.1666666666667","422","440","4.791117015883351",60,"16.51499999999999","0.03","33","16.55411980000571",120,"20.105166666666676","20.1","20.12","0.0059636374597634104",60,"34.87583333333335","10","59.8","24.980140837763702",120,"1.8333333333333333","1","2","0.3758230140014145",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-30 20:00–21:00 in prep_area_centrifuge:
 PM2.5 averaged 12 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.03).
 CO₂ averaged 430 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.1°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).
@@ -132,7 +132,7 @@ Data quality was high based on 900 readings.","2025-11-30 17:00:22.072117+00","4
 "0029eaf1-d2b9-40f1-a7b5-db4a8c0c58ef","cities","2026-01-08 02:00:00+00","2026-01-08 03:00:00+00","4.3455882352941195","3.9","4.9","0.19957703299310758",68,"489.19117647058823","480","497","3.9521668076962557",68,"24.3481617647059","0.04","52","24.43689985193782",136,"22.75882352941176","22.73","22.79","0.012035942660029152",68,"31.444117647058828","10","53.22","21.523812978689723",136,"85","85","85","0",68,1020,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-08 02:00–03:00 in cities:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 489 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 24 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 24 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.8°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 85 lux, in the ""calm light"" band (Calm light levels).
@@ -144,7 +144,7 @@ Data quality was high based on 1020 readings.","2026-01-07 23:00:21.313842+00","
 "002bb007-7fa3-421d-a784-314010f77470","prep_area_centrifuge","2025-12-02 02:00:00+00","2025-12-02 03:00:00+00","22.549999999999994","21.6","23.5","0.4081790899734153",60,"427.6333333333333","420","434","3.5936227255772564",60,"19.79499999999999","0.04","40","19.845210458729344",120,"20.076166666666673","20.07","20.08","0.004903014177281653",60,"35.22658333333333","10","60.54","25.332379933639096",120,"1.5666666666666667","1","2","0.49971743428090815",60,900,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-02 02:00–03:00 in prep_area_centrifuge:
 PM2.5 averaged 23 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.02).
 CO₂ averaged 428 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.1°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).
@@ -156,7 +156,7 @@ Data quality was high based on 900 readings.","2025-12-01 23:00:21.391794+00","4
 "002bbf9b-8255-483a-9531-b633504be9f0","c1167","2026-01-05 07:00:00+00","2026-01-05 08:00:00+00","0.7116666666666664","0.1","1.5","0.49657369460500966",120,"456.6984126984127","426","518","33.164125059893",63,"59.83398907103834","0.1","129","47.81570938164787",183,"24.174083491666675","23.16","25.33","1.0308805071863762",120,"38.02245901639343","11","53.94","19.679944635339172",183,"131.06991748333334","47.312988","260.221436","91.91775218480493",120,1629,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-05 07:00–08:00 in c1167:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.70).
 CO₂ averaged 457 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.07).
-TVOC averaged 60 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.80).
+VOC averaged 60 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.80).
 Temperature was 24.2°C, at the upper edge of the comfort band.
 Humidity was 38%, within the comfort range.
 Illuminance was 131 lux, in the ""calm light"" band (Calm light levels).
@@ -168,7 +168,7 @@ Data quality was high based on 1629 readings.","2026-01-05 04:00:11.444343+00","
 "003dbdcd-a07e-42e3-bd04-c8df16c1f3b9","smart_lab","2026-01-13 21:00:00+00","2026-01-13 22:00:00+00","13.551204825301209","11","16.200001","0.9268871473058754",166,"475.78333333333336","468","486","4.8085082315027154",60,"59.678938053097305","0.05","101","38.753356966856295",226,"24.553091316831683","23.07","25.885","1.042085853700383",202,"39.246660316793914","10","51.66","16.142238427324116",262,"71.79046703921566","21.619093","138.882858","41.91775354178812",153,2303,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-13 21:00–22:00 in smart_lab:
 PM2.5 averaged 14 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.07).
 CO₂ averaged 476 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 60 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.65).
+VOC averaged 60 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.65).
 Temperature was 24.6°C, at the upper edge of the comfort band.
 Humidity was 39%, within the comfort range.
 Illuminance was 72 lux, in the ""calm light"" band (Calm light levels).
@@ -180,7 +180,7 @@ Data quality was high based on 2303 readings.","2026-01-13 16:00:06.884329+00","
 "003dcb4f-ab48-4d21-83a0-89b0af548583","concrete_lab","2026-01-31 14:00:00+00","2026-01-31 15:00:00+00","3.0466666666666664","2.5","3.7","0.2593777865550404",60,"432.5","427","440","3.5819699153644873",60,"26.525000000000023","0.05","54","26.588219258937674",120,"21.62583333333331","21.6","21.65","0.01344059959652289",60,"35.13933333333333","11","59.39","24.240580522950278",120,"15.583333333333334","15","17","0.590652229740289",60,900,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-31 14:00–15:00 in concrete_lab:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 432 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.6°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 16 lux, in the ""calm light"" band (Calm light levels).
@@ -192,7 +192,7 @@ Data quality was high based on 900 readings.","2026-01-31 11:00:04.833287+00","5
 "003fb35e-dcfb-402b-af4d-60c7962647d1","kinesis_ctp","2026-02-02 10:00:00+00","2026-02-02 11:00:00+00","2.988333333333332","2.6","4","0.23728097245039595",60,"479.2","470","488","4.020287535041092",60,"54.95949999999996","0.1","114","55.1336064430014",120,"23.408833333333337","23.37","23.43","0.01914190244930958",60,"33.07833333333334","11","55.48","22.171096989925747",120,"120","120","120","0",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-02 10:00–11:00 in kinesis_ctp:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 479 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 55 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 55 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.4°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 120 lux, in the ""calm light"" band (Calm light levels).
@@ -204,7 +204,7 @@ Data quality was high based on 900 readings.","2026-02-02 07:00:21.632115+00","6
 "00415d5c-c8ec-4625-b700-6ae6b7cad884","ccs_ad","2025-12-16 05:00:00+00","2025-12-16 06:00:00+00","1.9949152542372877","1.4","2.5","0.25825924479467716",59,"438.4237288135593","432","447","3.625595740966453",59,"19.197966101694906","0.04","40","19.251548924666846",118,"26.520677966101687","25.85","26.65","0.20873068282936127",59,"29.03610169491525","11","48.27","18.114677810954795",118,"82.66101694915254","45","106","29.461026370614665",59,885,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-16 05:00–06:00 in ccs_ad:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.13).
 CO₂ averaged 438 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 26.5°C, at the upper edge of the comfort band.
 Humidity was 29%, below the comfort range.
 Illuminance was 83 lux, in the ""calm light"" band (Calm light levels).
@@ -216,7 +216,7 @@ Data quality was high based on 885 readings.","2025-12-16 01:00:17.117593+00","5
 "0045234c-ef80-47e9-91b8-3f67a3f872ba","c1167","2025-12-20 15:00:00+00","2025-12-20 16:00:00+00","1.124576271186441","0.3","2.3","0.6839973560050321",118,"425.45762711864404","419","433","3.1035132144644315",59,"45.425762711864394","0.04","111","40.55331850295935",177,"25.901017042372867","24.75","27.045","1.0642430464879267",118,"31.19661019209039","9","43.22","15.75222081228998",177,"116.70265166949152","76","181.102341","27.781520798738786",118,1593,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-20 15:00–16:00 in c1167:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.61).
 CO₂ averaged 425 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 45 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.89).
+VOC averaged 45 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.89).
 Temperature was 25.9°C, at the upper edge of the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 117 lux, in the ""calm light"" band (Calm light levels).
@@ -228,7 +228,7 @@ Data quality was high based on 1593 readings.","2025-12-20 11:00:12.874411+00","
 "00499fc6-5346-47b0-9906-b12b9d09e89f","shores_office","2025-12-04 06:00:00+00","2025-12-04 07:00:00+00","35.26833333333333","33.7","36.8","0.7939371248355183",60,"442.56666666666666","437","451","2.7883940257678526",60,"18.65333333333332","0.04","38","18.69850905543965",120,"21.987333333333332","21.93","22.04","0.02845553573778609",60,"31.551000000000002","10","53.35","21.641488221399538",120,"0","0","0","0",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-04 06:00–07:00 in shores_office:
 PM2.5 averaged 35 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.02).
 CO₂ averaged 443 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.0°C, within the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -240,7 +240,7 @@ Data quality was high based on 900 readings.","2025-12-04 03:00:12.847607+00","4
 "004bf8da-2d38-457b-bd80-e01bdfd4ac79","libra_lab","2026-01-03 02:00:00+00","2026-01-03 03:00:00+00","1.6892307692307689","1.4","2","0.1393321984986296",65,"438.10769230769233","429","449","4.426917229161413",65,"17.689230769230758","0.04","36","17.72069016344491",130,"22.244000000000018","22.17","22.39","0.050584088407326325",65,"31.367846153846152","10","53","21.450730168979085",130,"122","122","122","0",65,975,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-03 02:00–03:00 in libra_lab:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 438 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.2°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 122 lux, in the ""calm light"" band (Calm light levels).
@@ -252,7 +252,7 @@ Data quality was high based on 975 readings.","2026-01-02 23:00:22.066824+00","5
 "0050ec81-8bdc-4578-8350-3cdb2257fd7b","machine_shop","2026-01-16 07:00:00+00","2026-01-16 08:00:00+00","1.7655737704918035","0.7","9.3","1.8600076385059678",61,"435.0327868852459","427","444","3.5069797695203686",61,"13.572377049180316","0.03","29","13.620143629373297",122,"21.446229508196748","21.42","21.49","0.01790381099338919",61,"27.724590163934437","8","47.93","19.806191249559244",122,"132.08196721311475","132","135","0.42012228248503697",61,915,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-16 07:00–08:00 in machine_shop:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was high (CV≈1.05).
 CO₂ averaged 435 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.4°C, within the comfort band.
 Humidity was 28%, below the comfort range.
 Illuminance was 132 lux, in the ""calm light"" band (Calm light levels).
@@ -264,7 +264,7 @@ Data quality was high based on 915 readings.","2026-01-16 04:00:27.878257+00","5
 "00523297-04ae-4392-9624-618c91902e2d","machine_shop","2026-01-10 00:00:00+00","2026-01-10 01:00:00+00","21.740579710144925","20","23.8","0.8178736491982461",69,"443.40579710144925","432","454","4.315903697133735",69,"26.655434782608726","0.05","57","26.80130844718439",138,"20.53840579710144","20.49","20.6","0.02649212915330928",69,"38.69710144927537","11","66.58","27.798176125721632",138,"136","136","136","0",69,1035,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-10 00:00–01:00 in machine_shop:
 PM2.5 averaged 22 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.04).
 CO₂ averaged 443 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 20.5°C, within the comfort band.
 Humidity was 39%, within the comfort range.
 Illuminance was 136 lux, in the ""calm light"" band (Calm light levels).
@@ -276,7 +276,7 @@ Data quality was high based on 1035 readings.","2026-01-09 21:00:24.794728+00","
 "005430de-03d8-4130-9b58-3bef127d48cb","smart_lab","2026-01-26 11:00:00+00","2026-01-26 12:00:00+00","4.901388888888888","3.7","6.2","0.5164410365291897",144,"459.01666666666665","448","469","4.507965329550504",60,"38.43529411764704","0.03","77","29.64299898092329",204,"24.941116799065423","23.36","26.525","1.1408942060500873",214,"39.77346774817521","10","52.8","15.692259501091689",274,"99.78250297663541","25.807085","181.102341","53.158387541921286",214,2258,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-26 11:00–12:00 in smart_lab:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.11).
 CO₂ averaged 459 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 38 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.77).
+VOC averaged 38 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.77).
 Temperature was 24.9°C, at the upper edge of the comfort band.
 Humidity was 40%, within the comfort range.
 Illuminance was 100 lux, in the ""calm light"" band (Calm light levels).
@@ -288,7 +288,7 @@ Data quality was high based on 2258 readings.","2026-01-26 07:00:07.342758+00","
 "005439ff-5790-4f35-a57a-6462da27d2f5","prep_area_centrifuge","2026-02-09 07:00:00+00","2026-02-09 08:00:00+00","8.290624999999999","7.7","9.5","0.3548837278848673",64,"428.90625","417","438","4.885088259344687",64,"34.02218749999998","0.06","68","34.09574838846174",128,"20.435781250000012","20.43","20.44","0.004977628523136634",64,"37.97359374999999","11","65.04","27.079617308917808",128,"8.96875","1","17","3.7330303873684008",64,960,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-02-09 07:00–08:00 in prep_area_centrifuge:
 PM2.5 averaged 8 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.04).
 CO₂ averaged 429 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 34 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 34 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.4°C, within the comfort band.
 Humidity was 38%, within the comfort range.
 Illuminance was 9 lux, in the ""calm light"" band (Calm light levels).
@@ -299,7 +299,7 @@ Data quality was high based on 960 readings.","2026-02-09 04:00:19.312895+00","4
 "005c3e87-66fa-4781-b44c-c46d22bd3858","shores_office","2026-01-05 16:00:00+00","2026-01-05 17:00:00+00","3.322388059701492","2.6","4","0.35963824227939745",67,"524.5970149253732","501","542","10.52278869232915",67,"53.19037313432836","0.08","167","54.86296895919522",134,"21.357761194029862","21.29","21.46","0.04522070106282119",67,"36.62746268656716","11","62.63","25.723957578755932",134,"408.25373134328356","404","412","2.5126545396892297",67,1005,"good","good","severely_polluted","comfortable","comfortable","average_illumination","ok","During the hour 2026-01-05 16:00–17:00 in shores_office:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.11).
 CO₂ averaged 525 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 53 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
+VOC averaged 53 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
 Temperature was 21.4°C, within the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 408 lux, in the ""average illumination"" band (Average illumination).
@@ -311,7 +311,7 @@ Data quality was high based on 1005 readings.","2026-01-05 12:00:08.808167+00","
 "0060f8da-c3bc-4143-8f1a-728fe4711378","machine_shop","2025-12-30 02:00:00+00","2025-12-30 03:00:00+00","1.7365079365079361","1.2","2.3","0.21349744072016505",63,"413.6190476190476","406","421","3.5940298678842724",63,"12.800714285714275","0.03","28","12.838352740352413",126,"18.69936507936509","18.64","18.74","0.027408087802867187",63,"35.943174603174604","9","63.02","26.702992301262228",126,"133","133","133","0",63,945,"good","good","severely_polluted","slightly_uncomfortable","comfortable","calm_light","ok","During the hour 2025-12-30 02:00–03:00 in machine_shop:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.12).
 CO₂ averaged 414 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 13 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 13 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 18.7°C, below the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 133 lux, in the ""calm light"" band (Calm light levels).
@@ -322,7 +322,7 @@ Data quality was high based on 945 readings.","2025-12-29 22:00:16.265215+00","5
 "0064423f-7117-4203-bf79-8ec501b14040","environmental_engineering_teac","2026-01-26 18:00:00+00","2026-01-26 19:00:00+00","0.6294117647058823","0.4","0.9","0.1037488694840931",68,"455.6617647058824","446","462","3.2073157704337496",68,"41.42970588235292","0.08","86","41.51949503619959",136,"21.96485294117649","21.94","22","0.01888635668499903",68,"34.98985294117646","11","59.07","24.078558588128093",136,"154.10294117647058","154","155","0.3061414112013054",68,1020,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-26 18:00–19:00 in environmental_engineering_teac:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.16).
 CO₂ averaged 456 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 41 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 41 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.0°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 154 lux, in the ""calm light"" band (Calm light levels).
@@ -334,7 +334,7 @@ Data quality was high based on 1020 readings.","2026-01-26 14:00:15.341609+00","
 "00658a72-251b-4eb8-ab18-477be615484c","kinesis_ctp","2025-12-31 23:00:00+00","2026-01-01 00:00:00+00","0.33492063492063506","0.2","0.5","0.05999658635109101",63,"415.07936507936506","406","425","3.44683860436884",63,"35.00269841269845","0.06","70","35.073693695707576",126,"23.347777777777765","23.33","23.36","0.006585527740984021",63,"27.15944444444444","9","45.38","18.23194854339187",126,"111","111","111","0",63,945,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-31 23:00–00:00 in kinesis_ctp:
 PM2.5 averaged 0 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.18).
 CO₂ averaged 415 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 35 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 35 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.3°C, within the comfort band.
 Humidity was 27%, below the comfort range.
 Illuminance was 111 lux, in the ""calm light"" band (Calm light levels).
@@ -346,7 +346,7 @@ Data quality was high based on 945 readings.","2025-12-31 20:00:14.842354+00","5
 "0067acd9-bc8f-4bb2-a0ac-24623da86066","smart_lab","2025-11-30 12:00:00+00","2025-11-30 13:00:00+00","13.896648044692736","11.7","17.4","1.3336567669609738",179,"432.55","424","442","4.196144315755127",60,"29.710460251046012","0.03","51","18.802044615414893",239,"25.141014412751716","24.18","26.120001","0.6077465955112287",298,"44.99897079050279","11","54.9","14.94129508197074",358,"30.035627016528903","6.678149","50.482281","15.476549325613133",242,2867,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-11-30 12:00–13:00 in smart_lab:
 PM2.5 averaged 14 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.10).
 CO₂ averaged 433 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.63).
+VOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.63).
 Temperature was 25.1°C, at the upper edge of the comfort band.
 Humidity was 45%, within the comfort range.
 Illuminance was 30 lux, in the ""calm light"" band (Calm light levels).
@@ -358,7 +358,7 @@ Data quality was high based on 2867 readings.","2025-11-30 08:00:10.742222+00","
 "006a36cf-d48f-42ab-b65e-915a63638354","c1167","2025-12-09 10:00:00+00","2025-12-09 11:00:00+00","3.3304347826086946","1.3","5.7","1.7768577583803382",115,"460.76666666666665","453","471","4.260049600517587",60,"63.49874285714285","0.05","150","56.468146372378364",175,"24.870304330434777","23.64","26.219999","1.0469896782240065",115,"37.40937141714286","11","53.65","19.176676833242936",175,"460.25676054782616","115","729.842468","205.32570981062116",115,1560,"good","good","severely_polluted","comfortable","comfortable","average_illumination","ok","During the hour 2025-12-09 10:00–11:00 in c1167:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.53).
 CO₂ averaged 461 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 63 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.89).
+VOC averaged 63 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.89).
 Temperature was 24.9°C, at the upper edge of the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 460 lux, in the ""average illumination"" band (Average illumination).
@@ -369,7 +369,7 @@ Data quality was high based on 1560 readings.","2025-12-09 07:00:16.40348+00","6
 "006bb277-526a-4307-aa3d-bb55844c4f24","prep_area_centrifuge","2026-01-05 09:00:00+00","2026-01-05 10:00:00+00","1.6734375","1.4","2.1","0.15038805624223442",64,"474.15625","451","492","10.632711953780348",64,"22.420546875000014","0.04","49","22.53989789986565",128,"21.34437500000001","21.2","21.43","0.08092471516050895",64,"35.9259375","11","61.16","25.024460771602037",128,"440.578125","423","459","12.1103454232256",64,960,"good","good","severely_polluted","comfortable","comfortable","average_illumination","ok","During the hour 2026-01-05 09:00–10:00 in prep_area_centrifuge:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 474 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 21.3°C, within the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 441 lux, in the ""average illumination"" band (Average illumination).
@@ -381,7 +381,7 @@ Data quality was high based on 960 readings.","2026-01-05 06:00:18.889542+00","5
 "0077a5b1-a13c-4051-af7c-0c4b60182eab","prep_area_centrifuge","2026-01-17 16:00:00+00","2026-01-17 17:00:00+00","2.9350649350649354","2.5","3.4","0.18192409765312467",77,"441.75324675324674","433","450","4.1648777203123",77,"24.986038961038947","0.05","52","25.053362980364994",154,"20.985714285714295","20.98","21","0.0057189830317389365",77,"33.27422077922076","10","56.65","23.350191858876936",154,"8.883116883116884","5","12","2.212250735135135",77,1155,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-17 16:00–17:00 in prep_area_centrifuge:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 442 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 25 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 25 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.0°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 9 lux, in the ""calm light"" band (Calm light levels).
@@ -393,7 +393,7 @@ Data quality was high based on 1155 readings.","2026-01-17 13:00:18.4507+00","53
 "0079c821-cfba-484f-8e47-32970bdcdb6b","machine_shop","2025-11-27 20:00:00+00","2025-11-27 21:00:00+00","28.044999999999998","26.1","30.5","1.1212016858438036",60,"445.3","435","457","4.745381340608635",60,"29.86975000000001","0.05","84","30.632129572098783",120,"23.509999999999994","23.47","23.55","0.027370651113420644",60,"29.898416666666662","10","49.93","19.981914385613948",120,"134","134","134","0",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-27 20:00–21:00 in machine_shop:
 PM2.5 averaged 28 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.04).
 CO₂ averaged 445 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
+VOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
 Temperature was 23.5°C, within the comfort band.
 Humidity was 30%, below the comfort range.
 Illuminance was 134 lux, in the ""calm light"" band (Calm light levels).
@@ -405,7 +405,7 @@ Data quality was high based on 900 readings.","2025-11-27 17:00:28.569893+00","5
 "007c92b2-62d3-4410-a72c-9f60a46ce97b","libra_lab","2025-12-08 03:00:00+00","2025-12-08 04:00:00+00","4.56949152542373","4.1","5.2","0.22988320669428364",59,"427.3728813559322","417","436","4.517774494397945",59,"15.692966101694903","0.03","32","15.733433632303184",118,"22.126949152542387","22.07","22.19","0.03611543930462245",59,"31.404661016949145","10","53.11","21.496064465174694",118,"123.69491525423729","123","124","0.46439568770962586",59,885,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-08 03:00–04:00 in libra_lab:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 427 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.1°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 124 lux, in the ""calm light"" band (Calm light levels).
@@ -417,7 +417,7 @@ Data quality was high based on 885 readings.","2025-12-07 23:00:26.193814+00","5
 "007e6b61-3d66-4334-968e-348953a40829","kinesis_ctp","2026-01-26 08:00:00+00","2026-01-26 09:00:00+00","2.6405797101449275","2.2","3","0.18416651718718",69,"424.81159420289856","419","435","4.030309294505525",69,"26.227898550724642","0.05","58","26.343547955986132",138,"23.30999999999999","23.28","23.35","0.02162514875841242",69,"29.822826086956518","10","50.53","19.899342247469953",138,"118.7536231884058","115","122","1.6751277133176974",69,1035,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-26 08:00–09:00 in kinesis_ctp:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.07).
 CO₂ averaged 425 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 26 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 26 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.3°C, within the comfort band.
 Humidity was 30%, below the comfort range.
 Illuminance was 119 lux, in the ""calm light"" band (Calm light levels).
@@ -429,7 +429,7 @@ Data quality was high based on 1035 readings.","2026-01-26 05:00:17.806265+00","
 "00822347-b51a-4b33-ad37-7980639e92ec","kinesis_ctp","2025-12-01 10:00:00+00","2025-12-01 11:00:00+00","5.196666666666666","4.6","5.8","0.2321357483235133",60,"425.06666666666666","416","431","3.338865465823691",60,"14.789999999999988","0.03","30","14.826096116322061",120,"24.28749999999998","24.27","24.3","0.007945790912188192",60,"31.999749999999995","11","53.21","21.087864464380154",120,"138","138","138","0",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-01 10:00–11:00 in kinesis_ctp:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.04).
 CO₂ averaged 425 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 15 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 15 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 24.3°C, at the upper edge of the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 138 lux, in the ""calm light"" band (Calm light levels).
@@ -441,7 +441,7 @@ Data quality was high based on 900 readings.","2025-12-01 07:00:20.552395+00","6
 "0083b609-6687-4b18-a806-63b99922e675","prep_area_centrifuge","2025-12-13 02:00:00+00","2025-12-13 03:00:00+00","7.503333333333332","6.4","8.4","0.3493173326218676",60,"425.4","419","432","3.2842717119577824",60,"16.04833333333332","0.03","33","16.106310070579042",120,"19.961000000000016","19.95","19.97","0.0043956835530203344",60,"34.87916666666669","10","59.8","24.983486397559304",120,"2.033333333333333","1","4","0.9909192217102272",60,900,"good","good","severely_polluted","slightly_uncomfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-13 02:00–03:00 in prep_area_centrifuge:
 PM2.5 averaged 8 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 425 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.0°C, below the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).
@@ -453,7 +453,7 @@ Data quality was high based on 900 readings.","2025-12-12 23:00:21.655854+00","5
 "008da793-cc28-4173-aac0-e5b898739014","libra_lab","2025-12-13 19:00:00+00","2025-12-13 20:00:00+00","1.3166666666666662","1","1.6","0.14162096304975935",60,"420.6333333333333","414","429","3.736973608605288",60,"13.748333333333322","0.03","28","13.780406766284429",120,"21.364333333333327","21.34","21.41","0.0200310493447827",60,"32.75608333333333","10","55.73","22.851828137737574",120,"119.61666666666666","117","123","1.496795069548931",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-13 19:00–20:00 in libra_lab:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.11).
 CO₂ averaged 421 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.4°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 120 lux, in the ""calm light"" band (Calm light levels).
@@ -465,7 +465,7 @@ Data quality was high based on 900 readings.","2025-12-13 16:00:27.306169+00","5
 "0093a52c-8858-4f8e-a6c6-c4c08ea7ff5d","libra_lab","2026-01-17 12:00:00+00","2026-01-17 13:00:00+00","1.6369230769230763","1.3","2","0.1431446283148082",65,"423.03076923076924","415","434","4.100187612968273",65,"15.691923076923064","0.03","34","15.733073843091706",130,"22.32061538461537","22.28","22.37","0.02542617518651427",65,"30.57892307692309","10","51.59","20.658791819741086",130,"121.72307692307692","121","122","0.45096051336606474",65,975,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-17 12:00–13:00 in libra_lab:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 423 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.3°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 122 lux, in the ""calm light"" band (Calm light levels).
@@ -476,7 +476,7 @@ Data quality was high based on 975 readings.","2026-01-17 09:00:22.040446+00","5
 "00958e58-e53c-4336-b175-3eb97464f4f9","c1167","2025-12-18 16:00:00+00","2025-12-18 17:00:00+00","3.314166666666667","1.2","5.9","1.8830645429270692",120,"446.45","437","452","3.4119679693292566",60,"109.33150000000008","0.1","232","82.57818885319385",180,"25.297291533333308","24.18","26.43","1.0861717146269565",120,"39.43938871666666","12","55.01","19.50850582134215",180,"76.21142283333333","62.367123","96.097435","8.737085443706981",120,1620,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-18 16:00–17:00 in c1167:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.57).
 CO₂ averaged 446 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 109 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.76).
+VOC averaged 109 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.76).
 Temperature was 25.3°C, at the upper edge of the comfort band.
 Humidity was 39%, within the comfort range.
 Illuminance was 76 lux, in the ""calm light"" band (Calm light levels).
@@ -488,7 +488,7 @@ Data quality was high based on 1620 readings.","2025-12-18 13:00:14.197038+00","
 "00989829-6426-4533-ae13-a3cc94173452","environmental_engineering_teac","2026-01-12 04:00:00+00","2026-01-12 05:00:00+00","7.033846153846156","6.3","7.7","0.3654094121140537",65,"430.87692307692305","425","437","2.5464907980621847",65,"21.066307692307685","0.04","47","21.15089644364295",130,"20.963384615384633","20.95","20.97","0.00508580225878322",65,"37.02553846153846","11","63.79","26.128196419910505",130,"119.2","119","120","0.4031128874149275",65,975,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-12 04:00–05:00 in environmental_engineering_teac:
 PM2.5 averaged 7 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 431 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.0°C, within the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 119 lux, in the ""calm light"" band (Calm light levels).
@@ -500,7 +500,7 @@ Data quality was high based on 975 readings.","2026-01-12 01:00:16.281401+00","5
 "0098c081-aa88-45ad-b172-51df21fb31a5","concrete_lab","2026-01-26 15:00:00+00","2026-01-26 16:00:00+00","4.241176470588235","3.7","4.9","0.26667398292568184",68,"498.8382352941176","493","505","3.0449875333305876",68,"43.98955882352942","0.07","98","44.35032305811849",136,"22.03985294117646","21.99","22.07","0.016971675003210503",68,"34.249705882352934","11","57.74","23.335761109925695",136,"433.2352941176471","430","437","2.1518312025212336",68,1020,"good","good","severely_polluted","comfortable","slightly_uncomfortable","average_illumination","ok","During the hour 2026-01-26 15:00–16:00 in concrete_lab:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 499 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 44 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 44 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 22.0°C, within the comfort band.
 Humidity was 34%, within the comfort range.
 Illuminance was 433 lux, in the ""average illumination"" band (Average illumination).
@@ -512,7 +512,7 @@ Data quality was high based on 1020 readings.","2026-01-26 12:00:03.940651+00","
 "009d7531-42e1-4d45-9144-428e0ab2fa3f","kinesis_ctp","2025-12-13 16:00:00+00","2025-12-13 17:00:00+00","1.3896551724137933","1.1","1.6","0.12522212568971364",58,"404.4655172413793","397","412","3.5797457385028197",58,"15.997758620689643","0.03","32","16.037556904163207",116,"24.11948275862071","24.11","24.13","0.006862666300180377",58,"31.254051724137927","11","51.65","20.342068510032757",116,"130","130","130","0",58,870,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-13 16:00–17:00 in kinesis_ctp:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 404 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 24.1°C, at the upper edge of the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 130 lux, in the ""calm light"" band (Calm light levels).
@@ -524,7 +524,7 @@ Data quality was high based on 870 readings.","2025-12-13 12:00:21.151589+00","6
 "009e986d-d0a2-4929-a5c2-d9be0d2faac8","machine_shop","2025-11-30 13:00:00+00","2025-11-30 14:00:00+00","27.661666666666665","23.9","31","1.878792586189574",60,"449.45","430","471","10.213691376061044",60,"16.091333333333324","0.03","36","16.201292662055355",120,"24.205666666666666","23.92","24.48","0.170913464739846",60,"31.26566666666667","11","52.55","20.35935065800691",120,"137.63333333333333","134","142","2.9109184680584264",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-30 13:00–14:00 in machine_shop:
 PM2.5 averaged 28 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.07).
 CO₂ averaged 449 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 24.2°C, at the upper edge of the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 138 lux, in the ""calm light"" band (Calm light levels).
@@ -536,7 +536,7 @@ Data quality was high based on 900 readings.","2025-11-30 10:00:26.323967+00","6
 "00a24446-8672-4706-99e7-bc3e935ac25a","machine_shop","2025-12-13 09:00:00+00","2025-12-13 10:00:00+00","3.246666666666665","2.9","3.7","0.1845440250323518",60,"403.35","396","410","3.348791838807096",60,"13.681666666666654","0.03","28","13.712992571503365",120,"20.149000000000004","20.09","20.21","0.030124037364182305",60,"34.702000000000005","10","59.6","24.805692203893155",120,"114","114","114","0",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-13 09:00–10:00 in machine_shop:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 403 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 14 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.1°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 114 lux, in the ""calm light"" band (Calm light levels).
@@ -548,7 +548,7 @@ Data quality was high based on 900 readings.","2025-12-13 06:00:28.692995+00","5
 "00a45632-68c9-4fd8-b0b0-162a41b8eb93","libra_lab","2026-01-01 14:00:00+00","2026-01-01 15:00:00+00","0.5705882352941181","0.4","0.8","0.08474513771886018",68,"428.55882352941177","418","445","6.472403767964226",68,"82.27514705882353","0.07","375","101.977978334361",136,"22.105000000000018","22.01","22.16","0.039530830590364",68,"30.886764705882356","10","52","20.964146355582916",136,"122.69117647058823","121","126","1.6231290302962182",68,1020,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-01 14:00–15:00 in libra_lab:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.15).
 CO₂ averaged 429 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 82 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.24).
+VOC averaged 82 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.24).
 Temperature was 22.1°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 123 lux, in the ""calm light"" band (Calm light levels).
@@ -560,7 +560,7 @@ Data quality was high based on 1020 readings.","2026-01-01 11:00:21.753365+00","
 "00a7ac55-30a7-4089-a9e8-65df4207c24b","libra_lab","2026-01-25 13:00:00+00","2026-01-25 14:00:00+00","0.7478873239436624","0.5","1.1","0.1584380500200787",71,"422.1830985915493","415","434","4.243683908906538",71,"29.111830985915525","0.04","93","30.7547386562657",142,"22.34760563380282","22.1","22.54","0.155769654010868",71,"28.775845070422537","9","49.48","19.852079557466233",142,"121.43661971830986","121","123","0.6031440094845196",71,1065,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-25 13:00–14:00 in libra_lab:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.21).
 CO₂ averaged 422 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 29 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.06).
+VOC averaged 29 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.06).
 Temperature was 22.3°C, within the comfort band.
 Humidity was 29%, below the comfort range.
 Illuminance was 121 lux, in the ""calm light"" band (Calm light levels).
@@ -572,7 +572,7 @@ Data quality was high based on 1065 readings.","2026-01-25 15:00:22.858569+00","
 "00aaf389-4fe4-4e5b-a58d-c4c24f156630","smart_lab","2025-12-28 22:00:00+00","2025-12-28 23:00:00+00","3.301315789473685","2.9","4.6","0.27688429403037973",76,"418.7096774193548","411","428","3.522234279610792",62,"87.87623188405792","0.15","171","79.89786151549211",138,"23.541177990196086","22.59","25.65","1.157079197170232",102,"34.49185305487806","10","52.52","19.400492580291907",164,"13.798185978494628","0.679134","18","5.640221809367839",93,1219,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-28 22:00–23:00 in smart_lab:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 419 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 88 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.91).
+VOC averaged 88 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.91).
 Temperature was 23.5°C, within the comfort band.
 Humidity was 34%, within the comfort range.
 Illuminance was 14 lux, in the ""calm light"" band (Calm light levels).
@@ -584,7 +584,7 @@ Data quality was high based on 1219 readings.","2025-12-28 19:00:04.215273+00","
 "00b27817-9dbf-4bd1-bf16-822a13634be8","c1167","2026-02-10 00:00:00+00","2026-02-10 01:00:00+00","3.8524590163934427","1.9","6.3","1.8031291953159314",122,"445.6515151515151","437","459","4.990737341060859",66,"56.72127659574475","0.1","110","45.14164604871268",188,"25.16577869672132","24.07","26.440001","1.1324653263918567",122,"37.125744648936184","11","52.98","19.3136634257201",188,"46.189983516393475","46","48","0.3413288007350268",122,1662,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-02-10 00:00–01:00 in c1167:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.47).
 CO₂ averaged 446 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 57 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.80).
+VOC averaged 57 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.80).
 Temperature was 25.2°C, at the upper edge of the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 46 lux, in the ""calm light"" band (Calm light levels).
@@ -596,7 +596,7 @@ Data quality was high based on 1662 readings.","2026-02-09 21:00:13.709476+00","
 "00b38283-b560-4ad5-8504-56172549a7d7","prep_area_centrifuge","2026-01-17 05:00:00+00","2026-01-17 06:00:00+00","2.664062499999999","2.3","3.6","0.21629432291898965",64,"415.28125","408","426","4.3111842368204965",64,"21.519999999999985","0.04","45","21.587757393748394",128,"20.857343749999984","20.85","20.86","0.004451569190068024",64,"31.706328124999988","9","54.58","22.79567291689381",128,"1.828125","1","2","0.38025419651629616",64,960,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-17 05:00–06:00 in prep_area_centrifuge:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 415 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.9°C, within the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).
@@ -608,7 +608,7 @@ Data quality was high based on 960 readings.","2026-01-17 02:00:20.974521+00","4
 "00b6714b-a67a-4b4d-8c2f-840dfb458bc8","libra_lab","2026-01-26 08:00:00+00","2026-01-26 09:00:00+00","3.0776119402985063","2.6","3.4","0.17907243796041647",67,"429.76119402985074","419","440","4.397277230007177",67,"27.95164179104477","0.04","416","65.76861201673304",134,"22.26298507462687","22.21","22.3","0.023290974020588467",67,"31.163507462686578","10","52.76","21.243346530519467",134,"121.61194029850746","109","124","2.24927748588362",67,1005,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-26 08:00–09:00 in libra_lab:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 430 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 28 ppm, classified as ""severely polluted"", though values fluctuated (CV≈2.35).
+VOC averaged 28 ppm, classified as ""severely polluted"", though values fluctuated (CV≈2.35).
 Temperature was 22.3°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 122 lux, in the ""calm light"" band (Calm light levels).
@@ -620,7 +620,7 @@ Data quality was high based on 1005 readings.","2026-01-26 05:00:23.752407+00","
 "00ba3586-e30b-4a44-a05f-6314df8c419d","shores_office","2026-01-18 05:00:00+00","2026-01-18 06:00:00+00","2.459420289855073","2.2","2.9","0.15560020469110822",69,"412.3188405797101","401","424","5.197546801484638",69,"20.780869565217376","0.04","43","20.83521792081091",138,"22.49753623188406","22.49","22.51","0.008117844741035706",69,"31.381956521739138","10","52.82","21.459867546706427",138,"0","0","0","0",69,1035,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-18 05:00–06:00 in shores_office:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 412 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 21 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.5°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -632,7 +632,7 @@ Data quality was high based on 1035 readings.","2026-01-18 02:00:09.549111+00","
 "00bab4df-971b-448a-9535-702461f60232","smart_lab","2026-02-07 08:00:00+00","2026-02-07 09:00:00+00","8.50470588235294","6.4","10.7","0.8537291510068067",170,"436.9","424","448","4.609128745935633",60,"36.66000000000001","0.03","70","25.047924893785435",230,"24.808772278481005","23.48","25.950001","0.9160619208184704",237,"44.35959174074073","12","57.44","16.518505157650818",297,"10.431924194092826","0.452756","39.616138","8.834012376428033",237,2495,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-02-07 08:00–09:00 in smart_lab:
 PM2.5 averaged 9 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.10).
 CO₂ averaged 437 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 37 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.68).
+VOC averaged 37 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.68).
 Temperature was 24.8°C, at the upper edge of the comfort band.
 Humidity was 44%, within the comfort range.
 Illuminance was 10 lux, in the ""calm light"" band (Calm light levels).
@@ -644,7 +644,7 @@ Data quality was high based on 2495 readings.","2026-02-07 05:00:07.416101+00","
 "00bd9fe1-2096-4853-b0bc-156b9becff40","smart_lab","2025-12-16 01:00:00+00","2025-12-16 02:00:00+00","4.574301675977653","3.7","5.9","0.4626607689571342",179,"428.8833333333333","422","436","4.013078900281803",60,"117.133891213389","0.05","229","92.08173354842012",239,"24.983098304347866","23.88","26.045","0.6762781540803111",299,"46.229742961002756","12","57.12","15.488299225752291",359,"27.463282763485463","7.583661","45.275585","13.388390429169087",241,2870,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-16 01:00–02:00 in smart_lab:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.10).
 CO₂ averaged 429 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 117 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.79).
+VOC averaged 117 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.79).
 Temperature was 25.0°C, at the upper edge of the comfort band.
 Humidity was 46%, within the comfort range.
 Illuminance was 27 lux, in the ""calm light"" band (Calm light levels).
@@ -655,7 +655,7 @@ Data quality was high based on 2870 readings.","2025-12-15 22:00:10.77193+00","7
 "00c989b7-b4de-4f25-a51d-f10636899caf","kinesis_ctp","2026-01-31 02:00:00+00","2026-01-31 03:00:00+00","1.0878787878787881","0.8","1.5","0.13979672221881154",66,"432.1060606060606","422","443","4.775349485007636",66,"31.522424242424222","0.06","64","31.586750921436078",132,"23.52878787878786","23.51","23.54","0.008323303988037047",66,"27.770530303030306","9","46.58","18.842043466851152",132,"110.98484848484848","110","111","0.12309149097933274",66,990,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-31 02:00–03:00 in kinesis_ctp:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.13).
 CO₂ averaged 432 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 32 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 32 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.5°C, within the comfort band.
 Humidity was 28%, below the comfort range.
 Illuminance was 111 lux, in the ""calm light"" band (Calm light levels).
@@ -667,7 +667,7 @@ Data quality was high based on 990 readings.","2026-01-30 22:00:19.911894+00","6
 "00d12879-19d3-404e-8083-1ede954e639f","environmental_engineering_teac","2025-12-02 23:00:00+00","2025-12-03 00:00:00+00","17.62372881355932","15.3","20.8","1.33936925235555",59,"423.9491525423729","413","430","3.426185819454788",59,"32.10627118644066","0.06","66","32.195094354684315",118,"20.689661016949152","20.67","20.71","0.010165204629263768",59,"41.20559322033897","12","70.5","29.330167560589583",118,"130.98305084745763","130","131","0.13018891098082386",59,885,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-02 23:00–00:00 in environmental_engineering_teac:
 PM2.5 averaged 18 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.08).
 CO₂ averaged 424 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 32 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 32 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.7°C, within the comfort band.
 Humidity was 41%, within the comfort range.
 Illuminance was 131 lux, in the ""calm light"" band (Calm light levels).
@@ -679,7 +679,7 @@ Data quality was high based on 885 readings.","2025-12-02 19:00:18.864209+00","4
 "00d1cdc5-553c-43df-a37e-72e9f4f630b0","smart_lab","2026-01-10 18:00:00+00","2026-01-10 19:00:00+00","13.997872340425532","12.7","16","0.638543154275326",94,"439.46666666666664","434","448","3.2753142774120487",60,"72.70467532467539","0.11","160","60.50163922771269",154,"24.00370478767124","23.08","25.959999","0.8668527288467776",146,"36.66195012621362","10","50.73","17.278774045852707",206,"12.500851150793652","0.565945","23.316927","6.515865414402905",126,1548,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-10 18:00–19:00 in smart_lab:
 PM2.5 averaged 14 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.05).
 CO₂ averaged 439 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 73 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.83).
+VOC averaged 73 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.83).
 Temperature was 24.0°C, at the upper edge of the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 13 lux, in the ""calm light"" band (Calm light levels).
@@ -690,7 +690,7 @@ Data quality was high based on 1548 readings.","2026-01-10 15:00:06.479448+00","
 "00d53610-adf4-4108-b42a-169bba1f5a3c","machine_shop","2025-12-21 03:00:00+00","2025-12-21 04:00:00+00","2.2100000000000004","1.8","2.8","0.18749011273366223",60,"419.55","411","429","3.6842541733109733",60,"16.842249999999993","0.03","35","16.898039937178734",120,"18.386833333333332","18.36","18.43","0.018639457570731457",60,"29.052500000000002","7","51.48","21.831715779240675",120,"80","80","80","0",60,900,"good","good","severely_polluted","slightly_uncomfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-21 03:00–04:00 in machine_shop:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 420 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 18.4°C, below the comfort band.
 Humidity was 29%, below the comfort range.
 Illuminance was 80 lux, in the ""calm light"" band (Calm light levels).
@@ -702,14 +702,14 @@ Data quality was high based on 900 readings.","2025-12-21 00:00:25.907276+00","5
 "00dfeb21-5378-4082-8a41-c4bcd6580c60","smart_lab","2025-11-23 04:00:00+00","2025-11-23 05:00:00+00","6.041666666666665","5.1","7.3","0.698645876396662",12,"424","421","426","2.160246899469287",4,"75.25999999999999","0.04","131","57.30556971185262",16,"25.288925800000005","23.52","26.379999","0.9732231056516664",20,"45.23272154166667","12","57.64","15.46229820280866",24,NULL,NULL,NULL,NULL,0,192,"good","good","very_low","warm","ideal",NULL,"ok","During the hour 2025-11-23 04:00–05:00 in smart_lab:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band (meets EPA annual standard (12 µg/m³)). Variability was moderate (CV≈0.12).
 CO₂ averaged 424 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 75 µg/m³, classified as ""very low"" according to RESET/WELL guidelines, though values fluctuated (CV≈0.76).
+VOC averaged 75 µg/m³, classified as ""very low"" according to RESET/WELL guidelines, though values fluctuated (CV≈0.76).
 Temperature was 25.3°C, at the upper edge of the ASHRAE 55 comfort band (20–24°C typical comfort, 27°C upper limit).
 Humidity was 45%, within the EPA/ASHRAE 30–60% comfort range (30–50% optimal).
 Data quality was high based on 192 readings.","2025-11-23 00:00:57.022274+00",NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
 "00e40e21-f965-4425-b62f-c063bae0e73c","kinesis_ctp","2026-02-01 09:00:00+00","2026-02-01 10:00:00+00","2.3923076923076922","2.1","2.9","0.16037815888129497",65,"437.24615384615385","429","445","3.504598627298359",65,"25.53246153846156","0.04","57","25.70891059178391",130,"23.27123076923076","23.26","23.29","0.007807787039967889",65,"30.639615384615393","10","51.5","20.719603622403806",130,"111.32307692307693","110","112","0.8121670915614496",65,975,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-01 09:00–10:00 in kinesis_ctp:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.07).
 CO₂ averaged 437 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 26 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 26 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 23.3°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 111 lux, in the ""calm light"" band (Calm light levels).
@@ -721,7 +721,7 @@ Data quality was high based on 975 readings.","2026-02-01 06:00:21.465567+00","6
 "00e9131d-5759-4e66-a356-22f518c268ec","prep_area_centrifuge","2025-12-19 13:00:00+00","2025-12-19 14:00:00+00","2.424999999999999","1.5","3","0.40947465309274506",60,"443.4","436","449","3.2374922289023935",60,"195.15833333333342","0.11","484","218.16870310382652",120,"20.85666666666667","20.82","20.93","0.03160490557647048",60,"34.93025000000001","10","60.25","25.035195275012",120,"437.6166666666667","431","448","4.705178058795624",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","average_illumination","ok","During the hour 2025-12-19 13:00–14:00 in prep_area_centrifuge:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.17).
 CO₂ averaged 443 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 195 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.12).
+VOC averaged 195 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.12).
 Temperature was 20.9°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 438 lux, in the ""average illumination"" band (Average illumination).
@@ -733,7 +733,7 @@ Data quality was high based on 900 readings.","2025-12-19 10:00:20.207254+00","5
 "00ef0172-35ab-48b8-ad04-5ccd86640048","environmental_engineering_teac","2025-11-27 01:00:00+00","2025-11-27 02:00:00+00","6.096666666666666","5.5","6.7","0.268685858197785",60,"456.31666666666666","448","467","3.675349247404316",60,"62.14991666666663","0.1","135","62.5278668429187",120,"21.232666666666677","21.2","21.26","0.016658755184408857",60,"39.791999999999994","12","67.68","27.90858024745385",120,"127.76666666666667","127","128","0.42652186808509834",60,900,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-11-27 01:00–02:00 in environmental_engineering_teac:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.04).
 CO₂ averaged 456 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 62 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 62 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 21.2°C, within the comfort band.
 Humidity was 40%, within the comfort range.
 Illuminance was 128 lux, in the ""calm light"" band (Calm light levels).
@@ -745,7 +745,7 @@ Data quality was high based on 900 readings.","2025-11-26 22:00:18.90582+00","50
 "00efc1ce-2847-4731-844f-eb5f6534635a","prep_area_centrifuge","2026-01-09 17:00:00+00","2026-01-09 18:00:00+00","13.036363636363633","11.5","14.7","0.7059724705585909",77,"441.64935064935065","434","449","3.9595528514368823",77,"63.09714285714281","0.09","194","64.79654738153643",154,"20.84220779220781","20.59","20.98","0.12242745839908413",77,"34.96649350649351","10","60.77","25.049778377751515",154,"142.01298701298703","1","444","202.77064392964917",77,1155,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-09 17:00–18:00 in prep_area_centrifuge:
 PM2.5 averaged 13 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.05).
 CO₂ averaged 442 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 63 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
+VOC averaged 63 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.03).
 Temperature was 20.8°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 142 lux, in the ""calm light"" band (Calm light levels).
@@ -757,7 +757,7 @@ Data quality was high based on 1155 readings.","2026-01-09 13:00:20.217711+00","
 "00f3df04-8ba4-454d-84ff-cee6c5e080bf","prep_area_centrifuge","2025-11-29 11:00:00+00","2025-11-29 12:00:00+00","14.640677966101697","13.7","15.7","0.3783442348224408",59,"439.5762711864407","430","446","3.4948404819326817",59,"14.726864406779649","0.03","31","14.766602980655197",118,"20.096271186440678","20.08","20.11","0.007167528570542992",59,"34.726016949152545","10","59.58","24.831479646521423",118,"19.305084745762713","19","20","0.46439568770962586",59,885,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-29 11:00–12:00 in prep_area_centrifuge:
 PM2.5 averaged 15 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.03).
 CO₂ averaged 440 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 15 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 15 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.1°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 19 lux, in the ""calm light"" band (Calm light levels).
@@ -769,19 +769,19 @@ Data quality was high based on 885 readings.","2025-11-29 08:00:21.704543+00","5
 "00f50292-4bb1-4b22-8d55-895a0cc2ed0a","smart_lab","2025-11-17 15:00:00+00","2025-11-17 16:00:00+00","15.485714214285712","13.9","17.6","1.1514920163580538",14,"502","501","504","1.4142135623730951",5,"44.16842105263158","0.04","75","30.70185395472576",19,"25.602708291666662","24.27","26.440001","0.7351750069974449",24,"43.76223741379311","12","54.5","14.953934350004456",29,NULL,NULL,NULL,NULL,0,228,"moderate_high","good","very_low","warm","ideal",NULL,"ok","During the hour 2025-11-17 15:00–16:00 in smart_lab:
 PM2.5 averaged 15 µg/m³, falling in the ""moderately elevated"" band (meets EPA 24-hour standard (35 µg/m³)). Variability was low (CV≈0.07).
 CO₂ averaged 502 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.00).
-TVOC averaged 44 µg/m³, classified as ""very low"" according to RESET/WELL guidelines, though values fluctuated (CV≈0.70).
+VOC averaged 44 µg/m³, classified as ""very low"" according to RESET/WELL guidelines, though values fluctuated (CV≈0.70).
 Temperature was 25.6°C, at the upper edge of the ASHRAE 55 comfort band (20–24°C typical comfort, 27°C upper limit).
 Humidity was 44%, within the EPA/ASHRAE 30–60% comfort range (30–50% optimal).
 Data quality was high based on 228 readings.","2025-11-18 00:23:25.959984+00",NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
 "00f66b2a-427a-4648-9967-2846a5d511d3","concrete_lab","2026-02-25 14:00:00+00","2026-02-25 15:00:00+00","16.336666666666662","16.336666666666662","16.336666666666662","0",1,"498.7","498.7","498.7","0",1,"0.2839999999999999","0.2839999999999999","0.2839999999999999","0",1,"20.845166666666657","20.845166666666657","20.845166666666657","0",1,"58.71749999999999","58.71749999999999","58.71749999999999","0",1,"438.56666666666666","438.56666666666666","438.56666666666666","0",1,1,"moderate","good","polluted","comfortable","comfortable","average_illumination","ok","During the hour 2026-02-25 14:00–15:00 in concrete_lab:
 PM2.5 averaged 16 µg/m³, falling in the ""moderate"" band.
 CO₂ averaged 499 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm).
-TVOC averaged 0 ppm, classified as ""polluted""
+VOC averaged 0 ppm, classified as ""polluted""
 Temperature was 20.8°C, within the comfort band.
 Humidity was 59%, at the upper edge of the comfort range.
 Illuminance was 439 lux, in the ""average illumination"" band (Average illumination).
 Acoustic levels were 53 dB, in the ""average"" band (Average noise levels).
-Indoor Environmental Quality (calculated from PPD formulas): Overall IEQ Index was 46.0; Thermal Comfort (ITC) was 62.1; Indoor Air Quality (IIAQ) was 0.0; Acoustic Comfort (IAC) was 49.6; Illumination (IIL) was 100.0.","2026-02-25 11:00:53.956917+00","52.65","52.65","52.65","0",1,"average","45.99017871211188","62.125688843062385","0","49.57142857142858","100","20.845166666666657","58.71749999999999","438.56666666666666","52.65","16.336666666666662","0.2839999999999999","498.7","-1.252954701226071","19.306721224475908","100","25.299999999999997","37.874311156937615","50.67593689795578","100","12.860833462496496","0.3849913572005714","0.2982779753414263","0","0.31673066745800227","{""co2"": {}, ""pm25"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""tvoc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""tvoc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","Space: concrete_lab
+Indoor Environmental Quality (calculated from PPD formulas): Overall IEQ Index was 46.0; Thermal Comfort (ITC) was 62.1; Indoor Air Quality (IIAQ) was 0.0; Acoustic Comfort (IAC) was 49.6; Illumination (IIL) was 100.0.","2026-02-25 11:00:53.956917+00","52.65","52.65","52.65","0",1,"average","45.99017871211188","62.125688843062385","0","49.57142857142858","100","20.845166666666657","58.71749999999999","438.56666666666666","52.65","16.336666666666662","0.2839999999999999","498.7","-1.252954701226071","19.306721224475908","100","25.299999999999997","37.874311156937615","50.67593689795578","100","12.860833462496496","0.3849913572005714","0.2982779753414263","0","0.31673066745800227","{""co2"": {}, ""pm25"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""voc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""voc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","Space: concrete_lab
 Time: 2026-02-25 14:00:00+00:00 to 2026-02-25 15:00:00+00:00
 IEQ: 46.0
 Dominant driver: indoor_air_quality
@@ -793,7 +793,7 @@ Anomalies: 0","{""label"": ""medium"", ""score"": 67.4}","67.4","medium"
 "00f82b48-b466-4931-a201-64eeae4de7da","libra_lab","2025-12-27 00:00:00+00","2025-12-27 01:00:00+00","6.8769230769230765","6.3","7.7","0.3166076193261694",65,"431.0153846153846","425","441","4.229702662763024",65,"17.68153846153845","0.04","37","17.71333306177649",130,"22.50461538461538","22.46","22.54","0.01777260207778899",65,"31.04984615384617","10","52.22","21.131316045282304",130,"124.04615384615384","124","125","0.21145103088313014",65,975,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-27 00:00–01:00 in libra_lab:
 PM2.5 averaged 7 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 431 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.5°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 124 lux, in the ""calm light"" band (Calm light levels).
@@ -804,7 +804,7 @@ Data quality was high based on 975 readings.","2025-12-26 20:00:11.014833+00","5
 "00fff5c6-fe1c-4997-b219-ec991f495e08","cities","2026-01-11 03:00:00+00","2026-01-11 04:00:00+00","12.769565217391303","12","13.8","0.29867567883126983",69,"463.71014492753625","453","476","4.402878233995691",69,"18.498260869565208","0.04","37","18.526069614127778",138,"22.60246376811592","22.59","22.62","0.006946390747438132",69,"32.227681159420285","10","54.75","22.308949737254565",138,"66.98550724637681","66","67","0.12038585308576921",69,1035,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-11 03:00–04:00 in cities:
 PM2.5 averaged 13 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.02).
 CO₂ averaged 464 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 18 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.6°C, within the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 67 lux, in the ""calm light"" band (Calm light levels).
@@ -815,7 +815,7 @@ Data quality was high based on 1035 readings.","2026-01-11 00:00:21.388897+00","
 "01001a57-a2ff-40db-a629-a5e12e10608b","environmental_engineering_teac","2025-11-26 08:00:00+00","2025-11-26 09:00:00+00","4.215","3.5","4.8","0.26669667910206113",60,"457.6","446","468","5.381071659380668",60,"57.74500000000002","0.1","123","57.9353074159286",120,"20.904833333333322","20.89","20.93","0.008731720211575218",60,"40.587999999999994","12","69.29","28.70791328261281",120,"127.95","127","128","0.21978417765108266",60,900,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-11-26 08:00–09:00 in environmental_engineering_teac:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 458 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 58 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 58 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.9°C, within the comfort band.
 Humidity was 41%, within the comfort range.
 Illuminance was 128 lux, in the ""calm light"" band (Calm light levels).
@@ -827,7 +827,7 @@ Data quality was high based on 900 readings.","2025-11-26 05:00:19.928853+00","5
 "01021e4f-d4eb-4fe6-8396-20202d8bc3fc","smart_lab","2025-12-26 18:00:00+00","2025-12-26 19:00:00+00","17.639473692982452","15.4","21.6","1.4777176240672614",114,"439.9836065573771","433","450","3.3590266609971433",61,"69.11337142857145","0.08","151","54.70672140883402",175,"24.351987711111093","22.92","25.799999","1.0608353514574642",180,"42.96750838589212","11","58.96","18.59750525085075",241,"10.724972679245283","0.679134","18","6.432720553209208",159,1860,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-26 18:00–19:00 in smart_lab:
 PM2.5 averaged 18 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.08).
 CO₂ averaged 440 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 69 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.79).
+VOC averaged 69 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.79).
 Temperature was 24.4°C, at the upper edge of the comfort band.
 Humidity was 43%, within the comfort range.
 Illuminance was 11 lux, in the ""calm light"" band (Calm light levels).
@@ -838,7 +838,7 @@ Data quality was high based on 1860 readings.","2025-12-26 15:00:03.467475+00","
 "01029cc9-6312-404e-a1d7-69c3f8b98412","cities","2025-12-05 18:00:00+00","2025-12-05 19:00:00+00","17.82333333333333","16.7","19.6","0.6788241745010307",60,"483.3666666666667","468","498","7.553126340405296",60,"15.514999999999988","0.03","31","15.549926909498842",120,"23.24699999999998","23.14","23.33","0.06298506683388073",60,"33.67016666666665","11","56.7","22.765526790654818",120,"88","88","88","0",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-05 18:00–19:00 in cities:
 PM2.5 averaged 18 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.04).
 CO₂ averaged 483 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.2°C, within the comfort band.
 Humidity was 34%, within the comfort range.
 Illuminance was 88 lux, in the ""calm light"" band (Calm light levels).
@@ -850,7 +850,7 @@ Data quality was high based on 900 readings.","2025-12-05 15:00:25.562299+00","5
 "0105b33d-a57f-4e90-a0c5-f096c5c933e8","ccs_ad","2026-01-14 15:00:00+00","2026-01-14 16:00:00+00","7.516666666666668","6.5","8.4","0.41531575877539245",66,"527.4545454545455","510","545","10.34063205653655",66,"22.13363636363635","0.04","45","22.182550781977337",132,"26.158787878787894","26.11","26.19","0.020866989131912424",66,"26.630378787878783","10","43.54","16.694141469312196",132,"109.83333333333333","108","110","0.4144814492771321",66,990,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-14 15:00–16:00 in ccs_ad:
 PM2.5 averaged 8 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 527 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 22 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 26.2°C, at the upper edge of the comfort band.
 Humidity was 27%, below the comfort range.
 Illuminance was 110 lux, in the ""calm light"" band (Calm light levels).
@@ -862,12 +862,12 @@ Data quality was high based on 990 readings.","2026-01-14 12:00:14.06798+00","54
 "01086f13-7476-4b8a-a1a3-694fe84e38f2","concrete_lab","2026-02-27 18:00:00+00","2026-02-27 19:00:00+00","8.848333333333333","8.848333333333333","8.848333333333333","0",1,"423","423","423","0",1,"0.03850000000000002","0.03850000000000002","0.03850000000000002","0",1,"21.305666666666664","21.305666666666664","21.305666666666664","0",1,"62.529499999999985","62.529499999999985","62.529499999999985","0",1,"0","0","0","0",1,1,"good","good","good","comfortable","comfortable","calm_light","ok","During the hour 2026-02-27 18:00–19:00 in concrete_lab:
 PM2.5 averaged 9 µg/m³, falling in the ""good"" band.
 CO₂ averaged 423 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm).
-TVOC averaged 0 ppm, classified as ""good""
+VOC averaged 0 ppm, classified as ""good""
 Temperature was 21.3°C, within the comfort band.
 Humidity was 63%, above the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
 Acoustic levels were 51 dB, in the ""average"" band (Average noise levels).
-Indoor Environmental Quality (calculated from PPD formulas): Overall IEQ Index was 74.5; Thermal Comfort (ITC) was 70.5; Indoor Air Quality (IIAQ) was 98.7; Acoustic Comfort (IAC) was 55.4; Illumination (IIL) was 0.0.","2026-02-27 15:00:36.573125+00","50.61666666666667","50.61666666666667","50.61666666666667","0",1,"average","74.49324744364117","70.47766699488048","98.66344388290943","55.38095238095237","0","21.305666666666664","62.529499999999985","0","50.61666666666667","8.848333333333333","0.03850000000000002","423","-1.078129621818212","73.43878240540042","1.3365561170905722","21.233333333333334","29.52233300511952","0","0","1.3365561170905722","0.26963699104052835","0.06061498385471943","0.46356155147007233","0.20618647363467985","{""co2"": {}, ""pm25"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""tvoc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""tvoc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","Space: concrete_lab
+Indoor Environmental Quality (calculated from PPD formulas): Overall IEQ Index was 74.5; Thermal Comfort (ITC) was 70.5; Indoor Air Quality (IIAQ) was 98.7; Acoustic Comfort (IAC) was 55.4; Illumination (IIL) was 0.0.","2026-02-27 15:00:36.573125+00","50.61666666666667","50.61666666666667","50.61666666666667","0",1,"average","74.49324744364117","70.47766699488048","98.66344388290943","55.38095238095237","0","21.305666666666664","62.529499999999985","0","50.61666666666667","8.848333333333333","0.03850000000000002","423","-1.078129621818212","73.43878240540042","1.3365561170905722","21.233333333333334","29.52233300511952","0","0","1.3365561170905722","0.26963699104052835","0.06061498385471943","0.46356155147007233","0.20618647363467985","{""co2"": {}, ""pm25"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""voc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","{""co2"": {}, ""lux"": {}, ""pm25"": {}, ""voc"": {}, ""noise"": {}, ""humidity"": {}, ""temperature"": {}}","Space: concrete_lab
 Time: 2026-02-27 18:00:00+00:00 to 2026-02-27 19:00:00+00:00
 IEQ: 74.5
 Dominant driver: illumination
@@ -879,7 +879,7 @@ Anomalies: 0","{""label"": ""medium"", ""score"": 67.4}","67.4","medium"
 "010879f3-661e-4f47-a9a5-45083f6b243c","ccs_ad","2025-11-30 01:00:00+00","2025-11-30 02:00:00+00","6.716949152542374","6.1","7.3","0.2792555018276158",59,"447.3898305084746","440","457","4.085368970601031",59,"19.460677966101684","0.04","39","19.50484751182409",118,"23.29355932203388","23.29","23.3","0.0048290471196893005",59,"33.48076271186441","11","56.07","22.576653668475544",118,"49","49","49","0",59,885,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-30 01:00–02:00 in ccs_ad:
 PM2.5 averaged 7 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.04).
 CO₂ averaged 447 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 19 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.3°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 49 lux, in the ""calm light"" band (Calm light levels).
@@ -891,7 +891,7 @@ Data quality was high based on 885 readings.","2025-11-29 21:00:16.528713+00","5
 "011130c6-fad0-473b-8990-925aca1892df","prep_area_centrifuge","2025-12-15 17:00:00+00","2025-12-15 18:00:00+00","1.9283333333333332","1.3","2.5","0.3551517539891673",60,"474.75","467","482","3.587289236707379",60,"23.31491666666665","0.04","50","23.417814521594178",120,"20.149333333333335","20.1","20.19","0.030357567769902245",60,"34.71566666666668","10","59.74","24.820066926599868",120,"439.9","430","445","3.1065813135385847",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","average_illumination","ok","During the hour 2025-12-15 17:00–18:00 in prep_area_centrifuge:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.18).
 CO₂ averaged 475 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 23 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 23 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.1°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 440 lux, in the ""average illumination"" band (Average illumination).
@@ -903,7 +903,7 @@ Data quality was high based on 900 readings.","2025-12-15 14:00:22.559912+00","5
 "011553bf-b9a7-4ed5-93e7-f7b0b9f9d124","libra_lab","2025-12-07 20:00:00+00","2025-12-07 21:00:00+00","6.676666666666667","6.1","7.6","0.35813389535989176",60,"424.53333333333336","417","432","3.894658082800197",60,"20.169916666666655","0.03","52","21.09463158022918",120,"22.027333333333335","21.93","22.13","0.0543954966564095",60,"31.88641666666668","10","54.1","21.978496779017124",120,"122.61666666666666","122","124","0.6661721329614924",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-07 20:00–21:00 in libra_lab:
 PM2.5 averaged 7 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 425 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.05).
+VOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.05).
 Temperature was 22.0°C, within the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 123 lux, in the ""calm light"" band (Calm light levels).
@@ -915,7 +915,7 @@ Data quality was high based on 900 readings.","2025-12-07 17:00:26.757737+00","5
 "011d5d52-6783-4431-817b-949c7fd2964b","shores_office","2025-12-09 15:00:00+00","2025-12-09 16:00:00+00","10.98","9.7","12","0.624038243069734",60,"541.1666666666666","523","565","11.147952106023425",60,"25.000000000000014","0.05","53","25.101667225086693",120,"21.106333333333325","21.04","21.18","0.041699760868587135",60,"32.9245","10","56.71","23.021651549878722",120,"409.28333333333336","405","413","2.3368214444575854",60,900,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","average_illumination","ok","During the hour 2025-12-09 15:00–16:00 in shores_office:
 PM2.5 averaged 11 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.06).
 CO₂ averaged 541 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.02).
-TVOC averaged 25 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 25 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.1°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 409 lux, in the ""average illumination"" band (Average illumination).
@@ -927,7 +927,7 @@ Data quality was high based on 900 readings.","2025-12-09 12:00:13.241899+00","5
 "011dfd58-4de0-4677-bc1c-ce66dc84b36f","smart_lab","2025-12-11 01:00:00+00","2025-12-11 02:00:00+00","5.4247191011235945","4.3","7","0.5143765682681982",178,"430.52542372881356","425","438","3.1368550701540823",59,"127.80991561181423","0.05","247","103.88455914118784",237,"24.87049277104377","23.8","25.934999","0.670497706094274",297,"44.55112074438203","11","54.8","15.093553226023257",356,"27.258807909090855","7.583661","45.275585","13.34971533935639",242,2853,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-11 01:00–02:00 in smart_lab:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 431 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 128 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.81).
+VOC averaged 128 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.81).
 Temperature was 24.9°C, at the upper edge of the comfort band.
 Humidity was 45%, within the comfort range.
 Illuminance was 27 lux, in the ""calm light"" band (Calm light levels).
@@ -939,7 +939,7 @@ Data quality was high based on 2853 readings.","2025-12-10 21:00:10.269344+00","
 "011e1976-94a2-4f36-8e2b-d08352ae0e0e","shores_office","2026-01-02 03:00:00+00","2026-01-02 04:00:00+00","4.1160493827160485","3.7","4.9","0.24619950757640502",81,"438.24691358024694","433","445","3.0721770139329982",81,"19.51999999999999","0.04","39","19.540403245742176",162,"21.676913580246925","21.66","21.69","0.009306177425323999",81,"34.611358024691334","11","58.27","23.684580053397717",162,"0","0","0","0",81,1215,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-02 03:00–04:00 in shores_office:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 438 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 20 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.7°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -951,7 +951,7 @@ Data quality was high based on 1215 readings.","2026-01-02 00:00:08.260143+00","
 "0120cbd8-9ca4-4631-b066-0c3f18ab5400","c1167","2025-11-27 12:00:00+00","2025-11-27 13:00:00+00","5.215254237288139","1.8","9.7","2.9801229573280787",118,"460.98333333333335","450","478","6.01267493608341",60,"79.62842696629214","0.06","211","72.01114458473938",178,"26.013220423728814","24.86","27.190001","1.0181367951966833",118,"37.331235870786514","11","52.4","18.854789762643502",178,"477.0447524830512","399","605.221375","64.01570458496191",118,1596,"good","good","severely_polluted","comfortable","comfortable","average_illumination","ok","During the hour 2025-11-27 12:00–13:00 in c1167:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.57).
 CO₂ averaged 461 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 80 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.90).
+VOC averaged 80 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.90).
 Temperature was 26.0°C, at the upper edge of the comfort band.
 Humidity was 37%, within the comfort range.
 Illuminance was 477 lux, in the ""average illumination"" band (Average illumination).
@@ -963,7 +963,7 @@ Data quality was high based on 1596 readings.","2025-11-27 09:00:14.952083+00","
 "0129b940-2403-44cf-9aaf-13a6d49e0af4","environmental_engineering_teac","2025-12-28 00:00:00+00","2025-12-28 01:00:00+00","9.574999999999998","8","11.3","0.6642814473322598",64,"430.234375","422","438","3.8410571771447555",64,"35.67398437500001","0.05","103","36.38240085362384",128,"20.954218750000024","20.94","20.98","0.010809268142562611",64,"40.361953124999985","12","68.84","28.473416281471092",128,"123","123","123","0",64,960,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-28 00:00–01:00 in environmental_engineering_teac:
 PM2.5 averaged 10 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.07).
 CO₂ averaged 430 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 36 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.02).
+VOC averaged 36 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.02).
 Temperature was 21.0°C, within the comfort band.
 Humidity was 40%, within the comfort range.
 Illuminance was 123 lux, in the ""calm light"" band (Calm light levels).
@@ -974,7 +974,7 @@ Data quality was high based on 960 readings.","2025-12-27 20:00:08.542916+00","5
 "012c0d47-9052-4f39-9012-a4366363b1a1","kinesis_ctp","2026-02-01 12:00:00+00","2026-02-01 13:00:00+00","2.5484375000000012","2.1","2.9","0.20314369572081534",64,"436.59375","426","446","4.726550304162411",64,"32.73312499999998","0.06","67","32.80528020083227",128,"23.354999999999976","23.34","23.37","0.0064241607443997146",64,"30.839140625000002","10","52.24","20.92147278910135",128,"110.96875","110","112","0.24999999999999997",64,960,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-01 12:00–13:00 in kinesis_ctp:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 437 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 33 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 33 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.4°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 111 lux, in the ""calm light"" band (Calm light levels).
@@ -986,7 +986,7 @@ Data quality was high based on 960 readings.","2026-02-01 09:00:20.690606+00","6
 "012d1d8a-f41f-4a0a-970c-a765834bdf9a","environmental_engineering_teac","2026-01-26 20:00:00+00","2026-01-26 21:00:00+00","0.8338461538461533","0.6","1.3","0.1349501332401657",65,"444.2923076923077","437","459","4.649338249024922",65,"29.757846153846177","0.05","68","29.964885029979154",130,"21.74276923076924","21.62","21.89","0.07932346146293838",65,"35.033","11","59.21","24.126002622857758",130,"154","154","154","0",65,975,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-26 20:00–21:00 in environmental_engineering_teac:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.16).
 CO₂ averaged 444 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 30 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 21.7°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 154 lux, in the ""calm light"" band (Calm light levels).
@@ -998,7 +998,7 @@ Data quality was high based on 975 readings.","2026-01-26 17:00:16.395977+00","5
 "01316eb5-df50-4057-bc6d-bd3805728746","ccs_ad","2026-02-05 15:00:00+00","2026-02-05 16:00:00+00","1.4491803278688513","1","2.1","0.2560097334215189",61,"524.4426229508197","512","535","6.051238413647063",61,"80.80959016393447","0.09","480","103.07826875686885",122,"26.166065573770513","26.13","26.21","0.016860079925139604",61,"29.317459016393457","11","47.72","18.393015902399192",122,"109.40983606557377","101","112","2.0031396122115224",61,915,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-05 15:00–16:00 in ccs_ad:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.18).
 CO₂ averaged 524 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 81 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.28).
+VOC averaged 81 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.28).
 Temperature was 26.2°C, at the upper edge of the comfort band.
 Humidity was 29%, below the comfort range.
 Illuminance was 109 lux, in the ""calm light"" band (Calm light levels).
@@ -1010,7 +1010,7 @@ Data quality was high based on 915 readings.","2026-02-05 12:00:16.951063+00","5
 "01349c69-8b08-4023-a855-96185031ae6e","machine_shop","2025-12-30 19:00:00+00","2025-12-30 20:00:00+00","2.413114754098361","2.1","2.7","0.15966152723398494",61,"420.6393442622951","411","428","4.531492715376269",61,"16.344672131147533","0.03","36","16.40952576529946",122,"18.883934426229516","18.82","18.94","0.028998775176697376",61,"32.0516393442623","8","56.62","23.761231023869097",122,"133","133","133","0",61,915,"good","good","severely_polluted","slightly_uncomfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-30 19:00–20:00 in machine_shop:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.07).
 CO₂ averaged 421 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 16 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 18.9°C, below the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 133 lux, in the ""calm light"" band (Calm light levels).
@@ -1021,7 +1021,7 @@ Data quality was high based on 915 readings.","2025-12-30 15:00:19.511174+00","5
 "01355a0a-0603-4bed-b8ed-488da4f6aec1","prep_area_centrifuge","2025-11-25 04:00:00+00","2025-11-25 05:00:00+00","5.257627118644067","4.8","5.8","0.26858722966953347",59,"424.3220338983051","418","433","3.729845508338445",59,"16.669745762711855","0.03","34","16.714081604037805",118,"19.864745762711856","19.86","19.87","0.005036395879986031",59,"35.519661016949165","10","61.1","25.628498458111856",118,"1.6440677966101696","1","2","0.4829047119687413",59,885,"good","good","severely_polluted","slightly_uncomfortable","comfortable","calm_light","ok","During the hour 2025-11-25 04:00–05:00 in prep_area_centrifuge:
 PM2.5 averaged 5 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 424 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 19.9°C, below the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).
@@ -1033,7 +1033,7 @@ Data quality was high based on 885 readings.","2025-11-25 03:59:54.847455+00","4
 "01358320-3767-4f43-ad39-3bfbd6d721ea","prep_area_centrifuge","2025-12-13 11:00:00+00","2025-12-13 12:00:00+00","4.068965517241379","3.3","4.7","0.3485342222124487",58,"422.9310344827586","413","434","4.107597022230356",58,"12.264999999999988","0.03","26","12.296038987519873",116,"20.005172413793098","19.99","20.02","0.008000302474617308",58,"34.70353448275863","10","59.53","24.81074456076782",116,"19.03448275862069","17","20","1.0253885398190563",58,870,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-12-13 11:00–12:00 in prep_area_centrifuge:
 PM2.5 averaged 4 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.09).
 CO₂ averaged 423 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 12 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 12 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 20.0°C, within the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 19 lux, in the ""calm light"" band (Calm light levels).
@@ -1045,7 +1045,7 @@ Data quality was high based on 870 readings.","2025-12-13 07:00:23.329468+00","5
 "01359706-ede9-465a-b158-a76db9e4e784","c1167","2025-12-03 00:00:00+00","2025-12-03 01:00:00+00","14.595000016666662","6.5","23.700001","7.349222236000066",120,"426.6166666666667","419","434","3.454751906354966",60,"40.63555555555554","0.04","102","34.624835957052014",180,"25.14970811666665","24.05","26.264999","1.0620630018444417",120,"39.037888750000036","11","54.72","19.92383115528523",180,"51.102647733333306","47.992123","54","2.9133127923971394",120,1620,"moderate","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-12-03 00:00–01:00 in c1167:
 PM2.5 averaged 15 µg/m³, falling in the ""moderate"" band. Variability was high (CV≈0.50).
 CO₂ averaged 427 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 41 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.85).
+VOC averaged 41 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.85).
 Temperature was 25.1°C, at the upper edge of the comfort band.
 Humidity was 39%, within the comfort range.
 Illuminance was 51 lux, in the ""calm light"" band (Calm light levels).
@@ -1056,7 +1056,7 @@ Data quality was high based on 1620 readings.","2025-12-02 21:00:14.880005+00","
 "01367520-8a9a-4491-95d7-449d4acab169","shores_office","2025-11-25 01:00:00+00","2025-11-25 02:00:00+00","8.175","7.6","8.9","0.26401399552014004",60,"425.6666666666667","417","432","3.54471039034396",60,"16.892749999999985","0.03","36","16.960972698962696",120,"22.07549999999999","21.99","22.17","0.05469251490323441",60,"31.09","10","52.4","21.178664188440283",120,"0","0","0","0",60,900,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2025-11-25 01:00–02:00 in shores_office:
 PM2.5 averaged 8 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.03).
 CO₂ averaged 426 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.1°C, within the comfort band.
 Humidity was 31%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -1068,7 +1068,7 @@ Data quality was high based on 900 readings.","2025-11-25 22:00:13.800285+00","4
 "0137d6de-a3fa-4d56-91d9-1dd9d18dc60c","c1167","2026-01-04 07:00:00+00","2026-01-04 08:00:00+00","1.4448275862068958","0.3","3","0.9722537535640274",116,"432.9032258064516","426","442","3.4957101458195017",62,"166.77769662921335","0.29","266","122.35927148060081",178,"24.239913767241383","23.27","25.379999","1.0241462731696627",116,"39.61820233146066","11","56.68","21.03202094970368",178,"56.74488162068966","47.539368","65","4.9604109001412775",116,1578,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-04 07:00–08:00 in c1167:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.67).
 CO₂ averaged 433 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 167 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.73).
+VOC averaged 167 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.73).
 Temperature was 24.2°C, at the upper edge of the comfort band.
 Humidity was 40%, within the comfort range.
 Illuminance was 57 lux, in the ""calm light"" band (Calm light levels).
@@ -1080,7 +1080,7 @@ Data quality was high based on 1578 readings.","2026-01-04 03:00:10.897988+00","
 "013838f8-b40c-4387-979d-c2f8fb63150b","smart_lab","2026-01-18 13:00:00+00","2026-01-18 14:00:00+00","2.0504854368932044","1.6","2.8","0.24449779918323308",103,"416.1320754716981","408","426","4.332514529466767",53,"328.40948717948675","1.54","499","235.00305732203364",156,"23.959044333333335","22.43","26.059999","1.4078745194979756",123,"36.2317054375","10","51.45","17.524898205077008",176,"78.05082689795925","23.996061","172.273605","38.09743550969951",98,1470,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-18 13:00–14:00 in smart_lab:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.12).
 CO₂ averaged 416 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 328 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.72).
+VOC averaged 328 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.72).
 Temperature was 24.0°C, within the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 78 lux, in the ""calm light"" band (Calm light levels).
@@ -1091,7 +1091,7 @@ Data quality was high based on 1470 readings.","2026-01-18 12:00:10.079958+00","
 "013a2367-2dec-4ccd-bcfb-619a3eb26ac2","c1167","2026-01-07 07:00:00+00","2026-01-07 08:00:00+00","0.8209677419354836","0.2","2.1","0.5910269680816078",124,"450.8939393939394","417","530","35.37366634088514",66,"151.80126315789477","0.06","500","207.63925433865182",190,"24.282338766129026","23.26","25.51","1.0612137789560498",124,"35.07831577894736","10","49.85","18.380345094103607",190,"129.37812215322583","48.331688","259.429108","89.77996003723587",124,1686,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-01-07 07:00–08:00 in c1167:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was high (CV≈0.72).
 CO₂ averaged 451 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.08).
-TVOC averaged 152 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.37).
+VOC averaged 152 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.37).
 Temperature was 24.3°C, at the upper edge of the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 129 lux, in the ""calm light"" band (Calm light levels).
@@ -1103,7 +1103,7 @@ Data quality was high based on 1686 readings.","2026-01-07 03:00:11.677186+00","
 "01425099-e199-48a4-9eb2-2ca8dee645ec","kinesis_ctp","2026-02-06 08:00:00+00","2026-02-06 09:00:00+00","1.180303030303031","1","1.5","0.12675803354264786",66,"447.2121212121212","439","455","3.9360861134855645",66,"26.81287878787881","0.05","57","26.909140747549976",132,"23.868939393939367","23.84","23.9","0.016089058669091594",66,"31.921287878787876","11","53.19","21.001326872123474",132,"68.3030303030303","68","69","0.4630898556999652",66,990,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-06 08:00–09:00 in kinesis_ctp:
 PM2.5 averaged 1 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.11).
 CO₂ averaged 447 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 27 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 23.9°C, within the comfort band.
 Humidity was 32%, within the comfort range.
 Illuminance was 68 lux, in the ""calm light"" band (Calm light levels).
@@ -1115,7 +1115,7 @@ Data quality was high based on 990 readings.","2026-02-06 05:00:18.18363+00","60
 "0146b5ec-9649-4d13-8f1e-8495a805a47c","smart_lab","2026-01-15 16:00:00+00","2026-01-15 17:00:00+00","8.755882352941176","7.7","10.6","0.7266120984488219",136,"495.45","485","505","5.179571999856255",60,"63.90673469387756","0.1","137","47.47068690715297",196,"24.720978250000012","23.36","26.08","1.110962038052055",168,"34.934829328947366","9","47.86","15.635270570521946",228,"78.73230164864862","23.882872","171.820862","48.22046305394976",148,1952,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-15 16:00–17:00 in smart_lab:
 PM2.5 averaged 9 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.08).
 CO₂ averaged 495 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 64 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.74).
+VOC averaged 64 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.74).
 Temperature was 24.7°C, at the upper edge of the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 79 lux, in the ""calm light"" band (Calm light levels).
@@ -1127,7 +1127,7 @@ Data quality was high based on 1952 readings.","2026-01-15 13:00:06.869522+00","
 "0146cf7d-1956-4816-874f-c728f1125e48","smart_lab","2026-01-25 08:00:00+00","2026-01-25 09:00:00+00","2.5350364963503655","2","3.3","0.26166639090416377",137,"427.31666666666666","418","435","3.8510032444417086",60,"34.45583756345175","0.03","79","28.21046265118471",197,"24.629302265895955","23.06","26.17","1.2558150538654256",173,"33.36281281545063","9","45.4","14.532985611383035",233,"20.16164290062112","3.622047","40.408463","12.773705058471938",161,1992,"good","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-01-25 08:00–09:00 in smart_lab:
 PM2.5 averaged 3 µg/m³, falling in the ""good"" band. Variability was moderate (CV≈0.10).
 CO₂ averaged 427 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 34 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.82).
+VOC averaged 34 ppm, classified as ""severely polluted"", though values fluctuated (CV≈0.82).
 Temperature was 24.6°C, at the upper edge of the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 20 lux, in the ""calm light"" band (Calm light levels).
@@ -1139,7 +1139,7 @@ Data quality was high based on 1992 readings.","2026-01-25 15:00:06.524799+00","
 "014a9411-3a67-498a-8d45-3d67cbdca847","cities","2026-02-07 01:00:00+00","2026-02-07 02:00:00+00","1.7955882352941177","1.6","2.1","0.11899306831612966",68,"452.61764705882354","442","460","4.253284636834398",68,"50.340735294117685","0.09","108","50.5253000743537",136,"22.700882352941203","22.68","22.73","0.015427760801123215",68,"36.07198529411764","12","60.28","24.16108566422163",136,"68.01470588235294","67","86","3.396629791728035",68,1020,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2026-02-07 01:00–02:00 in cities:
 PM2.5 averaged 2 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.07).
 CO₂ averaged 453 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 50 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 50 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 22.7°C, within the comfort band.
 Humidity was 36%, within the comfort range.
 Illuminance was 68 lux, in the ""calm light"" band (Calm light levels).
@@ -1150,7 +1150,7 @@ Data quality was high based on 1020 readings.","2026-02-06 22:00:21.842997+00","
 "014be55b-2e5b-42ed-98fc-51b09d8dac86","environmental_engineering_teac","2025-11-27 03:00:00+00","2025-11-27 04:00:00+00","5.543333333333334","4.9","6.1","0.3121096432001596",60,"449.45","445","457","2.8488772691913655",60,"51.83875000000002","0.09","112","52.03851299334776",120,"21.16766666666665","21.15","21.18","0.012671423430367881",60,"39.94525","12","68","28.06243330436947",120,"127.45","127","128","0.5016920522135438",60,900,"good","good","severely_polluted","comfortable","comfortable","calm_light","ok","During the hour 2025-11-27 03:00–04:00 in environmental_engineering_teac:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.06).
 CO₂ averaged 449 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 52 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
+VOC averaged 52 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.00).
 Temperature was 21.2°C, within the comfort band.
 Humidity was 40%, within the comfort range.
 Illuminance was 127 lux, in the ""calm light"" band (Calm light levels).
@@ -1162,7 +1162,7 @@ Data quality was high based on 900 readings.","2025-11-27 00:00:18.703302+00","5
 "014e1d9e-c545-4284-a052-1ef28c770833","shores_office","2026-02-10 06:00:00+00","2026-02-10 07:00:00+00","14.327272727272728","13.2","15.5","0.5127738906546069",66,"440.469696969697","432","449","3.6171374018252305",66,"38.89303030303031","0.06","92","39.207143412444125",132,"22.97727272727273","22.86","23.04","0.036312551529758555",66,"32.86416666666667","11","55.07","21.94761469734941",132,"0","0","0","0",66,990,"moderate","good","severely_polluted","comfortable","slightly_uncomfortable","calm_light","ok","During the hour 2026-02-10 06:00–07:00 in shores_office:
 PM2.5 averaged 14 µg/m³, falling in the ""moderate"" band. Variability was low (CV≈0.04).
 CO₂ averaged 440 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 39 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 39 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 23.0°C, within the comfort band.
 Humidity was 33%, within the comfort range.
 Illuminance was 0 lux, in the ""calm light"" band (Calm light levels).
@@ -1173,7 +1173,7 @@ Data quality was high based on 990 readings.","2026-02-10 03:00:10.851009+00","4
 "0162b337-b9d4-406e-8c79-94607ca757c2","concrete_lab","2025-12-17 23:00:00+00","2025-12-18 00:00:00+00","5.6850000000000005","5","6.3","0.27545032466114866",60,"428.18333333333334","423","435","2.9255836251973037",60,"17.217749999999988","0.03","38","17.306910091398894",120,"19.716333333333345","19.67","19.76","0.019997174941718942",60,"35.11641666666667","10","60.53","25.2219691084436",120,"2","2","2","0",60,900,"good","good","severely_polluted","slightly_uncomfortable","comfortable","calm_light","ok","During the hour 2025-12-17 23:00–00:00 in concrete_lab:
 PM2.5 averaged 6 µg/m³, falling in the ""good"" band. Variability was low (CV≈0.05).
 CO₂ averaged 428 ppm, falling in the ""good"" ventilation band (typical outdoor levels ≈400 ppm). Variability was low (CV≈0.01).
-TVOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
+VOC averaged 17 ppm, classified as ""severely polluted"", though values fluctuated (CV≈1.01).
 Temperature was 19.7°C, below the comfort band.
 Humidity was 35%, within the comfort range.
 Illuminance was 2 lux, in the ""calm light"" band (Calm light levels).

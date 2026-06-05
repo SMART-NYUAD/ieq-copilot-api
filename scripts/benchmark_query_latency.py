@@ -53,6 +53,7 @@ def _run_breakdown(
     }
 
     if executor == RouteExecutor.KNOWLEDGE_QA:
+        from core_settings import ollama_temperature
         from executors.knowledge_executor import (
             _build_knowledge_context,
             _build_knowledge_prompt,
@@ -65,7 +66,7 @@ def _run_breakdown(
 
         t2 = time.perf_counter()
         prompt_text = _build_knowledge_prompt(question, ctx["grounded_context"])
-        _generate_ollama_text(prompt_text, temperature=0.4)
+        _generate_ollama_text(prompt_text, temperature=ollama_temperature())
         timings["ollama_generate_ms"] = (time.perf_counter() - t2) * 1000.0
 
     else:

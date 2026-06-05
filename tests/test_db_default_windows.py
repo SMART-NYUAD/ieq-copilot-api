@@ -180,14 +180,14 @@ class DbDefaultWindowTests(unittest.TestCase):
     def test_invariants_allow_two_explicit_labs_without_planner_signals(self):
         result = validate_db_execution_invariants(
             question=(
-                "Compare smart_lab and concrete_lab for CO2, PM2.5, TVOC, "
+                "Compare smart_lab and concrete_lab for CO2, PM2.5, VOC, "
                 "temperature, and humidity for the last 7 days."
             ),
             intent=IntentType.COMPARISON_DB,
             selected_metric="co2",
             resolved_lab_name="smart_lab",
             request_lab_name=None,
-            explicit_metrics=["co2", "pm25", "tvoc", "temperature", "humidity"],
+            explicit_metrics=["co2", "pm25", "voc", "temperature", "humidity"],
             hinted_metrics=[],
             planner_hints={"query_signals": {}},
         )
@@ -328,14 +328,14 @@ class DbDefaultWindowTests(unittest.TestCase):
                         "lab_space": "smart_lab",
                         "co2": 415.3,
                         "pm25": 1.2,
-                        "tvoc": 0.08,
+                        "voc": 0.08,
                         "humidity": 44.2,
                     },
                     {
                         "lab_space": "concrete_lab",
                         "co2": 418.1,
                         "pm25": 1.4,
-                        "tvoc": 0.09,
+                        "voc": 0.09,
                         "humidity": 45.1,
                     },
                 ]
@@ -363,7 +363,7 @@ class DbDefaultWindowTests(unittest.TestCase):
         metrics_used = list(result.get("metrics_used") or [])
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
-        self.assertIn("tvoc", metrics_used)
+        self.assertIn("voc", metrics_used)
 
     def test_aggregation_single_air_metric_trend_expands_context_pack(self):
         class _Cursor:
@@ -378,7 +378,7 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "lab_space": "smart_lab",
                     "co2": 430.0,
                     "pm25": 3.2,
-                    "tvoc": 0.09,
+                    "voc": 0.09,
                     "humidity": 44.8,
                     "ieq": 82.0,
                     "reading_count": 120,
@@ -403,7 +403,7 @@ class DbDefaultWindowTests(unittest.TestCase):
         metrics_used = list(result.get("metrics_used") or [])
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
-        self.assertIn("tvoc", metrics_used)
+        self.assertIn("voc", metrics_used)
 
     def test_aggregation_multi_metric_without_lab_uses_all_labs_scope(self):
         result = execute_intent_query(
@@ -474,14 +474,14 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "bucket": datetime(2026, 3, 29, 11, 55, tzinfo=timezone.utc),
                     "co2": 422.0,
                     "pm25": 2.1,
-                    "tvoc": 0.08,
+                    "voc": 0.08,
                 }
 
         end = datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc)
         start = end - timedelta(hours=1)
         result = execute_intent_query(
             cur=_Cursor(),
-            question="What are the latest readings for CO2, PM2.5, and TVOC in smart_lab?",
+            question="What are the latest readings for CO2, PM2.5, and VOC in smart_lab?",
             intent=IntentType.POINT_LOOKUP_DB,
             metric_alias="co2",
             metric_column="co2_avg",
@@ -491,14 +491,14 @@ class DbDefaultWindowTests(unittest.TestCase):
             window_label="last 1 hour",
             resolved_lab_name="smart_lab",
             compared_spaces=[],
-            explicit_metrics=["co2", "pm25", "tvoc"],
+            explicit_metrics=["co2", "pm25", "voc"],
             hinted_metrics=[],
         )
         self.assertEqual(result.get("operation_type"), "point_lookup_multi_metric")
         metrics_used = list(result.get("metrics_used") or [])
         self.assertIn("co2", metrics_used)
         self.assertIn("pm25", metrics_used)
-        self.assertIn("tvoc", metrics_used)
+        self.assertIn("voc", metrics_used)
 
     def test_point_lookup_last_week_single_metric_returns_window_aggregation(self):
         class _Cursor:
@@ -553,7 +553,7 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "ieq": 79.4,
                     "co2": 413.6,
                     "pm25": 2.0,
-                    "tvoc": 0.09,
+                    "voc": 0.09,
                     "humidity": 42.0,
                     "temperature": 23.4,
                     "sound": 46.0,
@@ -582,7 +582,7 @@ class DbDefaultWindowTests(unittest.TestCase):
         metrics_used = list(result.get("metrics_used") or [])
         self.assertEqual(
             metrics_used[:8],
-            ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"],
+            ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"],
         )
 
     def test_comfort_comparison_expands_metrics_beyond_humidity(self):
@@ -615,7 +615,7 @@ class DbDefaultWindowTests(unittest.TestCase):
                     "humidity": 43.4,
                     "co2": 420.2,
                     "pm25": 2.4,
-                    "tvoc": 0.09,
+                    "voc": 0.09,
                     "sound": 47.2,
                     "light": 410.0,
                     "reading_count": 24,

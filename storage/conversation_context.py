@@ -5,12 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-try:
-    from storage.conversation_store import build_compact_context
-    from storage.conversation_memory import apply_routing_memory, compute_question_signals, extract_routing_memory
-except ImportError:
-    from .conversation_store import build_compact_context
-    from .conversation_memory import apply_routing_memory, compute_question_signals, extract_routing_memory
+from storage.conversation_store import build_compact_context
+from storage.conversation_memory import apply_routing_memory, compute_question_signals, extract_routing_memory
 
 _ROUTING_SNIPPET_LINES = 4   # lines fed to the router LLM
 _LLM_HISTORY_MAX_CHARS = 800  # chars fed to the answer LLM

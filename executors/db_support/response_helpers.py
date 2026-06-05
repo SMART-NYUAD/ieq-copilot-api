@@ -8,35 +8,18 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-try:
-    from executors.db_support import time_windows as db_time_windows
-    from executors import metric_registry
-except ImportError:
-    from . import time_windows as db_time_windows
-    from .. import metric_registry
-
-try:
-    from prompting.db_prompts import (
-        DB_TOOL_RESPONSE_DIRECTIVE,
-        DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
-        DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
-        DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
-        DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
-        DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
-        CITATION_FORMAT_INSTRUCTION,
-        FRIENDLY_TONE_INSTRUCTION,
-    )
-except ImportError:
-    from ...prompting.db_prompts import (
-        DB_TOOL_RESPONSE_DIRECTIVE,
-        DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
-        DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
-        DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
-        DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
-        DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
-        CITATION_FORMAT_INSTRUCTION,
-        FRIENDLY_TONE_INSTRUCTION,
-    )
+from executors.db_support import time_windows as db_time_windows
+from executors import metric_registry
+from prompting.db_prompts import (
+    DB_TOOL_RESPONSE_DIRECTIVE,
+    DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
+    DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
+    DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
+    DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
+    DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
+    CITATION_FORMAT_INSTRUCTION,
+    FRIENDLY_TONE_INSTRUCTION,
+)
 
 
 def to_target_timezone(dt: datetime) -> datetime:

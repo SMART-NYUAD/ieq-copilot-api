@@ -6,10 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
-try:
-    from query_routing.intent_classifier import IntentType
-except ImportError:
-    from .intent_classifier import IntentType
+from query_routing.intent_classifier import IntentType
 
 
 class RouteExecutor(str, Enum):

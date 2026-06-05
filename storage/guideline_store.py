@@ -5,12 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-try:
-    from storage.postgres_client import get_cursor
-    from storage.embeddings import embed_texts
-except ImportError:
-    from .postgres_client import get_cursor
-    from .embeddings import embed_texts
+from storage.postgres_client import get_cursor
+from storage.embeddings import embed_texts
 
 
 _GUIDELINE_EMBED_DIM = 1536

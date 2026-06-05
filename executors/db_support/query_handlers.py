@@ -3,27 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-try:
-    from query_routing.intent_classifier import IntentType
-except ImportError:
-    from ...query_routing.intent_classifier import IntentType
+_log = logging.getLogger(__name__)
 
-try:
-    from executors.db_support import api_client
-    from executors.db_support import query_parsing as db_parsing
-    from executors.db_support import response_helpers as db_helpers
-    from executors.db_support.response_helpers import is_diagnostic_query_text
-    from executors import metric_registry
-except ImportError:
-    from . import api_client
-    from . import query_parsing as db_parsing
-    from . import response_helpers as db_helpers
-    from .response_helpers import is_diagnostic_query_text
-    from .. import metric_registry
+from query_routing.intent_classifier import IntentType
+from executors.db_support import api_client
+from executors.db_support import query_parsing as db_parsing
+from executors.db_support import response_helpers as db_helpers
+from executors.db_support.response_helpers import is_diagnostic_query_text
+from executors import metric_registry
 
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
@@ -109,7 +101,7 @@ def _requested_metrics(
 ) -> List[str]:
     q = str(question or "").lower()
     if _is_full_assessment_query(question):
-        full_pack = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"]
+        full_pack = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
         return full_pack
 
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
@@ -122,7 +114,7 @@ def _requested_metrics(
     if explicit_metrics and hinted_metrics and len(hinted_metrics) > len(explicit_metrics) and intent in analytical_intents:
         metrics = list(hinted_metrics) + [m for m in explicit_metrics if m not in hinted_metrics]
     if explicit_metrics:
-        explicit_air_metric = any(m in {"co2", "pm25", "tvoc"} for m in explicit_metrics)
+        explicit_air_metric = any(m in {"co2", "pm25", "voc"} for m in explicit_metrics)
         trend_like_phrase = any(
             token in q
             for token in (
@@ -162,19 +154,19 @@ def _requested_metrics(
         ):
             return metrics
     if is_diagnostic_query_text(question):
-        required_pack = ["co2", "pm25", "tvoc", "humidity", "temperature", "ieq", "sound", "light"]
+        required_pack = ["co2", "pm25", "voc", "humidity", "temperature", "ieq", "sound", "light"]
         return required_pack + [m for m in metrics if m not in required_pack]
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
     if not is_air_quality_query:
         q = str(question or "").lower()
         if (
             intent == IntentType.COMPARISON_DB
-            and any(m in {"co2", "pm25", "tvoc"} for m in metrics)
+            and any(m in {"co2", "pm25", "voc"} for m in metrics)
             and any(token in q for token in ("compare", "vs", "versus"))
         ):
             is_air_quality_query = True
         elif intent == IntentType.AGGREGATION_DB and len(explicit_metrics) == 1 and any(
-            m in {"co2", "pm25", "tvoc"} for m in explicit_metrics
+            m in {"co2", "pm25", "voc"} for m in explicit_metrics
         ) and any(
             token in q
             for token in ("trend", "over time", "this week", "last week", "this month", "last month", "past ", "last ")
@@ -183,9 +175,9 @@ def _requested_metrics(
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
-        ["ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "tvoc", "sound", "light"]
+        ["ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light"]
         if is_comfort_assessment_query
-        else ["co2", "pm25", "tvoc", "humidity", "ieq"]
+        else ["co2", "pm25", "voc", "humidity", "ieq"]
     )
     return required_pack + [m for m in metrics if m not in required_pack]
 
@@ -202,7 +194,7 @@ def _handle_diagnostic(
 ) -> Optional[Dict[str, Any]]:
     if not is_diagnostic_query_text(question):
         return None
-    core_metrics = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature", "sound", "light"]
+    core_metrics = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
     # Only fetch metrics the API supports
     fetchable = [m for m in core_metrics if api_client._api_sensor_slug(m) or api_client._score_type(m)]
 
@@ -725,7 +717,7 @@ def _handle_point_lookup(
     }
 
 
-_ANOMALY_CORE_METRICS = ["ieq", "co2", "pm25", "tvoc", "humidity", "temperature"]
+_ANOMALY_CORE_METRICS = ["ieq", "co2", "pm25", "voc", "humidity", "temperature"]
 
 
 def _handle_anomaly_multi(
@@ -1215,13 +1207,13 @@ def execute_intent_query(
         intent,
     )
 
-    handlers = [
-        lambda: _handle_forecast(
+    handlers: List[Tuple[str, Any]] = [
+        ("forecast", lambda: _handle_forecast(
             intent=intent,
             metric_alias=metric_alias,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_diagnostic(
+        )),
+        ("diagnostic", lambda: _handle_diagnostic(
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1229,16 +1221,16 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_correlation(
+        )),
+        ("correlation", lambda: _handle_correlation(
             question=question,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
             requested_metrics=requested_metrics,
-        ),
-        lambda: _handle_comparison_multi(
+        )),
+        ("comparison_multi", lambda: _handle_comparison_multi(
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1246,18 +1238,8 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_baseline_reference_comparison(
-            question=question,
-            intent=intent,
-            metric_alias=metric_alias,
-            unit=unit,
-            window_start=window_start,
-            window_end=window_end,
-            window_label=window_label,
-            resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_temporal_comparison(
+        )),
+        ("baseline_reference_comparison", lambda: _handle_baseline_reference_comparison(
             question=question,
             intent=intent,
             metric_alias=metric_alias,
@@ -1266,9 +1248,19 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
+        )),
+        ("temporal_comparison", lambda: _handle_temporal_comparison(
+            question=question,
+            intent=intent,
+            metric_alias=metric_alias,
+            unit=unit,
+            window_start=window_start,
+            window_end=window_end,
+            window_label=window_label,
+            resolved_lab_name=resolved_lab_name,
             requested_metrics=requested_metrics,
-        ),
-        lambda: _handle_aggregation_multi(
+        )),
+        ("aggregation_multi", lambda: _handle_aggregation_multi(
             question=question,
             intent=intent,
             requested_metrics=requested_metrics,
@@ -1277,8 +1269,8 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_point_lookup(
+        )),
+        ("point_lookup", lambda: _handle_point_lookup(
             question=question,
             intent=intent,
             metric_alias=metric_alias,
@@ -1288,8 +1280,8 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_anomaly_multi(
+        )),
+        ("anomaly_multi", lambda: _handle_anomaly_multi(
             intent=intent,
             explicit_metrics=explicit_metrics,
             requested_metrics=requested_metrics,
@@ -1297,16 +1289,16 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_anomaly(
+        )),
+        ("anomaly", lambda: _handle_anomaly(
             intent=intent,
             metric_alias=metric_alias,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
-        lambda: _handle_comparison(
+        )),
+        ("comparison", lambda: _handle_comparison(
             question=question,
             intent=intent,
             metric_alias=metric_alias,
@@ -1315,13 +1307,14 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-        ),
+        )),
     ]
 
     selected: Optional[Dict[str, Any]] = None
-    for handle in handlers:
+    for handler_name, handle in handlers:
         candidate = handle()
         if candidate:
+            _log.debug("execute_intent_query: selected handler=%s intent=%s", handler_name, intent)
             selected = candidate
             break
     if not selected:

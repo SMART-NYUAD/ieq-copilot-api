@@ -45,12 +45,12 @@ class _FakeCursor:
 
 
 class KnowledgeCardTests(unittest.TestCase):
-    def test_normalize_card_maps_tvoc_ugm3_to_tvoc(self):
+    def test_normalize_card_maps_tvoc_ugm3_to_voc(self):
         card = normalize_card(
             {
                 "card_type": "interpretation",
                 "topic": "tvoc",
-                "title": "TVOC acceptable",
+                "title": "VOC acceptable",
                 "summary": "A summary",
                 "content": "Detailed content",
                 "audience": "general",
@@ -63,7 +63,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_url_key": "RESET_AIR",
             }
         )
-        self.assertEqual(card["metric_name"], "tvoc")
+        self.assertEqual(card["metric_name"], "voc")
         self.assertEqual(card["source_metadata"]["original_metric_name"], "tvoc_ugm3")
 
     def test_normalize_card_rejects_missing_fields(self):

@@ -6,10 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Dict, Optional, Tuple
 
-try:
-    from executors.db_support.query_parsing import extract_space_from_question
-except ImportError:
-    from ..executors.db_support.query_parsing import extract_space_from_question
+from executors.db_support.query_parsing import extract_space_from_question
 
 
 _METRIC_KEYWORDS = (
@@ -17,7 +14,7 @@ _METRIC_KEYWORDS = (
     "co2",
     "pm2.5",
     "pm25",
-    "tvoc",
+    "voc",
     "temperature",
     "humidity",
     "light",
@@ -144,10 +141,7 @@ def compute_question_signals(question: str) -> Dict[str, Any]:
     try:
         from executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
     except ImportError:
-        try:
-            from ..executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
-        except ImportError:
-            return {}
+        return {}
     q = str(question or "")
     return {
         "has_lab_reference": bool(extract_space_from_question(q)),

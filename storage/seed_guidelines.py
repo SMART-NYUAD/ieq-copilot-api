@@ -8,12 +8,8 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List
 
-try:
-    from storage.postgres_client import get_cursor
-    from storage.embeddings import embed_texts
-except ImportError:
-    from .postgres_client import get_cursor
-    from .embeddings import embed_texts
+from storage.postgres_client import get_cursor
+from storage.embeddings import embed_texts
 
 
 _GUIDELINE_EMBED_DIM = 1536
@@ -186,22 +182,22 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
             "regulations including US EPA NAAQS."
         ),
     },
-    # -- TVOC ----------------------------------------------------------
+    # -- VOC ----------------------------------------------------------
     {
-        "source_key": "RESET_AIR_V2_TVOC",
+        "source_key": "RESET_AIR_V2_VOC",
         "source_label": "RESET Air Standard v2.1 — Commercial Interiors",
         "source_url": "https://reset.build/standard/air",
         "section_ref": "Section 4: Performance Thresholds",
         "publication_year": 2021,
-        "metric": "tvoc",
+        "metric": "voc",
         "citation_tier": "regulatory",
         "claim_text": (
-            "RESET Air Standard v2 requires TVOC at or below 500 µg/m³ "
+            "RESET Air Standard v2 requires VOC at or below 500 µg/m³ "
             "for Grade A certification and at or below 1000 µg/m³ for "
             "Grade B certification during occupied hours."
         ),
         "embed_text": (
-            "RESET Air TVOC VOC total volatile organic compounds "
+            "RESET Air VOC VOC total volatile organic compounds "
             "500 micrograms Grade A 1000 Grade B certification"
         ),
         "threshold_value": 500,
@@ -209,7 +205,7 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "threshold_unit": "µg/m³",
         "threshold_condition": "Grade A, occupied hours",
         "caveat_text": (
-            "TVOC readings vary significantly by sensor technology. "
+            "VOC readings vary significantly by sensor technology. "
             "Different sensors respond differently to VOC compounds. "
             "RESET requires sensor-specific calibration for certification."
         ),
@@ -220,15 +216,15 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "source_url": "https://v2.wellcertified.com/v/en/air/feature/4",
         "section_ref": "Feature A04: Volatile Compounds",
         "publication_year": 2020,
-        "metric": "tvoc",
+        "metric": "voc",
         "citation_tier": "regulatory",
         "claim_text": (
-            "WELL Building Standard v2 Feature A04 requires TVOC levels "
+            "WELL Building Standard v2 Feature A04 requires VOC levels "
             "not to exceed 500 µg/m³ as a long-term occupancy average "
             "in occupied spaces seeking WELL certification."
         ),
         "embed_text": (
-            "WELL TVOC volatile organic compounds 500 micrograms "
+            "WELL VOC volatile organic compounds 500 micrograms "
             "building standard certification indoor air"
         ),
         "threshold_value": 500,
@@ -238,22 +234,22 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "caveat_text": None,
     },
     {
-        "source_key": "WHO_IAQ_TVOC_2010",
+        "source_key": "WHO_IAQ_VOC_2010",
         "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010",
         "source_url": "https://www.who.int/publications/i/item/9789289002134",
         "section_ref": "Chapter 7: Total VOCs",
         "publication_year": 2010,
-        "metric": "tvoc",
+        "metric": "voc",
         "citation_tier": "research",
         "claim_text": (
-            "WHO 2010 indoor air quality guidelines indicate TVOC below "
+            "WHO 2010 indoor air quality guidelines indicate VOC below "
             "300 µg/m³ as a comfort range, 300–3000 µg/m³ as a multifactorial "
             "exposure range requiring investigation of sources, and above "
             "3000 µg/m³ as discomfort range with potential health effects. "
             "These are guidance values, not enforceable regulatory limits."
         ),
         "embed_text": (
-            "WHO TVOC total volatile organic compounds 300 3000 "
+            "WHO VOC total volatile organic compounds 300 3000 "
             "comfort discomfort indoor air quality guidance 2010"
         ),
         "threshold_value": 300,
@@ -261,7 +257,7 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "threshold_unit": "µg/m³",
         "threshold_condition": "comfort range upper boundary",
         "caveat_text": (
-            "WHO TVOC guidance is research-based, not a regulatory "
+            "WHO VOC guidance is research-based, not a regulatory "
             "standard. Frame as: 'WHO guidance suggests' not "
             "'the WHO standard requires'."
         ),

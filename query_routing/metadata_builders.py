@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-try:
-    from query_routing.intent_classifier import IntentType
-except ImportError:
-    from .intent_classifier import IntentType
+from query_routing.intent_classifier import IntentType
 
 _ANALYTICAL_TRANSITION = "slide"
 _DEFAULT_TRANSITION = "fade"

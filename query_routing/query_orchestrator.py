@@ -7,28 +7,16 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi.concurrency import run_in_threadpool
 
-try:
-    from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
-    from executors.knowledge_executor import (
-        answer_env_question_with_metadata,
-        stream_knowledge_tokens,
-    )
-    from query_routing.intent_classifier import IntentType
-    from query_routing.llm_router_planner import plan_route, plan_route_async
-    from query_routing.metadata_builders import derive_ui_contract
-    from query_routing.router_types import RoutePlan, RouteExecutor
-    from storage.conversation_context import ConversationContext
-except ImportError:
-    from ..executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
-    from ..executors.knowledge_executor import (
-        answer_env_question_with_metadata,
-        stream_knowledge_tokens,
-    )
-    from .intent_classifier import IntentType
-    from .llm_router_planner import plan_route, plan_route_async
-    from .metadata_builders import derive_ui_contract
-    from .router_types import RoutePlan, RouteExecutor
-    from ..storage.conversation_context import ConversationContext
+from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
+from executors.knowledge_executor import (
+    answer_env_question_with_metadata,
+    stream_knowledge_tokens,
+)
+from query_routing.intent_classifier import IntentType
+from query_routing.llm_router_planner import plan_route, plan_route_async
+from query_routing.metadata_builders import derive_ui_contract
+from query_routing.router_types import RoutePlan, RouteExecutor
+from storage.conversation_context import ConversationContext
 
 _KNOWLEDGE_INTENTS = {IntentType.DEFINITION_EXPLANATION, IntentType.UNKNOWN_FALLBACK}
 
@@ -259,11 +247,8 @@ def get_route_plan(question: str, lab_name: Optional[str] = None) -> RoutePlan:
     return plan_route(question, lab_name)
 
 
-_SEMANTIC_INTENTS = {IntentType.DEFINITION_EXPLANATION, IntentType.UNKNOWN_FALLBACK}
-
-
 def resolve_execution_intent(intent: IntentType) -> IntentType:
     """Return a DB-executable intent (maps semantic intents to current_status_db)."""
-    if intent in _SEMANTIC_INTENTS:
+    if intent in _KNOWLEDGE_INTENTS:
         return IntentType.CURRENT_STATUS_DB
     return intent

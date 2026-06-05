@@ -21,10 +21,10 @@ METRICS: Dict[str, Dict[str, Any]] = {
         "good_below": 12,
         "warning_below": 35,
     },
-    "tvoc": {
+    "voc": {
         "column": "voc_avg",
         "unit": "ppm",
-        "display": "TVOC",
+        "display": "VOC",
         "good_below": 0.5,
         "warning_below": 1.0,
     },
@@ -101,7 +101,7 @@ ALIASES: Dict[str, str] = {
     "pm2.5": "pm25",
     "pm 2.5": "pm25",
     "pm 25": "pm25",
-    "voc": "tvoc",
+    "tvoc": "voc",
     "temp": "temperature",
     "lux": "light",
     "noise": "sound",
