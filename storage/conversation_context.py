@@ -30,15 +30,22 @@ class ConversationContext:
     All downstream components (router, DB executor, answer LLM) receive the
     same object and read the view they need — nothing reconstructs context
     from the raw string independently.
+
+    Carry-over values (``carried_metric``, ``carried_time_phrase``) are passed
+    as structured data to executors via ``planner_hints``; they are never
+    appended to ``effective_question`` so the LLM always sees the clean user
+    question.
     """
 
     conversation_id: str
-    original_question: str   # As typed by the user (for turn persistence)
-    raw_block: str           # Full "Previous conversation context…" string
-    effective_question: str  # After memory carry-over (metric/lab appended)
+    original_question: str    # As typed by the user (for turn persistence)
+    raw_block: str            # Full "Previous conversation context…" string
+    effective_question: str   # Clean question — no appended carry-over text
     effective_lab: Optional[str]  # Lab resolved from memory or request
-    routing_snippet: str     # Compact last-N-lines for the router LLM
-    llm_history: str         # Compact block injected into answer LLM context
+    routing_snippet: str      # Compact last-N-lines for the router LLM
+    llm_history: str          # Compact block injected into answer LLM context
+    carried_metric: Optional[str] = None       # Metric inferred from prior turns
+    carried_time_phrase: Optional[str] = None  # Time window inferred from prior turns
 
 
 def build_conversation_context(
@@ -59,15 +66,20 @@ def build_conversation_context(
     routing_snippet = "\n".join(content_lines[-_ROUTING_SNIPPET_LINES:])
     llm_history = "\n".join(content_lines[-6:])[:_LLM_HISTORY_MAX_CHARS]
 
+    carried_metric: Optional[str] = None
+    carried_time_phrase: Optional[str] = None
+
     if raw_block:
         signals = compute_question_signals(original_question)
         memory = extract_routing_memory(conversation_context=raw_block, current_signals=signals)
-        effective_question, effective_lab, _ = apply_routing_memory(
+        effective_question, effective_lab, carry_info = apply_routing_memory(
             question=original_question,
             lab_name=lab_name,
             memory=memory,
             current_signals=signals,
         )
+        carried_metric = carry_info.get("carried_metric") or None
+        carried_time_phrase = carry_info.get("carried_time_phrase") or None
     else:
         effective_question = original_question
         effective_lab = (lab_name or "").strip() or None
@@ -80,4 +92,6 @@ def build_conversation_context(
         effective_lab=effective_lab,
         routing_snippet=routing_snippet,
         llm_history=llm_history,
+        carried_metric=carried_metric,
+        carried_time_phrase=carried_time_phrase,
     )

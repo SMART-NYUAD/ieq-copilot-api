@@ -44,21 +44,12 @@ _METRIC_CANONICAL = {
     "pm 2.5": "pm25", "pm2.5": "pm25", "pm 25": "pm25",
     "voc": "tvoc", "temp": "temperature", "lux": "light", "noise": "sound",
 }
-_COMPARISON_RE = re.compile(r"\b(compare|comparison|versus|vs\.?|between)\b")
-_ANOMALY_RE = re.compile(r"\b(anomal|spike|outlier|unusual|abnormal|deviation)\b")
-_AGGREGATION_RE = re.compile(r"\b(trend|average|avg|mean|sum|over\s+the|last\s+\d|past\s+\d|history|historical|weekly|daily)\b")
-_CURRENT_RE = re.compile(r"\b(current|now|right now|latest|at this moment|most recent)\b")
-_DEFINITION_RE = re.compile(r"\b(what\s+is|what\s+does|meaning\s+of|definition|define|explain)\b")
-_METRIC_VALUE_REQUEST_RE = re.compile(
-    r"\b(?:what(?:'s|\s+is)|how\s+is)\s+the\s+(?:current\s+)?"
-    r"(co2|pm\s*2\.?\s*5|pm25|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b"
-)
 
 _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
-    '  "intent": one of [definition_explanation, current_status_db, aggregation_db, '
-    "comparison_db, anomaly_analysis_db]\n"
+    '  "intent": one of [definition_explanation, current_status_db, point_lookup_db, '
+    "aggregation_db, comparison_db, anomaly_analysis_db]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, tvoc, humidity, temperature, light, sound, ieq]\n'
@@ -67,12 +58,32 @@ _SYSTEM_PROMPT = (
     "Routing rules:\n"
     "- When Prior conversation is present, use it only to fill missing lab/time slots. "
     "The current Question sets metric/topic scope; do not route to a prior-turn metric when "
-    "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature).\n"
-    "- definition_explanation: conceptual questions about what a metric means (e.g. 'what is CO2?', 'what does IEQ mean?', 'explain TVOC')\n"
-    "- current_status_db: current/latest readings without a time range; ALSO use this when the question asks for the current value of a known metric using 'what is the [metric]?', 'what's the [metric]?', or 'how is the [metric]?' (definite article + metric name = value request, NOT a definition)\n"
-    "- aggregation_db: trends, averages, summaries over a time window\n"
-    "- comparison_db: comparing two or more metrics within the same lab (e.g. 'how does humidity compare with comfort levels?', 'compare CO2 and temperature', 'humidity vs CO2'); OR comparing the same lab across two time periods (e.g. 'today vs last week'). Never use this for cross-space comparisons.\n"
-    "- anomaly_analysis_db: anomalies, spikes, outliers, unusual readings\n\n"
+    "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature).\n\n"
+    "Intent definitions:\n"
+    "- definition_explanation: ONLY for conceptual/educational questions asking what a metric means, "
+    "with no definite article before the metric name. "
+    "Examples: 'what is CO2?', 'what does IEQ mean?', 'explain TVOC', 'define humidity', 'what is pm2.5?'.\n"
+    "- current_status_db: The user wants the live/latest sensor reading right now, with no specific past "
+    "timestamp. Covers informal, typo-variant, and assessment phrasing. The definite article 'the' before a "
+    "metric always signals a value request, not a definition. Also use for opinion/assessment questions about "
+    "a metric that require knowing the current value to answer. "
+    "Examples: 'what is the CO2?', 'what\\'s the VOC?', 'whats the voc', 'whats co2', "
+    "'show me the temperature', 'how is the humidity?', 'co2?', 'voc levels?', 'current readings', "
+    "'is the CO2 ok?', 'is humidity too high?', 'do you think co2 is fine?', "
+    "'should I worry about PM2.5?', 'is the air safe?'. "
+    "Use this when in doubt — never fabricate sensor values.\n"
+    "- point_lookup_db: The user asks for a reading at a specific past moment (not a range or average). "
+    "Examples: 'what was the CO2 at 3pm?', 'what was the temperature at 9am this morning?', "
+    "'what did humidity read an hour ago?'.\n"
+    "- aggregation_db: Questions about trends, averages, or summaries across a time window. "
+    "Examples: 'average CO2 last 24 hours', 'how has humidity trended this week?', "
+    "'daily temperature summary', 'CO2 over the past 7 days'.\n"
+    "- comparison_db: Comparing two or more metrics in the same lab, or the same metric across two time periods. "
+    "Examples: 'compare CO2 and humidity', 'humidity vs CO2', 'is it better than yesterday?', "
+    "'today vs last week'. Never use for cross-space comparisons.\n"
+    "- anomaly_analysis_db: Detecting or explaining unusual readings, spikes, or outliers. "
+    "Examples: 'why did CO2 spike?', 'any unusual readings today?', 'were there anomalies last night?', "
+    "'what caused that PM2.5 outlier?'.\n\n"
     "Output only the JSON object, no markdown, no explanation."
 )
 
@@ -89,28 +100,27 @@ def _extract_metrics_from_question(question: str) -> List[str]:
     return found
 
 
+_FALLBACK_COMPARISON_RE = re.compile(r"\b(compare|comparison|versus|vs\.?|between)\b")
+_FALLBACK_ANOMALY_RE = re.compile(r"\b(anomal|spike|outlier|unusual|abnormal|deviation)\b")
+_FALLBACK_AGGREGATION_RE = re.compile(r"\b(trend|average|avg|mean|sum|over\s+the|last\s+\d|past\s+\d|history|historical|weekly|daily)\b")
+
+
 def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
+    """Emergency fallback when the LLM router is unreachable. Keeps only unambiguous structural keywords;
+    defaults to current_status_db to avoid hallucination via the knowledge executor."""
     q = question.lower()
-    if _COMPARISON_RE.search(q):
+    if _FALLBACK_COMPARISON_RE.search(q):
         intent = IntentType.COMPARISON_DB
-    elif _ANOMALY_RE.search(q):
+    elif _FALLBACK_ANOMALY_RE.search(q):
         intent = IntentType.ANOMALY_ANALYSIS_DB
-    elif _AGGREGATION_RE.search(q):
+    elif _FALLBACK_AGGREGATION_RE.search(q):
         intent = IntentType.AGGREGATION_DB
-    elif _CURRENT_RE.search(q):
-        intent = IntentType.CURRENT_STATUS_DB
-    elif _METRIC_VALUE_REQUEST_RE.search(q):
-        intent = IntentType.CURRENT_STATUS_DB
-    elif _DEFINITION_RE.search(q) and not lab_name:
-        intent = IntentType.DEFINITION_EXPLANATION
-    elif lab_name:
-        intent = IntentType.CURRENT_STATUS_DB
     else:
-        intent = IntentType.DEFINITION_EXPLANATION
+        intent = IntentType.CURRENT_STATUS_DB
 
     return RoutePlan(
         intent=intent,
-        confidence=0.65,
+        confidence=0.5,
         lab_name=lab_name,
         second_lab_name=None,
         metrics=_extract_metrics_from_question(question),

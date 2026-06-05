@@ -338,6 +338,7 @@ def answer_env_question_with_metadata(
     k: int = 5,
     space: Optional[str] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    live_sensor_data: Optional[Any] = None,
 ) -> Dict[str, Any]:
     effective_guideline_records = list(guideline_records or [])
     if wants_guideline_detail(user_question):
@@ -353,16 +354,21 @@ def answer_env_question_with_metadata(
     )
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
     grounded_context = build_grounded_context_sections(
-        measured_room_facts=[],
+        measured_room_facts=live_sensor_data if live_sensor_data is not None else [],
         backend_semantic_state=None,
         knowledge_cards=context.get("knowledge_cards", []),
         numbered_sources_block=numbered_sources_block,
         allow_general_knowledge=True,
     )
+    context_label = (
+        "Live sensor readings with knowledge grounding"
+        if live_sensor_data is not None
+        else "Measured room facts with knowledge grounding"
+    )
     prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
     messages = prompt_template.format_messages(
         question=user_question,
-        context_label="Measured room facts with knowledge grounding",
+        context_label=context_label,
         context_data=grounded_context,
     )
     prompt_text = _build_prompt_text_from_messages(messages)
@@ -416,6 +422,7 @@ async def stream_knowledge_tokens(
     space: Optional[str] = None,
     think: Optional[bool] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    live_sensor_data: Optional[Any] = None,
 ) -> AsyncIterator[str]:
     effective_guideline_records = list(guideline_records or [])
     if wants_guideline_detail(user_question):
@@ -431,16 +438,21 @@ async def stream_knowledge_tokens(
         guideline_records=[],
     )
     grounded_context = build_grounded_context_sections(
-        measured_room_facts=[],
+        measured_room_facts=live_sensor_data if live_sensor_data is not None else [],
         backend_semantic_state=None,
         knowledge_cards=context.get("knowledge_cards", []),
         numbered_sources_block=numbered_sources_block,
         allow_general_knowledge=True,
     )
+    context_label = (
+        "Live sensor readings with knowledge grounding"
+        if live_sensor_data is not None
+        else "Measured room facts with knowledge grounding"
+    )
     prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
     messages = prompt_template.format_messages(
         question=user_question,
-        context_label="Measured room facts with knowledge grounding",
+        context_label=context_label,
         context_data=grounded_context,
     )
     prompt_text = _build_prompt_text_from_messages(messages)

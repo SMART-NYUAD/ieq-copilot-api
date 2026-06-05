@@ -39,14 +39,42 @@ def _choose_executor(route: RoutePlan) -> RouteExecutor:
     return RouteExecutor.DB_QUERY
 
 
-def _build_planner_hints(route: RoutePlan) -> Dict[str, Any]:
-    return {
+def _build_planner_hints(route: RoutePlan, carried_time_phrase: Optional[str] = None) -> Dict[str, Any]:
+    hints: Dict[str, Any] = {
         "metrics_priority": list(route.metrics),
         "needs_cards": route.intent in _KNOWLEDGE_INTENTS,
         "card_topics": ["definitions", "metric_explanations"] if route.intent in _KNOWLEDGE_INTENTS else ["metric_explanations"],
         "max_cards": 2,
         "second_lab_name": route.second_lab_name,
     }
+    if carried_time_phrase:
+        hints["carried_time_phrase"] = carried_time_phrase
+    return hints
+
+
+def _fetch_live_sensor_data(
+    question: str, lab_name: Optional[str], route: RoutePlan
+) -> Optional[Dict[str, Any]]:
+    """Pre-fetch current sensor readings to ground knowledge-path answers with real data.
+    Returns the DB payload dict when rows exist, None otherwise."""
+    try:
+        db_ctx = prepare_db_query(
+            question=question,
+            intent=IntentType.CURRENT_STATUS_DB,
+            lab_name=lab_name,
+            planner_hints={
+                "metrics_priority": list(route.metrics),
+                "needs_cards": False,
+                "card_topics": [],
+                "max_cards": 0,
+                "second_lab_name": None,
+            },
+        )
+        if db_ctx.get("rows"):
+            return db_ctx.get("payload")
+    except Exception:
+        pass
+    return None
 
 
 def _execute_knowledge(
@@ -55,10 +83,12 @@ def _execute_knowledge(
     lab_name: Optional[str],
     route: RoutePlan,
 ) -> Dict[str, Any]:
+    live_sensor_data = _fetch_live_sensor_data(question, lab_name, route)
     result = answer_env_question_with_metadata(
         user_question=question,
         k=max(1, min(k, 8)),
         space=lab_name,
+        live_sensor_data=live_sensor_data,
     )
     return {
         "answer": str(result.get("answer") or ""),
@@ -87,8 +117,9 @@ def _execute_db(
     lab_name: Optional[str],
     route: RoutePlan,
     llm_history: str = "",
+    carried_time_phrase: Optional[str] = None,
 ) -> Dict[str, Any]:
-    planner_hints = _build_planner_hints(route)
+    planner_hints = _build_planner_hints(route, carried_time_phrase=carried_time_phrase)
     db_result = run_db_query(
         question=question,
         intent=route.intent,
@@ -168,7 +199,8 @@ def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, 
 
     if executor == RouteExecutor.KNOWLEDGE_QA:
         return _execute_knowledge(ctx.effective_question, k, ctx.effective_lab, route)
-    return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history)
+    return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history,
+                       carried_time_phrase=ctx.carried_time_phrase)
 
 
 def _status_event(stage: str, message: str) -> str:
@@ -187,15 +219,19 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
 
     if use_knowledge_executor:
         yield _status_event("searching_knowledge", "Searching knowledge base…")
+        live_sensor_data = await run_in_threadpool(
+            _fetch_live_sensor_data, ctx.effective_question, ctx.effective_lab, route
+        )
         async for chunk in stream_knowledge_tokens(
             user_question=ctx.effective_question,
             k=max(1, min(k, 8)),
             space=ctx.effective_lab,
+            live_sensor_data=live_sensor_data,
         ):
             yield chunk
         return
 
-    planner_hints = _build_planner_hints(route)
+    planner_hints = _build_planner_hints(route, carried_time_phrase=ctx.carried_time_phrase)
 
     yield _status_event("querying_db", "Fetching sensor data…")
     query_context = await run_in_threadpool(

@@ -32,8 +32,9 @@ class ConversationMemoryTests(unittest.TestCase):
             current_signals=current_signals,
         )
         self.assertEqual(effective_lab, "smart_lab")
-        self.assertIn("yesterday", effective_question.lower())
-        self.assertIn("co2", effective_question.lower())
+        # effective_question is clean — carry-over lives in details, not the string
+        self.assertEqual(effective_question, current_question)
+        self.assertEqual(details.get("carried_metric"), "co2")
         self.assertTrue(bool(details.get("applied")))
 
     def test_definitional_followup_skips_time_phrase_but_keeps_lab(self):
@@ -52,11 +53,11 @@ class ConversationMemoryTests(unittest.TestCase):
             current_signals=current_signals,
         )
         self.assertEqual(effective_lab, "smart_lab")
-        self.assertNotIn("right now", effective_question.lower())
-        self.assertNotIn("(now)", effective_question.lower())
-        self.assertIn("co2", effective_question.lower())
-        self.assertTrue(bool(details.get("applied")))
+        # effective_question is always clean — no carry-over text appended
+        self.assertEqual(effective_question, current_question)
         self.assertIsNone(details.get("carried_time_phrase"))
+        # Lab is carried even for definitional questions
+        self.assertTrue(bool(details.get("applied")))
 
     def test_non_definitional_followup_still_carries_time_phrase(self):
         context = (
@@ -74,7 +75,8 @@ class ConversationMemoryTests(unittest.TestCase):
             current_signals=current_signals,
         )
         self.assertEqual(effective_lab, "smart_lab")
-        self.assertIn("right now", effective_question.lower())
+        # effective_question is clean — carry-over lives in details, not the string
+        self.assertEqual(effective_question, current_question)
         self.assertTrue(bool(details.get("applied")))
         self.assertEqual(details.get("carried_time_phrase"), "right now")
 
@@ -113,8 +115,10 @@ class ConversationMemoryTests(unittest.TestCase):
             memory=memory,
             current_signals=current_signals,
         )
-        self.assertIn("humidity", effective_question.lower())
-        self.assertIn("today", effective_question.lower())
+        # effective_question is clean — carry-over lives in details, not the string
+        self.assertEqual(effective_question, current_question)
+        self.assertEqual(details.get("carried_metric"), "humidity")
+        self.assertEqual(details.get("carried_time_phrase"), "today")
         self.assertTrue(bool(details.get("applied")))
 
 

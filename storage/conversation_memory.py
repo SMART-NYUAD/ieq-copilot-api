@@ -182,7 +182,13 @@ def apply_routing_memory(
     memory: RoutingMemory,
     current_signals: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Dict[str, Any]]:
-    """Fill missing lab/metric/time from prior turns when the question omits them."""
+    """Fill missing lab/metric/time from prior turns when the question omits them.
+
+    Returns the clean (unmutated) question alongside resolved lab and carry-over
+    slots.  Callers must NOT append the carry-over text to the question string —
+    they read ``carried_metric`` and ``carried_time_phrase`` from the returned
+    dict and pass them as structured data to downstream components.
+    """
     base_question = str(question or "").strip()
     signals = dict(current_signals or {})
     if not base_question:
@@ -193,6 +199,7 @@ def apply_routing_memory(
     has_metric_reference = bool(signals.get("has_metric_reference"))
     has_topic_reference = bool(signals.get("has_topic_reference"))
 
+    # effective_question stays clean — no appended carry-over text
     effective_question = base_question
     effective_lab = (lab_name or "").strip() or None
     carried_lab = None
@@ -210,7 +217,13 @@ def apply_routing_memory(
         effective_lab = memory.lab_name
         carried_lab = memory.lab_name
 
-    skip_time_phrase = _is_definitional_question(base_question)
+    # Skip time carry when:
+    # - definitional question (semantics don't depend on a window)
+    # - user named a broad topic (air quality, IEQ, comfort) — topic change → fresh window
+    skip_time_phrase = (
+        _is_definitional_question(base_question)
+        or has_topic_reference
+    )
     # Do not inject a prior single-metric scope when the user asked a broad topic
     # (e.g. air quality) or an analytical question with its own scope.
     skip_metric_carry = (
@@ -220,14 +233,11 @@ def apply_routing_memory(
     )
 
     if not skip_time_phrase and not has_time_window_hint and memory.time_phrase:
-        effective_question = f"{effective_question} ({memory.time_phrase})"
         carried_time = memory.time_phrase
 
     if not skip_metric_carry and not has_metric_reference and memory.metric:
-        effective_question = f"{effective_question} ({memory.metric})"
         carried_metric = memory.metric
     elif not skip_metric_carry and not has_metric_reference and memory.topic_phrase:
-        effective_question = f"{effective_question} ({memory.topic_phrase})"
         carried_metric = memory.topic_phrase
 
     applied = bool(carried_lab or carried_time or carried_metric)

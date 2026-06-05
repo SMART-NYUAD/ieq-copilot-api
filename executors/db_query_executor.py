@@ -346,10 +346,20 @@ def prepare_db_query(
         if hinted_column:
             metric_alias, metric_column = top_metric, hinted_column
     unit = metric_registry.metric_unit(metric_alias) or "index"
+    _default_hours = db_parsing.default_window_hours_for_intent(intent)
     window_start, window_end, window_label = db_parsing.extract_time_window(
         query_text,
-        default_hours=db_parsing.default_window_hours_for_intent(intent),
+        default_hours=_default_hours,
     )
+    # If the question has no explicit time phrase, fall back to the carried
+    # time phrase from the prior turn (passed via planner_hints).
+    _carried_time = str((planner_hints or {}).get("carried_time_phrase") or "").strip()
+    if _carried_time and not db_parsing.has_explicit_time_hint(query_text):
+        _c_start, _c_end, _c_label = db_parsing.extract_time_window(
+            _carried_time, default_hours=_default_hours
+        )
+        if _c_label != window_label:
+            window_start, window_end, window_label = _c_start, _c_end, _c_label
     display_start, display_end = db_parsing.format_display_window_bounds(window_start, window_end)
     resolved_lab_name = (
         db_parsing.resolve_lab_alias(lab_name)
