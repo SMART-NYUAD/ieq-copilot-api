@@ -7,7 +7,7 @@ import json
 import random
 import re
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 import requests
@@ -35,12 +35,13 @@ _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
     '  "intent": one of [definition_explanation, current_status_db, point_lookup_db, '
-    "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db]\n"
+    "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db, viewer_control, ifc_model_qa]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, voc, humidity, temperature, light, sound, ieq]\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
-    '  "confidence": float 0-1\n\n'
+    '  "confidence": float 0-1\n'
+    '  "viewer_type": one of ["splat", "ifc", "pc", "pano"] when intent is viewer_control, else null\n\n'
     "Routing rules:\n"
     "- CRITICAL OVERRIDE: If the question contains the words 'forecast', 'predict', 'prediction', "
     "'will be', 'going to be', or asks about FUTURE sensor values, ALWAYS use `forecast_db` — "
@@ -87,9 +88,63 @@ _SYSTEM_PROMPT = (
     "'today vs last week'. Never use for cross-space comparisons.\n"
     "- anomaly_analysis_db: Detecting or explaining unusual readings, spikes, or outliers. "
     "Examples: 'why did CO2 spike?', 'any unusual readings today?', 'were there anomalies last night?', "
-    "'what caused that PM2.5 outlier?'.\n\n"
+    "'what caused that PM2.5 outlier?'.\n"
+    "- viewer_control: The user wants to switch or open a specific 3D visualization mode in the viewer. "
+    "Set viewer_type to the matching value: "
+    "'splat' for Gaussian splat / splat view; "
+    "'ifc' for IFC, floor plan, BIM, or 3D model; "
+    "'pc' for point cloud or PC view; "
+    "'pano' for panorama or 360-degree view. "
+    "Examples: 'show me the splat', 'open the gaussian splat', 'switch to IFC', 'open the floor plan', "
+    "'show me the point cloud', 'open pc view', 'show the panorama', 'open pano', "
+    "'can you open the 3D model', 'switch to point cloud mode'.\n"
+    "- ifc_model_qa: The user asks a QUESTION ABOUT the building/BIM/IFC model itself — its geometry, "
+    "dimensions, measurements, number of elements, levels/floors, rooms, materials, or element "
+    "properties. This answers from the building model, it does NOT open a viewer. "
+    "Distinguish carefully from viewer_control: 'open the IFC view' / 'switch to the floor plan' is "
+    "viewer_control (a UI action); 'how many doors does the building have?' / 'what is the building "
+    "made of?' is ifc_model_qa (a question about the model). When the user wants a FACT about the "
+    "structure, walls, doors, windows, columns, slabs, furniture, lights, storeys, floor heights, "
+    "materials, or sizes of the building, use ifc_model_qa. These are about the physical building "
+    "structure, NOT about air-quality sensors. "
+    "Examples: 'how many columns are in the building?', 'how many floors does it have?', "
+    "'what are the dimensions of the door?', 'how tall is the building?', 'what materials are used?', "
+    "'how many desks are there?', 'what is the wall thickness?', 'list the rooms', "
+    "'how big are the columns?', 'what's the elevation of level 1?', 'how many lights are installed?', "
+    "'tell me about the building model', 'what does the IFC contain?', 'how many windows?', "
+    "'what is the size of the model?', 'how big is the building?', 'what are the overall dimensions?', "
+    "'what is the floor area?', 'what is the footprint of the building?', "
+    "'what is the GIA?', 'what is the gross internal area?', 'what is the gross floor area?', "
+    "'what is the net internal area?', 'what is the building volume?', "
+    "'what is the floor-to-floor height?', 'what is the wall thickness?', 'what is the perimeter?'.\n\n"
     "Output only the JSON object, no markdown, no explanation."
 )
+
+
+_VALID_VIEWER_TYPES = {"splat", "ifc", "pc", "pano"}
+
+# Ordered longest-first so multi-word phrases match before single words.
+_VIEWER_TYPE_ALIASES: Dict[str, str] = {
+    "gaussian splat": "splat",
+    "point cloud": "pc",
+    "floor plan": "ifc",
+    "floorplan": "ifc",
+    "panorama": "pano",
+    "gaussian": "splat",
+    "splat": "splat",
+    "pano": "pano",
+    "ifc": "ifc",
+    "bim": "ifc",
+}
+
+
+def _infer_viewer_type(question: str) -> str:
+    """Derive viewer_type from question text without regex when the LLM omits the field."""
+    q = question.lower()
+    for alias in sorted(_VIEWER_TYPE_ALIASES, key=len, reverse=True):
+        if alias in q:
+            return _VIEWER_TYPE_ALIASES[alias]
+    return "splat"
 
 
 def _extract_metrics_from_question(question: str) -> List[str]:
@@ -178,6 +233,11 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     if isinstance(time_phrase, str):
         time_phrase = time_phrase.strip() or None
 
+    viewer_type: Optional[str] = None
+    if intent == IntentType.VIEWER_CONTROL:
+        raw_vt = str(data.get("viewer_type") or "").strip().lower()
+        viewer_type = raw_vt if raw_vt in _VALID_VIEWER_TYPES else _infer_viewer_type(question)
+
     return RoutePlan(
         intent=intent,
         confidence=confidence,
@@ -187,6 +247,7 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         time_phrase=time_phrase,
         model=router_model(),
         fallback_used=False,
+        viewer_type=viewer_type,
     )
 
 

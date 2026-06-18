@@ -200,6 +200,18 @@ def router_retry_jitter_ms() -> int:
         return 180
 
 
+def ifc_model_path() -> str:
+    """Filesystem path to the IFC building model used for IFC-model Q&A.
+
+    Defaults to ``smart.ifc`` in the project root; override with ``IFC_MODEL_PATH``.
+    """
+    ensure_env_loaded()
+    raw = (os.getenv("IFC_MODEL_PATH", "") or "").strip()
+    if raw:
+        return raw
+    return str(Path(__file__).resolve().parent / "smart.ifc")
+
+
 def router_semantic_rewrite_enabled() -> bool:
     ensure_env_loaded()
     return _parse_bool(os.getenv("ROUTER_SEMANTIC_REWRITE_ENABLED", "false"), default=False)

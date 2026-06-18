@@ -73,6 +73,16 @@ The router (`llm_router_planner.py`) sends a structured JSON prompt to an Ollama
 - `definition_explanation` → knowledge executor
 - `unknown_fallback` → knowledge executor
 - `current_status_db`, `point_lookup_db`, `aggregation_db`, `comparison_db`, `anomaly_analysis_db`, `forecast_db` → DB executor
+- `viewer_control` → viewer-control branch (opens a 3D view; `viewer_type` ∈ splat/ifc/pc/pano)
+- `ifc_model_qa` → IFC executor (questions *about* the BIM/IFC building model)
+
+Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`).
+
+### IFC executor
+
+`executors/ifc_executor.py` answers questions about the BIM/IFC building model. `ifc_model/ifc_store.py` is a dependency-free STEP/ISO-10303-21 parser (no `ifcopenshell`) that extracts grounded facts — units, spatial hierarchy, storey elevations, an element inventory, per-element dimensions/properties, and materials — from the IFC file (default `smart.ifc`, override with `IFC_MODEL_PATH`). Parsed facts are cached by file mtime+size. The executor feeds those facts to the answer LLM with a strict "answer only from the model, never fabricate" directive; if the LLM is unreachable it returns a deterministic summary built from the parsed counts.
+
+`ifc_model/ifc_geometry.py` resolves geometry into **world space** for measurements: it composes each element's `IfcLocalPlacement` chain (and `IfcMappedItem`/`IfcRepresentationMap` transforms) and projects BREP vertices and extruded-solid profiles to compute the overall world-coordinate bounding box (`dimensions`) and slab floor-plate polygon areas. From those, `ifc_store` derives **architectural metrics** (`architectural_metrics`): Gross Internal Area (GIA ≈ sum of floor-plate areas), footprint area, perimeter, floor-to-floor height, gross internal volume, wall thickness, and storey/envelope counts. A naive bounding box over raw points is deliberately avoided (it mixes local and world coordinates). NIA is not computed and is reported as such rather than guessed — every figure is grounded in resolved geometry or IFC attributes/properties. Computing world geometry requires retaining all entities during the parse, so the first `ifc_model_qa` call takes a few seconds; results are cached per process.
 
 ### DB executor
 
@@ -100,6 +110,7 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | Separate model/endpoint for answer generation |
 | `DATABASE_URL` | Postgres connection (or use `DB_*` components) |
 | `ROUTER_CLARIFY_THRESHOLD` | Confidence below which queries trigger clarification |
+| `IFC_MODEL_PATH` | Path to the IFC building model for `ifc_model_qa` (default: `./smart.ifc`) |
 
 Two distinct Ollama models are configured separately: one for routing (`OLLAMA_ROUTER_*`) and one for answer generation (`OLLAMA_*`). Keep these separate — the router runs at temperature 0.0 with constrained output; the answer model has different latency/quality tradeoffs.
 
@@ -109,3 +120,4 @@ Two distinct Ollama models are configured separately: one for routing (`OLLAMA_R
 - `POST /query/route` — classify a question without executing (shows `route_type`, `route_confidence`, `planner_model`, etc.)
 - `POST /query/db-proof` — SQL preview + row sample for DB-path queries
 - `GET /observability/kpis` — fallback rates, latency, error trends
+- `GET /ifc/summary` — parsed structured summary of the IFC building model (units, storeys, element counts, materials)

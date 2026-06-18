@@ -12,6 +12,8 @@ from query_routing.intent_classifier import IntentType
 class RouteExecutor(str, Enum):
     KNOWLEDGE_QA = "knowledge_qa"
     DB_QUERY = "db_query"
+    VIEWER_CONTROL = "viewer_control"
+    IFC_QA = "ifc_qa"
 
 
 @dataclass(frozen=True)
@@ -24,3 +26,4 @@ class RoutePlan:
     fallback_used: bool = False
     second_lab_name: Optional[str] = None
     metrics: List[str] = field(default_factory=list)
+    viewer_type: Optional[str] = None

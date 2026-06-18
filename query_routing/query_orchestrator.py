@@ -8,6 +8,10 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi.concurrency import run_in_threadpool
 
 from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
+from executors.ifc_executor import (
+    answer_ifc_question_with_metadata,
+    stream_ifc_tokens,
+)
 from executors.knowledge_executor import (
     answer_env_question_with_metadata,
     stream_knowledge_tokens,
@@ -20,8 +24,19 @@ from storage.conversation_context import ConversationContext
 
 _KNOWLEDGE_INTENTS = {IntentType.DEFINITION_EXPLANATION, IntentType.UNKNOWN_FALLBACK}
 
+_VIEWER_CONFIRMATIONS = {
+    "splat": "Opening the Gaussian Splat view...",
+    "ifc": "Opening the IFC / floor plan view...",
+    "pc": "Opening the Point Cloud view...",
+    "pano": "Opening the Panorama view...",
+}
+
 
 def _choose_executor(route: RoutePlan) -> RouteExecutor:
+    if route.intent == IntentType.VIEWER_CONTROL:
+        return RouteExecutor.VIEWER_CONTROL
+    if route.intent == IntentType.IFC_MODEL_QA:
+        return RouteExecutor.IFC_QA
     if route.intent in _KNOWLEDGE_INTENTS:
         return RouteExecutor.KNOWLEDGE_QA
     return RouteExecutor.DB_QUERY
@@ -180,11 +195,66 @@ async def _build_stream_meta(
     }
 
 
+def _execute_ifc(question: str, route: RoutePlan) -> Dict[str, Any]:
+    result = answer_ifc_question_with_metadata(user_question=question)
+    # The IFC model has no per-claim numbered citations, so citation_sources stays
+    # empty; provenance (the model file) is surfaced in metadata instead.
+    return {
+        "answer": str(result.get("answer") or ""),
+        "footnotes": [],
+        "citation_sources": [],
+        "timescale": "model",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "ifc_qa",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": bool(result.get("llm_used", False)),
+            "model_available": bool(result.get("model_available", True)),
+            "model_source": list(result.get("indexed_sources") or []),
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "ifc", "metrics": [], "transition": "fade"},
+        },
+        "data": None,
+    }
+
+
+def _execute_viewer_control(route: RoutePlan) -> Dict[str, Any]:
+    viewer_type = route.viewer_type or "splat"
+    confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
+    return {
+        "answer": confirmation,
+        "footnotes": [],
+        "citation_sources": [],
+        "timescale": "instant",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "viewer_control",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"viewer_type": viewer_type},
+        },
+        "data": None,
+    }
+
+
 def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, endpoint_key: str = "query_sync") -> Dict[str, Any]:
     """Execute a query given a fully-resolved ConversationContext."""
     route = plan_route(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
     executor = _choose_executor(route)
 
+    if executor == RouteExecutor.VIEWER_CONTROL:
+        return _execute_viewer_control(route)
+    if executor == RouteExecutor.IFC_QA:
+        return _execute_ifc(ctx.effective_question, route)
     if executor == RouteExecutor.KNOWLEDGE_QA:
         return _execute_knowledge(ctx.effective_question, k, ctx.effective_lab, route)
     return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history,
@@ -200,6 +270,39 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
     yield _status_event("routing", "Classifying question…")
     route = await plan_route_async(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
     executor = _choose_executor(route)
+
+    if executor == RouteExecutor.VIEWER_CONTROL:
+        viewer_type = route.viewer_type or "splat"
+        confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
+        yield f"data: {json.dumps({'event': 'meta', 'executor': 'viewer_control', 'intent': route.intent.value, 'lab_name': None, 'llm_used': False, 'route_confidence': route.confidence, 'planner_model': route.model, 'fallback_used': route.fallback_used, 'ui': {'viewer_type': viewer_type}, 'timescale': 'instant', 'cards_retrieved': 0, 'recent_card': False, 'visualization_type': 'none', 'chart': None, 'citation_sources': [], 'footnotes': []})}\n\n"
+        yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        return
+
+    if executor == RouteExecutor.IFC_QA:
+        ifc_meta = {
+            "executor": "ifc_qa",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": True,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "ifc", "metrics": [], "transition": "fade"},
+            "timescale": "model",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "visualization_type": "none",
+            "chart": None,
+            "citation_sources": [],
+            "footnotes": [],
+        }
+        yield f"data: {json.dumps({'event': 'meta', **ifc_meta})}\n\n"
+        yield _status_event("reading_model", "Reading building model…")
+        async for chunk in stream_ifc_tokens(user_question=ctx.effective_question):
+            yield chunk
+        return
+
     use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA
 
     meta = await _build_stream_meta(route, ctx.effective_lab, use_knowledge_executor)
@@ -229,6 +332,10 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         ctx.effective_lab,
         planner_hints,
     )
+
+    time_window = query_context.get("time_window")
+    if time_window:
+        yield f"data: {json.dumps({'event': 'meta_update', 'time_window': time_window, 'resolved_lab_name': query_context.get('resolved_lab_name'), 'metrics_used': list(query_context.get('metrics_used') or [])})}\n\n"
 
     yield _status_event("building_response", "Building response…")
     async for chunk in stream_db_tokens(
