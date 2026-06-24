@@ -144,6 +144,11 @@ def router_timeout_seconds() -> float:
         return 20.0
 
 
+def router_thinking() -> bool:
+    """Whether the router Ollama /api/chat call uses model thinking/reasoning."""
+    ensure_env_loaded()
+    return _parse_bool(os.getenv("OLLAMA_ROUTER_THINKING", "false"), default=False)
+
 
 def ollama_base_url() -> str:
     """Base URL for the answer-generation Ollama endpoint."""
@@ -182,6 +187,12 @@ def ollama_timeout_seconds() -> float:
         return 120.0
 
 
+def ollama_thinking() -> bool:
+    """Whether answer-generation Ollama /api/generate calls use model thinking/reasoning."""
+    ensure_env_loaded()
+    return _parse_bool(os.getenv("OLLAMA_THINKING", "false"), default=False)
+
+
 def router_max_retries() -> int:
     ensure_env_loaded()
     raw = (os.getenv("OLLAMA_ROUTER_MAX_RETRIES", "2") or "2").strip()
@@ -210,6 +221,28 @@ def ifc_model_path() -> str:
     if raw:
         return raw
     return str(Path(__file__).resolve().parent / "smart.ifc")
+
+
+def download_base_url() -> str:
+    """Base URL of the sensor-readings download endpoint the frontend opens.
+
+    Defaults to the production endpoint; override with ``DOWNLOAD_BASE_URL``.
+    """
+    ensure_env_loaded()
+    raw = (os.getenv("DOWNLOAD_BASE_URL", "") or "").strip()
+    if raw:
+        return raw.rstrip("/")
+    return "https://api.smart-crg.com/download/sensor-readings"
+
+
+def download_sensor_alias() -> str:
+    """Sensor alias passed to the download endpoint.
+
+    Single-sensor deployment for now; override with ``DOWNLOAD_SENSOR_ALIAS``.
+    """
+    ensure_env_loaded()
+    raw = (os.getenv("DOWNLOAD_SENSOR_ALIAS", "") or "").strip()
+    return raw or "Atmocube Sensor 02"
 
 
 def router_semantic_rewrite_enabled() -> bool:

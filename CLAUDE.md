@@ -74,9 +74,11 @@ The router (`llm_router_planner.py`) sends a structured JSON prompt to an Ollama
 - `unknown_fallback` → knowledge executor
 - `current_status_db`, `point_lookup_db`, `aggregation_db`, `comparison_db`, `anomaly_analysis_db`, `forecast_db` → DB executor
 - `viewer_control` → viewer-control branch (opens a 3D view; `viewer_type` ∈ splat/ifc/pc/pano)
+- `heatmap_control` → heatmap-control branch (toggles the heatmap overlay and selects its metric; `ui.heatmap_action` ∈ on/off, `ui.heatmap_metric` ∈ temperature/humidity/voc/pm25/null)
+- `download_data` → download-control branch (hands the frontend a ready-to-use CSV/JSON export URL; `ui.download_url`, `ui.download_format` ∈ csv/json, `ui.download_type` ∈ aggregated/raw, `ui.download_start`/`ui.download_end` ISO-8601)
 - `ifc_model_qa` → IFC executor (questions *about* the BIM/IFC building model)
 
-Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`).
+Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`). `heatmap_control` is a sibling UI meta-action: *"turn on the heatmap and use temperature"* emits a `meta` event with action + metric and returns no sensor values. `download_data` is another sibling: *"export the last 7 days as CSV"* resolves the time window server-side (via `extract_time_window`, mirroring the DB path so the frontend never reconstructs date ranges) and emits a `meta` event carrying a fully-built `download_url` for the `DOWNLOAD_BASE_URL` endpoint (default `api.smart-crg.com/download/sensor-readings`, sensor `DOWNLOAD_SENSOR_ALIAS`) — the frontend renders a button, not an auto-download. It is distinct from `aggregation_db`: *"what was the average CO2 last week?"* is a data question (DB path), *"download last week's data"* is `download_data`. Like `viewer_control`, all three branches short-circuit before the DB/evidence layers and are LLM-routed (no regex; only a non-regex alias fallback fills a field the LLM omits).
 
 ### IFC executor
 
@@ -111,6 +113,8 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `DATABASE_URL` | Postgres connection (or use `DB_*` components) |
 | `ROUTER_CLARIFY_THRESHOLD` | Confidence below which queries trigger clarification |
 | `IFC_MODEL_PATH` | Path to the IFC building model for `ifc_model_qa` (default: `./smart.ifc`) |
+| `DOWNLOAD_BASE_URL` | Sensor-readings export endpoint for `download_data` (default: `https://api.smart-crg.com/download/sensor-readings`) |
+| `DOWNLOAD_SENSOR_ALIAS` | Sensor alias passed to the download endpoint (default: `Atmocube Sensor 02`) |
 
 Two distinct Ollama models are configured separately: one for routing (`OLLAMA_ROUTER_*`) and one for answer generation (`OLLAMA_*`). Keep these separate — the router runs at temperature 0.0 with constrained output; the answer model has different latency/quality tradeoffs.
 

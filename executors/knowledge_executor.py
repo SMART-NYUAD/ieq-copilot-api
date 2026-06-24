@@ -9,7 +9,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-from core_settings import ollama_base_url, ollama_model, ollama_temperature, ollama_timeout_seconds
+from core_settings import (
+    ollama_base_url,
+    ollama_model,
+    ollama_temperature,
+    ollama_thinking,
+    ollama_timeout_seconds,
+)
+from ollama_helpers import extract_generate_chunk, extract_generate_text
 from storage.embeddings import embed_texts
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
@@ -21,11 +28,10 @@ from storage.guideline_store import search_guideline_records, wants_guideline_de
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from card-based retrieval context.
-- Start with exactly one short verdict sentence answering the question directly.
-- Then provide at most 3 short bullets with key grounded evidence.
+- Follow the shared presentation style from the system prompt.
+- Use the retrieved cards as grounding for key evidence.
 - If the question is about risks, lead with risk level and main drivers.
 - Do not provide recommendations unless the user explicitly asks for recommendations or next steps.
-- Do not include long background/context unless the user explicitly asks "why", "details", or "full report".
 """.strip()
 
 _TARGET_TZ = timezone(timedelta(hours=4))
@@ -267,6 +273,7 @@ def _generate_ollama_text(prompt_text: str, *, temperature: float) -> str:
         "model": ollama_model(),
         "prompt": prompt_text,
         "stream": False,
+        "think": ollama_thinking(),
         "temperature": temperature,
     }
 
@@ -275,7 +282,7 @@ def _generate_ollama_text(prompt_text: str, *, temperature: float) -> str:
         response.raise_for_status()
         event = response.json()
 
-    return _coerce_chunk_text(event.get("response"))
+    return extract_generate_text(event)
 
 
 def get_knowledge_context_stats(user_question: str, k: int = 5, space: Optional[str] = None) -> Dict[str, Any]:
@@ -420,6 +427,7 @@ async def stream_knowledge_tokens(
         "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
+        "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
 
@@ -435,7 +443,7 @@ async def stream_knowledge_tokens(
                     except json.JSONDecodeError:
                         continue
 
-                    response_text = _coerce_chunk_text(event.get("response"))
+                    response_text = extract_generate_chunk(event)
                     if response_text:
                         yield f"data: {json.dumps({'event': 'token', 'text': response_text})}\n\n"
     except Exception:
@@ -485,6 +493,7 @@ async def stream_answer_env_question(
         "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
+        "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
 
@@ -499,6 +508,6 @@ async def stream_answer_env_question(
                 except json.JSONDecodeError:
                     continue
 
-                response_text = _coerce_chunk_text(event.get("response"))
+                response_text = extract_generate_chunk(event)
                 if response_text:
                     yield response_text

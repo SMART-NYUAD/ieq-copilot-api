@@ -23,9 +23,12 @@ from core_settings import (
     ollama_base_url,
     ollama_model,
     ollama_temperature,
+    ollama_thinking,
     ollama_timeout_seconds,
 )
+from ollama_helpers import extract_generate_chunk, extract_generate_text
 from ifc_model.ifc_store import build_ifc_context_text, get_ifc_summary
+from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
 
 
 IFC_SYSTEM_PROMPT = (
@@ -52,8 +55,8 @@ IFC_SYSTEM_PROMPT = (
     "— do not invent an NIA number.\n"
     "- Element 'name' fields come from the authoring tool (e.g. Revit) and often encode the family, "
     "type, and size (e.g. '800x800mm', 'Generic - 200mm'); you may read sizes from these names.\n"
-    "- Be concise and direct. Lead with a one-sentence answer, then add brief supporting detail "
-    "(a few bullets) only when helpful.\n"
+    "\nPresentation rules:\n"
+    f"{PRESENTATION_STYLE_PROMPT}\n"
     "- Use plain language; expand IFC jargon where it helps a non-expert.\n"
     "- Do NOT wrap responses in triple backticks or output raw JSON."
 )
@@ -118,6 +121,7 @@ def answer_ifc_question_with_metadata(user_question: str) -> Dict[str, Any]:
         "model": ollama_model(),
         "prompt": prompt,
         "stream": False,
+        "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
     answer = ""
@@ -126,7 +130,7 @@ def answer_ifc_question_with_metadata(user_question: str) -> Dict[str, Any]:
         with httpx.Client(timeout=ollama_timeout_seconds()) as client:
             response = client.post(f"{ollama_base_url()}/api/generate", json=payload)
             response.raise_for_status()
-            answer = _coerce_text(response.json().get("response")).strip()
+            answer = extract_generate_text(response.json()).strip()
             llm_used = bool(answer)
     except Exception:
         answer = ""
@@ -181,6 +185,7 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
         "model": ollama_model(),
         "prompt": prompt,
         "stream": True,
+        "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
     try:
@@ -194,7 +199,7 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    text = _coerce_text(event.get("response"))
+                    text = extract_generate_chunk(event)
                     if text:
                         yield f"data: {json.dumps({'event': 'token', 'text': text})}\n\n"
     except Exception:

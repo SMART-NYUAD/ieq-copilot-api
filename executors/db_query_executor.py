@@ -10,7 +10,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 import pandas as pd
 
-from core_settings import ollama_base_url, ollama_model, ollama_temperature, ollama_timeout_seconds
+from core_settings import (
+    ollama_base_url,
+    ollama_model,
+    ollama_temperature,
+    ollama_thinking,
+    ollama_timeout_seconds,
+)
+from ollama_helpers import extract_generate_chunk, extract_generate_text
 from query_routing.intent_classifier import IntentType
 from executors import metric_registry
 from executors.knowledge_executor import (
@@ -815,6 +822,7 @@ async def stream_db_tokens(
         "model": ollama_model(),
         "prompt": prompt_text,
         "stream": True,
+        "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
 
@@ -831,7 +839,7 @@ async def stream_db_tokens(
                     except json.JSONDecodeError:
                         continue
 
-                    response_text = str(event.get("response") or "")
+                    response_text = extract_generate_chunk(event)
                     if response_text:
                         emitted_anything = True
                         yield _sse_token_event(response_text)

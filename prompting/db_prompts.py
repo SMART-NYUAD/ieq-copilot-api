@@ -1,5 +1,7 @@
 """Prompt directives for structured DB query responses."""
 
+from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
+
 CITATION_FORMAT_INSTRUCTION = """
 CITATION REQUIREMENT — FOLLOW EXACTLY:
 When classifying a measured value against a threshold, insert a citation marker
@@ -32,32 +34,15 @@ Rules:
 8. For IEQ index classifications, cite the internal IEQ source [N] when available.
 """.strip()
 
-FRIENDLY_TONE_INSTRUCTION = """
-TONE AND READABILITY:
-- Keep wording friendly, supportive, and human while staying evidence-grounded.
-- Prefer natural conversational phrasing over rigid policy/report language.
-- When risk is low, allow brief reassuring phrasing; when risk is elevated, stay calm and constructive.
-- Use at most 2 emojis per response, only when they genuinely clarify status (e.g. ✅ for good, ⚠️ for concern).
-- Never use emojis as section headers or in place of concrete evidence.
-""".strip()
-
-COMPACT_DEFAULT_INSTRUCTION = """
-DEFAULT RESPONSE SHAPE (REQUIRED):
-- Start with exactly one short verdict sentence that directly answers the question.
-- Then provide at most 3 short bullets with key evidence.
-- If the user asked for recommendations, next steps, or advice, provide specific actionable ones. If they did not ask, omit the recommendations section entirely.
-- Do not include long background/context unless the user explicitly asks "why", "details", or "full report".
-""".strip()
-
 _BASE_DIRECTIVE = """
 You are answering from a structured DB query result.
 - First, answer the exact user question directly before additional detail.
 - Keep the tone warm and personable: write like a helpful IEQ teammate, not a strict compliance report.
 - For air-quality assessment/summary queries, include:
   1) overall status,
-  2) metric-by-metric interpretation,
+  2) only the most important metric-by-metric interpretation,
   3) explicit analysis window using the provided time bounds ("from ... to ..."),
-  4) stability/trend summary and notable peaks/dips when those stats are available,
+  4) stability/trend summary or notable peaks/dips only when they change the answer,
   5) missing-metric coverage note only when those missing metrics are needed for the user's asked scope
      (for example pollutant-focused assessment with CO2/PM2.5/VOC),
   6) confidence qualifier tied to metric coverage.
@@ -99,13 +84,13 @@ You are answering a current air-quality point lookup from a structured DB query 
 - First, directly answer the exact question asked.
 - Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Provide an overall current air-quality status in plain language.
-- Include concise metric-by-metric interpretation for available core metrics (CO2, PM2.5, VOC, humidity, and IEQ when present).
+- Include concise metric-by-metric interpretation for available core metrics only when needed; combine metrics in one compact bullet when possible.
 - If IEQ is present and IEQ sub-indices are available in rows/context, report every available sub-index explicitly:
   IAQ (air quality), ITC (thermal comfort), IAC (acoustic comfort), and IIL (illumination).
 - Never swap sub-index meanings (IAC is acoustic comfort, not air quality).
 - IEQ scale is 0–100 where HIGHER = BETTER. A high ITC (e.g. 90+) means EXCELLENT thermal comfort — do NOT describe it as warm, hot, or stuffy. A low IAQ (e.g. <30) means poor air quality.
 - Explain what occupants would likely notice/feel.
-- If the user asks for recommendations or actions, you MUST provide them. If conditions are stable and no recommendations were requested, end with the assessment only.
+- If the user asks for recommendations or actions, you MUST provide them. If no recommendations were requested, end with the assessment only and do not mention actions.
 - Only call out missing metrics when they are needed for the specific question type.
   Do not add pollutant-missing disclaimers for IEQ/sub-index-only questions.
 - If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
@@ -166,8 +151,7 @@ You are answering a root-cause diagnostic question about IEQ.
 """.strip()
 
 _SUFFIX = (
-    f"\n\n{COMPACT_DEFAULT_INSTRUCTION}"
-    f"\n\n{FRIENDLY_TONE_INSTRUCTION}"
+    f"\n\n{PRESENTATION_STYLE_PROMPT}"
     f"\n\n{CITATION_FORMAT_INSTRUCTION}"
 )
 

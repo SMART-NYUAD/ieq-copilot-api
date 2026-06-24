@@ -13,6 +13,8 @@ class RouteExecutor(str, Enum):
     KNOWLEDGE_QA = "knowledge_qa"
     DB_QUERY = "db_query"
     VIEWER_CONTROL = "viewer_control"
+    HEATMAP_CONTROL = "heatmap_control"
+    DOWNLOAD_DATA = "download_data"
     IFC_QA = "ifc_qa"
 
 
@@ -27,3 +29,7 @@ class RoutePlan:
     second_lab_name: Optional[str] = None
     metrics: List[str] = field(default_factory=list)
     viewer_type: Optional[str] = None
+    heatmap_action: Optional[str] = None   # "on" | "off" when intent is heatmap_control
+    heatmap_metric: Optional[str] = None   # temperature | humidity | voc | pm25, else None
+    download_format: Optional[str] = None  # "csv" | "json" when intent is download_data
+    download_type: Optional[str] = None    # "aggregated" | "raw" when intent is download_data

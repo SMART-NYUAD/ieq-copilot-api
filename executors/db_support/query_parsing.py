@@ -94,6 +94,25 @@ _TIME_HINT_RE = re.compile(
     r")\b"
 )
 
+# Generic relative windows introduced by a determiner ("for the week",
+# "over the past month", "the day"). These are *not* the calendar-anchored
+# phrases above ("this week"/"last week"); they read as plain rolling windows.
+# Without this, a follow-up like "show me for the week" matches no time phrase
+# and silently collapses to the default 24h window — looking like the prior
+# turn's range was carried over.
+_GENERIC_RELATIVE_WINDOW_RE = re.compile(
+    r"\b(?:the|a|an|this|that|over|for|past|current|recent|whole|entire|each|every|per)\s+"
+    r"(?:the\s+|a\s+|past\s+|last\s+|current\s+|whole\s+|entire\s+|few\s+)?"
+    r"(?P<unit>hour|day|week|month|year)s?\b"
+)
+_GENERIC_RELATIVE_WINDOW_SPEC = {
+    "hour": (timedelta(hours=1), "last 1 hour"),
+    "day": (timedelta(hours=24), "last 24 hours"),
+    "week": (timedelta(days=7), "last 7 days"),
+    "month": (timedelta(days=30), "last 30 days"),
+    "year": (timedelta(days=365), "last 365 days"),
+}
+
 def resolve_lab_alias(raw_lab: Optional[str]) -> Optional[str]:
     """Normalize a client-provided lab slug without remote validation."""
     raw = str(raw_lab or "").strip().lower()
@@ -518,7 +537,10 @@ def planner_card_controls(planner_hints: Optional[Dict[str, Any]]) -> Tuple[bool
 def has_explicit_time_hint(question: str) -> bool:
     """Return True if the question contains an explicit time window reference."""
     q = str(question or "").lower()
-    return _TIME_HINT_RE.search(q) is not None
+    return (
+        _TIME_HINT_RE.search(q) is not None
+        or _GENERIC_RELATIVE_WINDOW_RE.search(q) is not None
+    )
 
 
 def wants_correlation(question: str) -> bool:
@@ -666,6 +688,15 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
     if "today" in q:
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         return start, now, "today"
+
+    # Generic determiner-introduced windows ("for the week", "over the past
+    # month", "the day") resolve to plain rolling windows. Calendar-anchored
+    # phrases ("this week"/"last week"/"this month"/...) are handled above and
+    # return before reaching here, so this only catches the leftovers.
+    generic_match = _GENERIC_RELATIVE_WINDOW_RE.search(q)
+    if generic_match:
+        span, label = _GENERIC_RELATIVE_WINDOW_SPEC[generic_match.group("unit")]
+        return now - span, now, label
 
     weekdays = list(calendar.day_name)
     weekdays_lower = [d.lower() for d in weekdays]

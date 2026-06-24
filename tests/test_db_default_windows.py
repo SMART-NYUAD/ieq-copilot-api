@@ -20,6 +20,7 @@ from executors.db_support.query_handlers import execute_intent_query
 from executors.db_support.query_parsing import (
     extract_metric_aliases,
     extract_time_window,
+    has_explicit_time_hint,
     pick_metric,
     strip_conversation_context,
     validate_db_execution_invariants,
@@ -59,6 +60,29 @@ class DbDefaultWindowTests(unittest.TestCase):
         start, end, label = extract_time_window("pm2.5 in smart lab for the last hour", default_hours=24)
         self.assertEqual(label, "last 1 hour")
         self.assertAlmostEqual((end - start).total_seconds(), 3600.0, delta=2.0)
+
+    def test_generic_week_phrase_widens_window_instead_of_default(self):
+        # "show me for the week" must resolve to a week-long window, not silently
+        # collapse to the 24h default (which looks like the prior turn carried over).
+        start, end, label = extract_time_window("Show me now for the week", default_hours=24)
+        self.assertEqual(label, "last 7 days")
+        self.assertAlmostEqual((end - start).total_seconds(), 7 * 86400.0, delta=2.0)
+
+    def test_generic_month_phrase_resolves_to_month_window(self):
+        start, end, label = extract_time_window("temperature over the past month", default_hours=24)
+        self.assertEqual(label, "last 30 days")
+        self.assertAlmostEqual((end - start).total_seconds(), 30 * 86400.0, delta=2.0)
+
+    def test_generic_relative_phrase_counts_as_explicit_time_hint(self):
+        # Without this, the carried time phrase from a prior turn would override
+        # the window the current question actually asked for.
+        self.assertTrue(has_explicit_time_hint("Show me for the week"))
+        self.assertTrue(has_explicit_time_hint("over the past month"))
+
+    def test_calendar_anchored_week_phrases_are_unchanged(self):
+        # The generic catch must not shadow the calendar-anchored phrases.
+        self.assertEqual(extract_time_window("how was it this week", default_hours=24)[2], "this week")
+        self.assertEqual(extract_time_window("how was it last week", default_hours=24)[2], "last week")
 
     def test_current_day_window_is_capped_to_now(self):
         target_tz = timezone(timedelta(hours=4))

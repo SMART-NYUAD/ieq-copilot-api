@@ -18,13 +18,15 @@ from core_settings import (
     router_model,
     router_retry_jitter_ms,
     router_temperature,
+    router_thinking,
     router_timeout_seconds,
 )
+from ollama_helpers import extract_chat_content
 from query_routing.intent_classifier import IntentType
 from query_routing.router_types import RoutePlan
 
 
-_INTENT_VALUES = {i.value for i in IntentType} - {IntentType.UNKNOWN_FALLBACK.value}
+_INTENT_VALUES = {i.value for i in IntentType}
 _METRIC_RE = re.compile(r"\b(co2|pm\s*2\.?\s*5|pm25|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b")
 _METRIC_CANONICAL = {
     "pm 2.5": "pm25", "pm2.5": "pm25", "pm 25": "pm25",
@@ -35,14 +37,26 @@ _SYSTEM_PROMPT = (
     "You are an indoor air quality query router for a facility management system.\n"
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
     '  "intent": one of [definition_explanation, current_status_db, point_lookup_db, '
-    "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db, viewer_control, ifc_model_qa]\n"
+    "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db, viewer_control, "
+    "heatmap_control, download_data, ifc_model_qa, unknown_fallback]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, voc, humidity, temperature, light, sound, ieq]\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n'
-    '  "viewer_type": one of ["splat", "ifc", "pc", "pano"] when intent is viewer_control, else null\n\n'
+    '  "viewer_type": one of ["splat", "ifc", "pc", "pano"] when intent is viewer_control, else null\n'
+    '  "heatmap_action": one of ["on", "off"] when intent is heatmap_control, else null\n'
+    '  "heatmap_metric": one of ["temperature", "humidity", "voc", "pm25"] when intent is '
+    "heatmap_control and a metric is named, else null\n"
+    '  "download_format": one of ["csv", "json"] when intent is download_data (default "csv"), else null\n'
+    '  "download_type": one of ["aggregated", "raw"] when intent is download_data (default "aggregated"), else null\n\n'
     "Routing rules:\n"
+    "- DOMAIN GUARDRAIL: This assistant only handles indoor environmental quality, sensor data, "
+    "building/BIM/IFC model questions, viewer-control, and heatmap-overlay requests. If the question is unrelated "
+    "(sports, politics, travel, cooking, coding, weather outside the monitored spaces, personal chat), "
+    "nonsensical/gibberish, or impossible to map to the supported domain, use `unknown_fallback` "
+    "with high confidence. Do not force out-of-domain or nonsense questions into DB, IFC, viewer, "
+    "or definition routes.\n"
     "- CRITICAL OVERRIDE: If the question contains the words 'forecast', 'predict', 'prediction', "
     "'will be', 'going to be', or asks about FUTURE sensor values, ALWAYS use `forecast_db` — "
     "with NO exceptions. This rule beats every other rule, including the definite-article "
@@ -98,6 +112,31 @@ _SYSTEM_PROMPT = (
     "Examples: 'show me the splat', 'open the gaussian splat', 'switch to IFC', 'open the floor plan', "
     "'show me the point cloud', 'open pc view', 'show the panorama', 'open pano', "
     "'can you open the 3D model', 'switch to point cloud mode'.\n"
+    "- heatmap_control: The user wants to toggle the heatmap/overlay on or off, or change which metric "
+    "the heatmap colors the model by. Set heatmap_action to 'on' when enabling, switching, or selecting a "
+    "metric (selecting a metric implies on); set it to 'off' when disabling, hiding, or removing the heatmap. "
+    "Set heatmap_metric to the named metric only if it is one of [temperature, humidity, voc, pm25], else null. "
+    "A single request may both enable the heatmap AND pick a metric — fill both fields then. "
+    "This is a UI overlay control, NOT a data question: it never returns sensor values. "
+    "Examples: 'turn on the heatmap' (on, null), 'enable the heatmap' (on, null), "
+    "'turn off the heatmap' (off, null), 'hide the heatmap' (off, null), "
+    "'change the heatmap to temperature' (on, temperature), 'color the model by humidity' (on, humidity), "
+    "'switch the overlay to voc' (on, voc), 'show the pm2.5 heatmap' (on, pm25), "
+    "'turn on the heatmap and use the metric temperature' (on, temperature), "
+    "'set the heatmap metric to humidity' (on, humidity).\n"
+    "- download_data: The user wants to DOWNLOAD, EXPORT, or SAVE the sensor readings as a file "
+    "(CSV/JSON), or get a data dump / spreadsheet / report file of the measurements. This is a UI "
+    "action that hands the frontend a download link — it never returns sensor values inline, and it "
+    "is NOT a question about the data. Carry the time window in `time_phrase` exactly as stated "
+    "(e.g. 'last 7 days', 'March'), default to the full available range when no window is given. "
+    "Set download_format to 'json' only if the user explicitly asks for JSON, else 'csv'. "
+    "Set download_type to 'raw' only if the user explicitly asks for raw/unaggregated readings, "
+    "else 'aggregated'. Distinguish from aggregation_db: 'what was the average CO2 last week?' is a "
+    "data QUESTION (aggregation_db); 'download last week's data' / 'export the readings' is download_data. "
+    "Examples: 'download the data', 'export the sensor readings', 'export last 7 days as CSV', "
+    "'can I get a CSV of the readings?', 'download March data', 'save the measurements to a file', "
+    "'give me a spreadsheet of the data', 'export the raw readings as JSON', "
+    "'download the last 30 days', 'I want to download the sensor data'.\n"
     "- ifc_model_qa: The user asks a QUESTION ABOUT the building/BIM/IFC model itself — its geometry, "
     "dimensions, measurements, number of elements, levels/floors, rooms, materials, or element "
     "properties. This answers from the building model, it does NOT open a viewer. "
@@ -117,6 +156,9 @@ _SYSTEM_PROMPT = (
     "'what is the GIA?', 'what is the gross internal area?', 'what is the gross floor area?', "
     "'what is the net internal area?', 'what is the building volume?', "
     "'what is the floor-to-floor height?', 'what is the wall thickness?', 'what is the perimeter?'.\n\n"
+    "- unknown_fallback: The question is outside supported topics or makes no coherent request. "
+    "Examples: 'who won the football match?', 'write me a poem about dragons', 'asdf qwer banana?', "
+    "'what is the stock price of Apple?', 'tell me a joke', 'what is the weather in Paris?'.\n\n"
     "Output only the JSON object, no markdown, no explanation."
 )
 
@@ -145,6 +187,74 @@ def _infer_viewer_type(question: str) -> str:
         if alias in q:
             return _VIEWER_TYPE_ALIASES[alias]
     return "splat"
+
+
+_VALID_HEATMAP_METRICS = {"temperature", "humidity", "voc", "pm25"}
+_VALID_HEATMAP_ACTIONS = {"on", "off"}
+
+# Ordered longest-first so multi-word phrases match before single words.
+_HEATMAP_METRIC_ALIASES: Dict[str, str] = {
+    "temperature": "temperature",
+    "temp": "temperature",
+    "humidity": "humidity",
+    "tvoc": "voc",
+    "voc": "voc",
+    "pm 2.5": "pm25",
+    "pm2.5": "pm25",
+    "pm 25": "pm25",
+    "pm25": "pm25",
+}
+# Substrings that indicate the user wants the heatmap turned off rather than on.
+_HEATMAP_OFF_HINTS = (
+    "turn off",
+    "switch off",
+    "shut off",
+    "disable",
+    "hide",
+    "remove",
+    "clear",
+    "stop",
+    "no heatmap",
+    "without the heatmap",
+)
+
+
+_VALID_DOWNLOAD_FORMATS = {"csv", "json"}
+_VALID_DOWNLOAD_TYPES = {"aggregated", "raw"}
+
+
+def _infer_download_format(question: str) -> str:
+    """Pick the download format from question text when the LLM omits it. Defaults to csv."""
+    return "json" if "json" in question.lower() else "csv"
+
+
+def _infer_download_type(question: str) -> str:
+    """Pick aggregated vs raw from question text when the LLM omits it. Defaults to aggregated."""
+    q = question.lower()
+    if "raw" in q or "unaggregated" in q or "un-aggregated" in q:
+        return "raw"
+    return "aggregated"
+
+
+def _infer_heatmap_metric(question: str) -> Optional[str]:
+    """Derive heatmap_metric from question text without regex when the LLM omits the field."""
+    q = question.lower()
+    for alias in sorted(_HEATMAP_METRIC_ALIASES, key=len, reverse=True):
+        if alias in q:
+            return _HEATMAP_METRIC_ALIASES[alias]
+    return None
+
+
+def _infer_heatmap_action(question: str) -> str:
+    """Derive heatmap_action from question text without regex when the LLM omits the field.
+
+    Defaults to "on" — selecting a metric or a bare "heatmap" request enables it; only an
+    explicit off-hint disables it.
+    """
+    q = question.lower()
+    if any(hint in q for hint in _HEATMAP_OFF_HINTS):
+        return "off"
+    return "on"
 
 
 def _extract_metrics_from_question(question: str) -> List[str]:
@@ -238,6 +348,23 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         raw_vt = str(data.get("viewer_type") or "").strip().lower()
         viewer_type = raw_vt if raw_vt in _VALID_VIEWER_TYPES else _infer_viewer_type(question)
 
+    heatmap_action: Optional[str] = None
+    heatmap_metric: Optional[str] = None
+    if intent == IntentType.HEATMAP_CONTROL:
+        raw_action = str(data.get("heatmap_action") or "").strip().lower()
+        heatmap_action = raw_action if raw_action in _VALID_HEATMAP_ACTIONS else _infer_heatmap_action(question)
+        raw_metric = str(data.get("heatmap_metric") or "").strip().lower()
+        raw_metric = _METRIC_CANONICAL.get(raw_metric, raw_metric)
+        heatmap_metric = raw_metric if raw_metric in _VALID_HEATMAP_METRICS else _infer_heatmap_metric(question)
+
+    download_format: Optional[str] = None
+    download_type: Optional[str] = None
+    if intent == IntentType.DOWNLOAD_DATA:
+        raw_format = str(data.get("download_format") or "").strip().lower()
+        download_format = raw_format if raw_format in _VALID_DOWNLOAD_FORMATS else _infer_download_format(question)
+        raw_type = str(data.get("download_type") or "").strip().lower()
+        download_type = raw_type if raw_type in _VALID_DOWNLOAD_TYPES else _infer_download_type(question)
+
     return RoutePlan(
         intent=intent,
         confidence=confidence,
@@ -248,6 +375,10 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         model=router_model(),
         fallback_used=False,
         viewer_type=viewer_type,
+        heatmap_action=heatmap_action,
+        heatmap_metric=heatmap_metric,
+        download_format=download_format,
+        download_type=download_type,
     )
 
 
@@ -289,12 +420,13 @@ def plan_route(question: str, lab_name: Optional[str] = None, conversation_conte
                         {"role": "user", "content": user_message},
                     ],
                     "stream": False,
+                    "think": router_thinking(),
                     "options": options,
                 },
                 timeout=timeout,
             )
             resp.raise_for_status()
-            raw = resp.json().get("message", {}).get("content", "")
+            raw = extract_chat_content(resp.json().get("message", {}))
             plan = _parse_llm_response(raw, question, lab_name)
             if plan is not None:
                 return plan
@@ -330,11 +462,12 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None, conver
                             {"role": "user", "content": user_message},
                         ],
                         "stream": False,
+                        "think": router_thinking(),
                         "options": options,
                     },
                 )
                 resp.raise_for_status()
-                raw = resp.json().get("message", {}).get("content", "")
+                raw = extract_chat_content(resp.json().get("message", {}))
                 plan = _parse_llm_response(raw, question, lab_name)
                 if plan is not None:
                     return plan

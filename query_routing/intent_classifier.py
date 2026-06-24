@@ -12,5 +12,7 @@ class IntentType(str, Enum):
     ANOMALY_ANALYSIS_DB = "anomaly_analysis_db"
     FORECAST_DB = "forecast_db"
     VIEWER_CONTROL = "viewer_control"
+    HEATMAP_CONTROL = "heatmap_control"
+    DOWNLOAD_DATA = "download_data"
     IFC_MODEL_QA = "ifc_model_qa"
     UNKNOWN_FALLBACK = "unknown_fallback"

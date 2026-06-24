@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import Any, AsyncIterator, Dict, Optional
+from urllib.parse import urlencode
 
 from fastapi.concurrency import run_in_threadpool
 
+from core_settings import download_base_url, download_sensor_alias
 from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
+from executors.db_support.query_parsing import extract_time_window, has_explicit_time_hint
 from executors.ifc_executor import (
     answer_ifc_question_with_metadata,
     stream_ifc_tokens,
@@ -31,10 +34,35 @@ _VIEWER_CONFIRMATIONS = {
     "pano": "Opening the Panorama view...",
 }
 
+_HEATMAP_METRIC_LABELS = {
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "voc": "VOC",
+    "pm25": "PM2.5",
+}
+
+_UNKNOWN_FALLBACK_ANSWER = (
+    "I can help with indoor environmental quality, sensor readings, building-model questions, "
+    "viewer controls, or the heatmap overlay. Please ask about one of those topics."
+)
+
+
+def _heatmap_confirmation(action: str, metric: Optional[str]) -> str:
+    if action == "off":
+        return "Turning off the heatmap..."
+    label = _HEATMAP_METRIC_LABELS.get(metric or "")
+    if label:
+        return f"Turning on the {label} heatmap..."
+    return "Turning on the heatmap..."
+
 
 def _choose_executor(route: RoutePlan) -> RouteExecutor:
     if route.intent == IntentType.VIEWER_CONTROL:
         return RouteExecutor.VIEWER_CONTROL
+    if route.intent == IntentType.HEATMAP_CONTROL:
+        return RouteExecutor.HEATMAP_CONTROL
+    if route.intent == IntentType.DOWNLOAD_DATA:
+        return RouteExecutor.DOWNLOAD_DATA
     if route.intent == IntentType.IFC_MODEL_QA:
         return RouteExecutor.IFC_QA
     if route.intent in _KNOWLEDGE_INTENTS:
@@ -105,6 +133,28 @@ def _execute_knowledge(
             "intent": route.intent.value,
             "lab_name": lab_name,
             "llm_used": True,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
+        },
+        "data": None,
+    }
+
+
+def _execute_unknown_fallback(route: RoutePlan) -> Dict[str, Any]:
+    return {
+        "answer": _UNKNOWN_FALLBACK_ANSWER,
+        "footnotes": [],
+        "citation_sources": [],
+        "timescale": "guardrail",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "guardrail",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
             "route_confidence": route.confidence,
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
@@ -246,6 +296,97 @@ def _execute_viewer_control(route: RoutePlan) -> Dict[str, Any]:
     }
 
 
+def _execute_heatmap_control(route: RoutePlan) -> Dict[str, Any]:
+    action = route.heatmap_action or "on"
+    metric = route.heatmap_metric
+    confirmation = _heatmap_confirmation(action, metric)
+    return {
+        "answer": confirmation,
+        "footnotes": [],
+        "citation_sources": [],
+        "timescale": "instant",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "heatmap_control",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"heatmap_action": action, "heatmap_metric": metric},
+        },
+        "data": None,
+    }
+
+
+# No explicit window in a download request → export a wide range (one year) rather than
+# the 24h DB default, since a user asking to "download the data" usually wants the full history.
+_DOWNLOAD_DEFAULT_HOURS = 24 * 365
+
+
+def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
+    """Resolve the download request into a ready-to-use sensor-readings URL plus display fields.
+
+    The time window is resolved server-side (mirroring the DB path) so the frontend never has to
+    reconstruct date ranges — it just opens the URL or renders a button pointing at it.
+    """
+    default_hours = _DOWNLOAD_DEFAULT_HOURS if not has_explicit_time_hint(question) else 24
+    start, end, window_label = extract_time_window(question, default_hours=default_hours)
+    fmt = route.download_format or "csv"
+    dtype = route.download_type or "aggregated"
+    params = {
+        "sensor_alias": download_sensor_alias(),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "type": dtype,
+        "format": fmt,
+    }
+    url = f"{download_base_url()}?{urlencode(params)}"
+    return {
+        "url": url,
+        "format": fmt,
+        "type": dtype,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "window_label": window_label,
+    }
+
+
+def _execute_download_control(route: RoutePlan, question: str) -> Dict[str, Any]:
+    dl = _build_download(route, question)
+    confirmation = (
+        f"Here's your {dl['format'].upper()} download for {dl['window_label']} — "
+        "use the button to save the sensor readings."
+    )
+    return {
+        "answer": confirmation,
+        "footnotes": [],
+        "citation_sources": [],
+        "timescale": "instant",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "download_data",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {
+                "download_url": dl["url"],
+                "download_format": dl["format"],
+                "download_type": dl["type"],
+                "download_start": dl["start"],
+                "download_end": dl["end"],
+            },
+        },
+        "data": None,
+    }
+
+
 def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, endpoint_key: str = "query_sync") -> Dict[str, Any]:
     """Execute a query given a fully-resolved ConversationContext."""
     route = plan_route(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
@@ -253,8 +394,14 @@ def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, 
 
     if executor == RouteExecutor.VIEWER_CONTROL:
         return _execute_viewer_control(route)
+    if executor == RouteExecutor.HEATMAP_CONTROL:
+        return _execute_heatmap_control(route)
+    if executor == RouteExecutor.DOWNLOAD_DATA:
+        return _execute_download_control(route, ctx.effective_question)
     if executor == RouteExecutor.IFC_QA:
         return _execute_ifc(ctx.effective_question, route)
+    if route.intent == IntentType.UNKNOWN_FALLBACK:
+        return _execute_unknown_fallback(route)
     if executor == RouteExecutor.KNOWLEDGE_QA:
         return _execute_knowledge(ctx.effective_question, k, ctx.effective_lab, route)
     return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history,
@@ -276,6 +423,40 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
         yield f"data: {json.dumps({'event': 'meta', 'executor': 'viewer_control', 'intent': route.intent.value, 'lab_name': None, 'llm_used': False, 'route_confidence': route.confidence, 'planner_model': route.model, 'fallback_used': route.fallback_used, 'ui': {'viewer_type': viewer_type}, 'timescale': 'instant', 'cards_retrieved': 0, 'recent_card': False, 'visualization_type': 'none', 'chart': None, 'citation_sources': [], 'footnotes': []})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        return
+
+    if executor == RouteExecutor.HEATMAP_CONTROL:
+        action = route.heatmap_action or "on"
+        metric = route.heatmap_metric
+        confirmation = _heatmap_confirmation(action, metric)
+        yield f"data: {json.dumps({'event': 'meta', 'executor': 'heatmap_control', 'intent': route.intent.value, 'lab_name': None, 'llm_used': False, 'route_confidence': route.confidence, 'planner_model': route.model, 'fallback_used': route.fallback_used, 'ui': {'heatmap_action': action, 'heatmap_metric': metric}, 'timescale': 'instant', 'cards_retrieved': 0, 'recent_card': False, 'visualization_type': 'none', 'chart': None, 'citation_sources': [], 'footnotes': []})}\n\n"
+        yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        return
+
+    if executor == RouteExecutor.DOWNLOAD_DATA:
+        result = _execute_download_control(route, ctx.effective_question)
+        meta = {
+            "event": "meta",
+            "executor": "download_data",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": result["metadata"]["ui"],
+            "timescale": "instant",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "visualization_type": "none",
+            "chart": None,
+            "citation_sources": [],
+            "footnotes": [],
+        }
+        yield f"data: {json.dumps(meta)}\n\n"
+        yield f"data: {json.dumps({'event': 'token', 'text': result['answer']})}\n\n"
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return
 
@@ -301,6 +482,30 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         yield _status_event("reading_model", "Reading building model…")
         async for chunk in stream_ifc_tokens(user_question=ctx.effective_question):
             yield chunk
+        return
+
+    if route.intent == IntentType.UNKNOWN_FALLBACK:
+        meta = {
+            "event": "meta",
+            "executor": "guardrail",
+            "intent": route.intent.value,
+            "lab_name": None,
+            "llm_used": False,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
+            "timescale": "guardrail",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "visualization_type": "none",
+            "chart": None,
+            "citation_sources": [],
+            "footnotes": [],
+        }
+        yield f"data: {json.dumps(meta)}\n\n"
+        yield f"data: {json.dumps({'event': 'token', 'text': _UNKNOWN_FALLBACK_ANSWER})}\n\n"
+        yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return
 
     use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA

@@ -89,6 +89,17 @@ def _requested_time_phrase(question: str) -> Optional[str]:
     m = re.search(r"\b(last|past)\s+\d+\s+(hour|hours|day|days|week|weeks|month|months)\b", q)
     if m:
         return m.group(0)
+    # Generic determiner-introduced windows ("for the week", "over the past
+    # month") count as the question naming its own time scope, so the prior
+    # turn's window is not carried over it.
+    g = re.search(
+        r"\b(?:the|a|an|this|that|over|for|past|current|recent|whole|entire|each|every|per)\s+"
+        r"(?:the\s+|a\s+|past\s+|last\s+|current\s+|whole\s+|entire\s+|few\s+)?"
+        r"(?:hour|day|week|month|year)s?\b",
+        q,
+    )
+    if g:
+        return g.group(0)
     return None
 
 

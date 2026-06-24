@@ -17,6 +17,7 @@ from query_routing.router_types import RoutePlan, RouteExecutor
 from query_routing.llm_router_planner import _infer_viewer_type, _parse_llm_response
 from query_routing.query_orchestrator import (
     _choose_executor,
+    _execute_unknown_fallback,
     _execute_viewer_control,
     _VIEWER_CONFIRMATIONS,
 )
@@ -92,6 +93,13 @@ class TestParseLlmResponse(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertIsNone(plan.viewer_type)
 
+    def test_unknown_fallback_intent_is_accepted(self):
+        raw = self._build_raw("unknown_fallback", confidence=0.95)
+        plan = _parse_llm_response(raw, "who won the football match?", None)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.intent, IntentType.UNKNOWN_FALLBACK)
+        self.assertEqual(plan.confidence, 0.95)
+
     def test_all_valid_viewer_types_accepted(self):
         for vt in ("splat", "ifc", "pc", "pano"):
             raw = self._build_raw("viewer_control", viewer_type=vt)
@@ -113,6 +121,11 @@ class TestChooseExecutor(unittest.TestCase):
         route = RoutePlan(intent=IntentType.CURRENT_STATUS_DB, confidence=0.9,
                           lab_name=None, time_phrase=None, model="test")
         self.assertEqual(_choose_executor(route), RouteExecutor.DB_QUERY)
+
+    def test_unknown_fallback_uses_knowledge_executor_bucket(self):
+        route = RoutePlan(intent=IntentType.UNKNOWN_FALLBACK, confidence=0.9,
+                          lab_name=None, time_phrase=None, model="test")
+        self.assertEqual(_choose_executor(route), RouteExecutor.KNOWLEDGE_QA)
 
 
 class TestExecuteViewerControl(unittest.TestCase):
@@ -145,6 +158,15 @@ class TestExecuteViewerControl(unittest.TestCase):
                           lab_name=None, time_phrase=None, model="test", viewer_type=None)
         result = _execute_viewer_control(route)
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "splat")
+
+    def test_unknown_fallback_response_is_concise_guardrail(self):
+        route = RoutePlan(intent=IntentType.UNKNOWN_FALLBACK, confidence=0.95,
+                          lab_name=None, time_phrase=None, model="test")
+        result = _execute_unknown_fallback(route)
+        self.assertEqual(result["metadata"]["executor"], "guardrail")
+        self.assertFalse(result["metadata"]["llm_used"])
+        self.assertLessEqual(len(result["answer"].split()), 25)
+        self.assertIn("indoor environmental quality", result["answer"])
 
 
 class TestStreamViewerControl(unittest.TestCase):
