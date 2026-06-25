@@ -122,5 +122,50 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertTrue(bool(details.get("applied")))
 
 
+    def test_new_metric_followup_carries_specific_date_day(self):
+        # "another metric on that day" — prior turn used an explicit calendar
+        # date, so the follow-up that only swaps the metric must keep the day.
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: What was the average temperature in smart_lab on June 2?\n"
+            "Assistant: It averaged 23.4C."
+        )
+        current_question = "what about humidity?"
+        current_signals = compute_question_signals(current_question)
+        memory = extract_routing_memory(context, current_signals)
+        _, effective_lab, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(effective_lab, "smart_lab")
+        self.assertEqual(details.get("carried_time_phrase"), "june 2")
+        # The new metric is named in this turn, so nothing is carried for it.
+        self.assertIsNone(details.get("carried_metric"))
+
+    def test_new_time_followup_carries_prior_metric(self):
+        # "another time on that metric" — prior turn established the metric, the
+        # follow-up changes only the time window, so the metric must carry over.
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: What was the average temperature in smart_lab yesterday?\n"
+            "Assistant: It averaged 23.4C."
+        )
+        current_question = "what about last week?"
+        current_signals = compute_question_signals(current_question)
+        memory = extract_routing_memory(context, current_signals)
+        _, effective_lab, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(effective_lab, "smart_lab")
+        self.assertEqual(details.get("carried_metric"), "temperature")
+        # The follow-up names its own time window, so the prior time is not carried.
+        self.assertIsNone(details.get("carried_time_phrase"))
+
+
 if __name__ == "__main__":
     unittest.main()

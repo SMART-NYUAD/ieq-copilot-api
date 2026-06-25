@@ -359,6 +359,8 @@ def normalize_metric_alias(metric: str) -> Optional[str]:
     m = str(metric or "").strip().lower().replace(" ", "_")
     if m == "air":
         m = "air_contribution"
+    if m in ("pm2.5", "pm_2.5", "pm2_5"):
+        m = "pm25"
     if m in CANONICAL_METRIC_COLUMN_MAP:
         return m
     return None

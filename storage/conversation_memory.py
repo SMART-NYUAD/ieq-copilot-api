@@ -100,6 +100,34 @@ def _requested_time_phrase(question: str) -> Optional[str]:
     )
     if g:
         return g.group(0)
+    # Explicit calendar dates ("June 2", "2 June", "on the 2nd of June",
+    # "2026-06-02", "June"). These must be carried over too so a follow-up that
+    # only changes the metric ("what about humidity?") keeps the prior day.
+    d = _explicit_date_phrase(q)
+    if d:
+        return d
+    return None
+
+
+# Month names + abbreviations for explicit-date detection in follow-up carry-over.
+_MONTH_NAMES = (
+    "january|february|march|april|may|june|july|august|september|october|"
+    "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+_EXPLICIT_DATE_PATTERNS = (
+    re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b"),
+    re.compile(r"\b\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:" + _MONTH_NAMES + r")\b"),
+    re.compile(r"\b(?:" + _MONTH_NAMES + r")\s+\d{1,2}(?:st|nd|rd|th)?\b"),
+    re.compile(r"\b(?:" + _MONTH_NAMES + r")\b"),
+)
+
+
+def _explicit_date_phrase(question: str) -> Optional[str]:
+    q = str(question or "").lower()
+    for pattern in _EXPLICIT_DATE_PATTERNS:
+        m = pattern.search(q)
+        if m:
+            return m.group(0)
     return None
 
 
