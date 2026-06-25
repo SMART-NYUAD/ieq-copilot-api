@@ -109,6 +109,32 @@ class TimeRangeParsingTests(unittest.TestCase):
         self.assertTrue(has_explicit_time_hint("pm2.5 from July 1 to July 7"))
         self.assertTrue(has_explicit_time_hint("co2 in the first week of July"))
 
+    def test_spelled_out_ordinal_day_range(self):
+        # "the second of June until the fourth of June" must not collapse to June 1.
+        start, end, _ = extract_time_window(
+            "Give me the pm2.5 from the second of june until the fourth of june 2026"
+        )
+        self.assertEqual((start.month, start.day), (6, 2))
+        # End day inclusive → covers through all of June 4.
+        self.assertEqual((end.month, end.day), (6, 5))
+
+    def test_spelled_out_ordinal_month_first_form(self):
+        start, end, _ = extract_time_window("pm2.5 from june second to june fourth 2026")
+        self.assertEqual((start.month, start.day), (6, 2))
+        self.assertEqual((end.month, end.day), (6, 5))
+
+    def test_spelled_out_compound_ordinal_single_day(self):
+        start, end, _ = extract_time_window("humidity on the twenty-first of june 2026")
+        self.assertEqual((start.month, start.day), (6, 21))
+        self.assertEqual((end - start).days, 1)
+
+    def test_spelled_out_ordinal_cross_month_range(self):
+        start, end, _ = extract_time_window(
+            "co2 from the twenty-eighth of may until the second of june 2026"
+        )
+        self.assertEqual((start.month, start.day), (5, 28))
+        self.assertEqual((end.month, end.day), (6, 3))
+
 
 class DbDefaultWindowTests(unittest.TestCase):
     def test_point_lookup_defaults_to_last_hour(self):

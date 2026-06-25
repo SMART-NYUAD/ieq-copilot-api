@@ -597,14 +597,45 @@ for _m_idx, _m_name in enumerate(calendar.month_abbr):
 
 _WEEK_OF_MONTH_ORDINALS = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
 
+# Ordinal words for days of the month, so "the second of June" parses like "June 2".
+_ORDINAL_DAY_WORDS: Dict[str, int] = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+    "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+    "nineteenth": 19, "twentieth": 20, "thirtieth": 30,
+}
+for _tens_word, _tens_val, _max_ones in (("twenty", 20, 9), ("thirty", 30, 1)):
+    for _ones_word, _ones_val in (
+        ("first", 1), ("second", 2), ("third", 3), ("fourth", 4), ("fifth", 5),
+        ("sixth", 6), ("seventh", 7), ("eighth", 8), ("ninth", 9),
+    ):
+        if _ones_val > _max_ones:
+            continue
+        _combined = _tens_val + _ones_val
+        _ORDINAL_DAY_WORDS[f"{_tens_word}-{_ones_word}"] = _combined
+        _ORDINAL_DAY_WORDS[f"{_tens_word} {_ones_word}"] = _combined
+
+# Longest phrases first so "twenty-first" is replaced before "first".
+_ORDINAL_DAY_WORDS_ORDERED = sorted(_ORDINAL_DAY_WORDS, key=len, reverse=True)
+
+
+def _normalize_ordinal_day_words(text: str) -> str:
+    """Rewrite spelled-out ordinal days ("the second of June") to digits ("the 2 of June")
+    so the numeric date regexes can match them."""
+    for word in _ORDINAL_DAY_WORDS_ORDERED:
+        text = re.sub(rf"\b{re.escape(word)}\b", str(_ORDINAL_DAY_WORDS[word]), text)
+    return text
+
 
 def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = None) -> Optional[datetime]:
-    """Parse a single date expression ("July 1", "1st of July", "2026-07-01", "July")
-    into a start-of-day datetime, or None when no date is recognized.
+    """Parse a single date expression ("July 1", "1st of July", "the second of July",
+    "2026-07-01", "July") into a start-of-day datetime, or None when no date is recognized.
     """
     t = str(token or "").strip().lower().strip(".,?!")
     if not t:
         return None
+    t = _normalize_ordinal_day_words(t)
     months = "|".join(_MONTH_NAME_LOOKUP.keys())
 
     iso = re.search(r"\b(20\d{2}|19\d{2})-(\d{1,2})-(\d{1,2})\b", t)
@@ -694,6 +725,11 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         end = _cap_window_end_at_now(start, end, now)
         label = f"{ordinal} week of {month_start.strftime('%B %Y')}"
         return start, end, label
+
+    # Rewrite spelled-out ordinal days ("on the second of June") to digits so the
+    # numeric date regexes below can match them. Done after the week-of-month check,
+    # which relies on the ordinal words ("first week"/"last week") being intact.
+    q = _normalize_ordinal_day_words(q)
 
     day_month_re = r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(" + "|".join(month_lookup.keys()) + r")\b"
     day_month_match = re.search(day_month_re, q)
