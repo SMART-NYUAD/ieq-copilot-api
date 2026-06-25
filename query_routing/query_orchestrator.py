@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncIterator, Dict, Optional
-from urllib.parse import urlencode
 
 from fastapi.concurrency import run_in_threadpool
 
-from core_settings import download_base_url, download_sensor_alias
+from core_settings import download_default_interval, download_space_slug
 from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
-from executors.db_support.query_parsing import extract_time_window, has_explicit_time_hint
+from executors.db_support.query_parsing import extract_time_window
 from executors.ifc_executor import (
     answer_ifc_question_with_metadata,
     stream_ifc_tokens,
@@ -321,45 +321,100 @@ def _execute_heatmap_control(route: RoutePlan) -> Dict[str, Any]:
     }
 
 
-# No explicit window in a download request → export a wide range (one year) rather than
-# the 24h DB default, since a user asking to "download the data" usually wants the full history.
-_DOWNLOAD_DEFAULT_HOURS = 24 * 365
+# A download request with no explicit window defaults to the last hour, matching the
+# "default to 1 hour when something is missing" contract of the download-agg-summary endpoint.
+_DOWNLOAD_DEFAULT_HOURS = 1
+
+# Canonical metric → metric_type path segment for /spaces/{slug}/metrics/{metric_type}/...
+_DOWNLOAD_METRIC_TYPES: Dict[str, str] = {
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "co2": "co2",
+    "voc": "voc",
+    "pm25": "pm2.5",
+}
+
+# Human-friendly metric names for the "which metric?" follow-up question.
+_DOWNLOAD_METRIC_LABELS = "temperature, humidity, CO₂, VOC, or PM2.5"
+
+
+def _slugify_space(lab_name: Optional[str]) -> str:
+    """Turn a lab/space name into the {slug} path segment, falling back to the configured default."""
+    if not lab_name:
+        return download_space_slug()
+    slug = re.sub(r"[^a-z0-9]+", "_", lab_name.strip().lower()).strip("_")
+    return slug or download_space_slug()
 
 
 def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
-    """Resolve the download request into a ready-to-use sensor-readings URL plus display fields.
+    """Resolve the download request into the parameters the frontend needs for the
+    ``/spaces/{slug}/metrics/{metric_type}/download-agg-summary`` endpoint.
 
-    The time window is resolved server-side (mirroring the DB path) so the frontend never has to
-    reconstruct date ranges — it just opens the URL or renders a button pointing at it.
+    We hand the frontend the discrete parameters (not a pre-built URL) so it can call the
+    endpoint itself. The time window is resolved server-side (mirroring the DB path, defaulting
+    to the last hour) so the frontend never reconstructs date ranges. Callers must ensure a
+    metric is present before calling this — see :func:`_execute_download_control`.
     """
-    default_hours = _DOWNLOAD_DEFAULT_HOURS if not has_explicit_time_hint(question) else 24
-    start, end, window_label = extract_time_window(question, default_hours=default_hours)
+    start, end, window_label = extract_time_window(question, default_hours=_DOWNLOAD_DEFAULT_HOURS)
     fmt = route.download_format or "csv"
-    dtype = route.download_type or "aggregated"
-    params = {
-        "sensor_alias": download_sensor_alias(),
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "type": dtype,
-        "format": fmt,
-    }
-    url = f"{download_base_url()}?{urlencode(params)}"
+    metric_type = _DOWNLOAD_METRIC_TYPES.get(route.download_metric or "", route.download_metric or "")
+    interval = route.download_interval or download_default_interval()
     return {
-        "url": url,
-        "format": fmt,
-        "type": dtype,
+        "slug": _slugify_space(route.lab_name),
+        "metric_type": metric_type,
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "interval": interval,
+        "format": fmt,
         "window_label": window_label,
     }
 
 
+def _download_meta(route: RoutePlan, ui: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "executor": "download_data",
+        "intent": route.intent.value,
+        "lab_name": None,
+        "llm_used": False,
+        "route_confidence": route.confidence,
+        "planner_model": route.model,
+        "fallback_used": route.fallback_used,
+        "ui": ui,
+    }
+
+
 def _execute_download_control(route: RoutePlan, question: str) -> Dict[str, Any]:
+    # A metric is required to build a download. When it is missing, ask a follow-up question
+    # instead of handing back parameters — the frontend re-prompts the user for the metric.
+    if not route.download_metric:
+        question_text = (
+            f"Which metric would you like to download? You can choose {_DOWNLOAD_METRIC_LABELS}."
+        )
+        return {
+            "answer": question_text,
+            "footnotes": [],
+            "citation_sources": [],
+            "timescale": "instant",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "metadata": _download_meta(route, {"download_needs_metric": True}),
+            "data": None,
+        }
+
     dl = _build_download(route, question)
     confirmation = (
-        f"Here's your {dl['format'].upper()} download for {dl['window_label']} — "
-        "use the button to save the sensor readings."
+        f"Here's your {dl['format'].upper()} download of {dl['metric_type']} for {dl['window_label']} — "
+        "use the button to save the readings."
     )
+    ui = {
+        "download_needs_metric": False,
+        "download_slug": dl["slug"],
+        "download_metric_type": dl["metric_type"],
+        "download_start": dl["start"],
+        "download_end": dl["end"],
+        "download_interval": dl["interval"],
+        "download_format": dl["format"],
+    }
     return {
         "answer": confirmation,
         "footnotes": [],
@@ -367,22 +422,7 @@ def _execute_download_control(route: RoutePlan, question: str) -> Dict[str, Any]
         "timescale": "instant",
         "cards_retrieved": 0,
         "recent_card": False,
-        "metadata": {
-            "executor": "download_data",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {
-                "download_url": dl["url"],
-                "download_format": dl["format"],
-                "download_type": dl["type"],
-                "download_start": dl["start"],
-                "download_end": dl["end"],
-            },
-        },
+        "metadata": _download_meta(route, ui),
         "data": None,
     }
 
