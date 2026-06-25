@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import httpx
+
+from executors.db_support.time_windows import granularity_hours_for_window
 
 API_BASE_URL = "http://192.168.50.99:7001"
 # Predictions (forecasts) are served from the public API, not the internal sensor host.
@@ -124,17 +125,36 @@ def _run_parallel_tasks(tasks: Dict[str, Callable[[], _T]]) -> Dict[str, Optiona
     return results
 
 
-def window_hours_from_datetimes(window_start: datetime, window_end: Optional[datetime] = None) -> int:
-    """Convert absolute datetime window to hours-back-from-now for the API.
+def _iso_param(dt: Optional[datetime]) -> Optional[str]:
+    """Serialize a datetime to an ISO-8601 string for an API query parameter."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
-    Uses the later of (now, window_end) as the reference so that historical
-    windows request enough lookback from the API to cover the full range.
-    """
-    now = datetime.now(tz=timezone.utc)
-    ref = max(now, window_end.replace(tzinfo=timezone.utc) if window_end and not window_end.tzinfo else (window_end or now))
-    start = window_start if window_start.tzinfo else window_start.replace(tzinfo=timezone.utc)
-    delta = ref - start
-    return max(1, math.ceil(delta.total_seconds() / 3600))
+
+def _resolve_interval_hours(
+    window_start: Optional[datetime],
+    window_end: Optional[datetime],
+    interval_hours: Optional[int],
+) -> int:
+    """Use the explicit interval if given, else derive granularity from the window."""
+    if interval_hours is not None:
+        try:
+            return max(1, int(interval_hours))
+        except (TypeError, ValueError):
+            pass
+    if window_start is not None and window_end is not None:
+        return granularity_hours_for_window(window_start, window_end)
+    return 1
+
+
+def _default_window(window_start: Optional[datetime], window_end: Optional[datetime]) -> Tuple[datetime, datetime]:
+    """Fill in a sensible default window (last 24h) when bounds are missing."""
+    end = window_end or datetime.now(tz=timezone.utc)
+    start = window_start or (end - timedelta(hours=24))
+    return start, end
 
 
 # ---------------------------------------------------------------------------
@@ -189,21 +209,33 @@ def fetch_space_metrics(slug: str) -> Optional[Dict[str, Any]]:
 def fetch_metric_agg_summary(
     slug: str,
     metric: str,
-    window_hours: int,
-    interval_hours: int = 1,
+    window_start: Optional[datetime] = None,
+    window_end: Optional[datetime] = None,
+    interval_hours: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
-    """GET /spaces/{slug}/metrics/{metric}/agg-summary — returns data dict."""
+    """GET /spaces/{slug}/metrics/{metric}/agg-summary — returns data dict.
+
+    Sends the explicit ``window_start``/``window_end`` bounds and an
+    ``interval_hours`` granularity (derived from the window span when not given).
+    """
     api_slug = _api_sensor_slug(metric)
     if not api_slug:
         return None
-    cache_key = f"agg:{slug}:{api_slug}:{window_hours}:{interval_hours}"
+    start, end = _default_window(window_start, window_end)
+    resolved_interval = _resolve_interval_hours(start, end, interval_hours)
+    start_iso, end_iso = _iso_param(start), _iso_param(end)
+    cache_key = f"agg:{slug}:{api_slug}:{start_iso}:{end_iso}:{resolved_interval}"
     cached = _cache_get(cache_key, _AGG_CACHE_TTL_SECONDS)
     if cached is not None:
         return cached
     try:
         resp = _get_client().get(
             f"{API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/agg-summary",
-            params={"window_hours": window_hours, "interval_hours": interval_hours},
+            params={
+                "window_start": start_iso,
+                "window_end": end_iso,
+                "interval_hours": resolved_interval,
+            },
             headers={"accept": "application/json"},
         )
         resp.raise_for_status()
@@ -224,18 +256,31 @@ def fetch_metric_agg_summary(
 def fetch_indoor_data(
     slug: str,
     score_type: str,
-    interval: int = 1,
-    timeframe: int = 48,
+    window_start: Optional[datetime] = None,
+    window_end: Optional[datetime] = None,
+    interval: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
-    """GET /spaces/{slug}/indoor-data — returns data dict."""
-    cache_key = f"indoor:{slug}:{score_type}:{interval}:{timeframe}"
+    """GET /spaces/{slug}/indoor-data — returns data dict.
+
+    Sends the explicit ``window_start``/``window_end`` bounds and an ``interval``
+    granularity (hours per bucket, derived from the window span when not given).
+    """
+    start, end = _default_window(window_start, window_end)
+    resolved_interval = _resolve_interval_hours(start, end, interval)
+    start_iso, end_iso = _iso_param(start), _iso_param(end)
+    cache_key = f"indoor:{slug}:{score_type}:{start_iso}:{end_iso}:{resolved_interval}"
     cached = _cache_get(cache_key, _INDOOR_CACHE_TTL_SECONDS)
     if cached is not None:
         return cached
     try:
         resp = _get_client().get(
             f"{API_BASE_URL}/spaces/{slug}/indoor-data",
-            params={"type": score_type, "interval": interval, "timeframe": timeframe},
+            params={
+                "type": score_type,
+                "interval": resolved_interval,
+                "window_start": start_iso,
+                "window_end": end_iso,
+            },
             headers={"accept": "application/json"},
         )
         resp.raise_for_status()
@@ -260,22 +305,23 @@ def fetch_indoor_data(
 def fetch_timeseries_rows(
     slug: str,
     metric: str,
-    window_hours: int,
-    interval_hours: int = 1,
+    window_start: datetime,
+    window_end: datetime,
+    interval_hours: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch hourly rows as [{"lab_space", "bucket", "value"}, …] newest-first → oldest-first."""
     api_slug = _api_sensor_slug(metric)
     score = _score_type(metric)
     rows: List[Dict[str, Any]] = []
     if api_slug:
-        data = fetch_metric_agg_summary(slug, metric, window_hours, interval_hours)
+        data = fetch_metric_agg_summary(slug, metric, window_start, window_end, interval_hours)
         if data:
             rows = [
                 {"lab_space": slug, "bucket": item["timestamp"], "value": item["agg_value"]}
                 for item in (data.get("aggregate_readings") or [])
             ]
     elif score:
-        data = fetch_indoor_data(slug, score, interval=interval_hours, timeframe=window_hours)
+        data = fetch_indoor_data(slug, score, window_start, window_end, interval_hours)
         if data:
             rows = [
                 {"lab_space": slug, "bucket": item["bucket"], "value": item["value"]}
@@ -289,13 +335,14 @@ def fetch_timeseries_rows(
 def fetch_aggregation_row(
     slug: str,
     metric: str,
-    window_hours: int,
+    window_start: datetime,
+    window_end: datetime,
 ) -> Optional[Dict[str, Any]]:
     """Fetch aggregated {avg_value, min_value, max_value, reading_count} for one metric."""
     api_slug = _api_sensor_slug(metric)
     score = _score_type(metric)
     if api_slug:
-        data = fetch_metric_agg_summary(slug, metric, window_hours)
+        data = fetch_metric_agg_summary(slug, metric, window_start, window_end)
         if not data:
             return None
         readings = data.get("aggregate_readings") or []
@@ -307,7 +354,7 @@ def fetch_aggregation_row(
             "reading_count": len(readings),
         }
     elif score:
-        data = fetch_indoor_data(slug, score, timeframe=window_hours)
+        data = fetch_indoor_data(slug, score, window_start, window_end)
         if not data:
             return None
         values = [r["value"] for r in (data.get("readings") or []) if r.get("value") is not None]
@@ -323,20 +370,23 @@ def fetch_aggregation_row(
     return None
 
 
-def fetch_ieq_latest_with_subindices(slug: str, timeframe: int = 48) -> Dict[str, Any]:
+def fetch_ieq_latest_with_subindices(slug: str, lookback_hours: int = 48) -> Dict[str, Any]:
     """Fetch latest value for each IEQ sub-index via separate indoor-data calls.
 
     The API returns newest-first; we pick the reading with the latest bucket.
     """
     score_types = {"iaq": "IAQ", "itc": "ITC", "iac": "IAC", "iil": "IIL"}
+    window_end = datetime.now(tz=timezone.utc)
+    window_start = window_end - timedelta(hours=lookback_hours)
     responses = _run_parallel_tasks(
         {
             key: (
                 lambda score_type=score_type: fetch_indoor_data(
                     slug,
                     score_type,
+                    window_start,
+                    window_end,
                     interval=1,
-                    timeframe=timeframe,
                 )
             )
             for key, score_type in score_types.items()
@@ -388,7 +438,8 @@ def fetch_multi_metric_point_row(slug: str, metrics: List[str]) -> Dict[str, Any
 def fetch_multi_metric_agg_row(
     slug: str,
     metrics: List[str],
-    window_hours: int,
+    window_start: datetime,
+    window_end: datetime,
 ) -> Dict[str, Any]:
     """Return a row with avg/min/max/stddev_placeholder for each metric."""
     row: Dict[str, Any] = {"lab_space": slug, "reading_count": 0}
@@ -398,7 +449,8 @@ def fetch_multi_metric_agg_row(
                 lambda metric_name=metric: fetch_aggregation_row(
                     slug,
                     metric_name,
-                    window_hours,
+                    window_start,
+                    window_end,
                 )
             )
             for metric in metrics
@@ -421,7 +473,11 @@ def fetch_multi_metric_agg_row(
     return row
 
 
-def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str, Any]:
+def fetch_all_spaces_avg_row(
+    metrics: List[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> Dict[str, Any]:
     """Aggregate metric values across all known spaces into a single 'all_labs' row."""
     spaces = fetch_spaces()
     slugs = [s["slug"] for s in spaces if s.get("slug")]
@@ -437,7 +493,7 @@ def fetch_all_spaces_avg_row(metrics: List[str], window_hours: int) -> Dict[str,
     per_space = list(
         _run_parallel_tasks(
             {
-                slug: (lambda space_slug=slug: fetch_multi_metric_agg_row(space_slug, metrics, window_hours))
+                slug: (lambda space_slug=slug: fetch_multi_metric_agg_row(space_slug, metrics, window_start, window_end))
                 for slug in slugs
             }
         ).values()
@@ -487,13 +543,17 @@ def fetch_predictions(slug: str, metric: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def fetch_all_spaces_agg_rows_for_metric(metric: str, window_hours: int) -> List[Dict[str, Any]]:
+def fetch_all_spaces_agg_rows_for_metric(
+    metric: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> List[Dict[str, Any]]:
     """Return per-space aggregation rows for a single metric (for ranking/comparison)."""
     spaces = fetch_spaces()
     slugs = [s.get("slug") for s in spaces if s.get("slug")]
     agg_by_slug = _run_parallel_tasks(
         {
-            slug: (lambda space_slug=slug: fetch_aggregation_row(space_slug, metric, window_hours))
+            slug: (lambda space_slug=slug: fetch_aggregation_row(space_slug, metric, window_start, window_end))
             for slug in slugs
         }
     )
@@ -505,8 +565,9 @@ def fetch_all_spaces_agg_rows_for_metric(metric: str, window_hours: int) -> List
 def fetch_merged_timeseries(
     slug: str,
     metrics: List[str],
-    window_hours: int,
-    interval_hours: int = 1,
+    window_start: datetime,
+    window_end: datetime,
+    interval_hours: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch per-bucket time series for multiple metrics, merged by timestamp."""
     series_by_metric = _run_parallel_tasks(
@@ -515,7 +576,8 @@ def fetch_merged_timeseries(
                 lambda metric_name=metric: fetch_timeseries_rows(
                     slug,
                     metric_name,
-                    window_hours,
+                    window_start,
+                    window_end,
                     interval_hours,
                 )
             )

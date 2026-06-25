@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from executors import metric_registry
@@ -56,9 +57,11 @@ def get_sensor_latest(space: str) -> Dict[str, Any]:
     last_updated = space_data.get("last_updated")
     ieq_value = (space_data.get("ieq") or {}).get("score")
 
+    window_end = datetime.now(tz=timezone.utc)
+    window_start = window_end - timedelta(hours=1)
     sensor_values: Dict[str, Optional[float]] = {}
     for metric in _SENSOR_METRICS:
-        agg = api_client.fetch_metric_agg_summary(space, metric, window_hours=1)
+        agg = api_client.fetch_metric_agg_summary(space, metric, window_start, window_end, interval_hours=1)
         sensor_values[metric] = (agg or {}).get("avg_agg_value")
 
     readings: Dict[str, Any] = {}

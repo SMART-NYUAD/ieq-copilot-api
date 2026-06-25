@@ -13,6 +13,7 @@ _log = logging.getLogger(__name__)
 from query_routing.intent_classifier import IntentType
 from executors.db_support import api_client
 from executors.db_support import query_parsing as db_parsing
+from executors.db_support import time_windows as db_time_windows
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support.response_helpers import is_diagnostic_query_text
 from executors import metric_registry
@@ -212,8 +213,7 @@ def _handle_diagnostic(
             "compared_spaces": [],
         }
 
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-    rows = api_client.fetch_merged_timeseries(resolved_lab_name, fetchable, window_hours)
+    rows = api_client.fetch_merged_timeseries(resolved_lab_name, fetchable, window_start, window_end)
 
     if not rows:
         return {
@@ -272,9 +272,9 @@ def _handle_correlation(
             "metrics_used": [metric_x, metric_y],
         }
 
-    window_hours = max(api_client.window_hours_from_datetimes(window_start, window_end), 6)
-    series_x = api_client.fetch_timeseries_rows(resolved_lab_name, metric_x, window_hours)
-    series_y = api_client.fetch_timeseries_rows(resolved_lab_name, metric_y, window_hours)
+    fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
+    series_x = api_client.fetch_timeseries_rows(resolved_lab_name, metric_x, fetch_start, fetch_end)
+    series_y = api_client.fetch_timeseries_rows(resolved_lab_name, metric_y, fetch_start, fetch_end)
 
     # Merge by timestamp bucket
     by_bucket_x = {str(r["bucket"]): r["value"] for r in series_x}
@@ -353,11 +353,9 @@ def _handle_comparison_multi(
     if not compared_spaces and resolved_lab_name:
         compared_spaces = [resolved_lab_name]
 
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-
     if len(compared_spaces) < 2:
         if resolved_lab_name:
-            row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+            row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_start, window_end)
             rows = [row] if row.get(metric_names[0]) is not None else []
             return {
                 "operation_type": "comparison_multi_metric",
@@ -384,7 +382,7 @@ def _handle_comparison_multi(
         }
 
     rows = [
-        api_client.fetch_multi_metric_agg_row(slug, metric_names, window_hours)
+        api_client.fetch_multi_metric_agg_row(slug, metric_names, window_start, window_end)
         for slug in compared_spaces[:2]
     ]
     rows = [r for r in rows if any(r.get(m) is not None for m in metric_names)]
@@ -430,8 +428,7 @@ def _handle_baseline_reference_comparison(
     baseline_start = window_start - timedelta(seconds=window_seconds)
 
     # Fetch the full range (baseline + current) as a single time series
-    full_window_hours = api_client.window_hours_from_datetimes(baseline_start, window_end)
-    all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, full_window_hours)
+    all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, baseline_start, window_end)
 
     def _ts(dt: datetime) -> str:
         if dt.tzinfo is None:
@@ -524,13 +521,11 @@ def _handle_aggregation_multi(
             "metrics_used": [],
         }
 
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-
     if resolved_lab_name:
-        row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+        row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_start, window_end)
         rows = [row]
     else:
-        row = api_client.fetch_all_spaces_avg_row(metric_names, window_hours)
+        row = api_client.fetch_all_spaces_avg_row(metric_names, window_start, window_end)
         rows = [row]
 
     return {
@@ -568,7 +563,6 @@ def _handle_point_lookup(
         window_start=window_start,
         window_end=window_end,
     )
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
 
     if historical_summary_query and intent == IntentType.POINT_LOOKUP_DB:
         if len(requested_metrics) >= 2:
@@ -585,10 +579,10 @@ def _handle_point_lookup(
                     "metrics_used": [],
                 }
             if resolved_lab_name:
-                row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_hours)
+                row = api_client.fetch_multi_metric_agg_row(resolved_lab_name, metric_names, window_start, window_end)
                 rows = [row]
             else:
-                row = api_client.fetch_all_spaces_avg_row(metric_names, window_hours)
+                row = api_client.fetch_all_spaces_avg_row(metric_names, window_start, window_end)
                 rows = [row]
             return {
                 "operation_type": "aggregation_multi_metric",
@@ -604,10 +598,10 @@ def _handle_point_lookup(
 
         # Single metric historical summary
         if resolved_lab_name:
-            agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+            agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_start, window_end)
             rows = [agg] if agg else []
         else:
-            rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_hours)[:10]
+            rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_start, window_end)[:10]
         return {
             "operation_type": "aggregation",
             "rows": rows,
@@ -677,9 +671,9 @@ def _handle_point_lookup(
     api_trend_pct: Optional[float] = None
 
     has_time_window = db_parsing.has_explicit_time_hint(question)
-    fetch_hours = max(window_hours, 6)
+    fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
     if resolved_lab_name:
-        trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_hours)
+        trend_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_start, fetch_end)
 
     if not has_time_window and resolved_lab_name and intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}:
         # No explicit time window — use /spaces/{slug}/metrics for the live current value.
@@ -746,14 +740,13 @@ def _handle_anomaly_multi(
     else:
         metrics_to_check = _ANOMALY_CORE_METRICS
 
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-    fetch_hours = max(window_hours, 6)
+    fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
 
     metric_results = []
     all_rows: List[Dict[str, Any]] = []
     metrics_used: List[str] = []
     for metric in metrics_to_check:
-        rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, fetch_hours)
+        rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, fetch_start, fetch_end)
         if not rows:
             continue
         anomalies = db_helpers.detect_anomaly_points(rows)
@@ -791,11 +784,10 @@ def _handle_anomaly(
     if not resolved_lab_name:
         return None
 
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
     # The API requires at least 5 hours to return completed hourly buckets;
     # anomaly detection also needs enough points to compute a meaningful baseline.
-    fetch_hours = max(window_hours, 6)
-    rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_hours)
+    fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
+    rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_start, fetch_end)
     anomalies = db_helpers.detect_anomaly_points(rows)
     return {
         "operation_type": "anomaly",
@@ -873,11 +865,11 @@ def _handle_temporal_comparison(
     ref_end_utc = ref_end.astimezone(_utc.utc)
 
     full_start = min(current_start, ref_start)
-    full_window_hours = api_client.window_hours_from_datetimes(full_start, max(current_end, ref_end))
+    full_end = max(current_end, ref_end)
 
     if len(compare_metrics) == 1:
         metric = compare_metrics[0]
-        all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, full_window_hours)
+        all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric, full_start, full_end)
 
         def _in_period(row: dict, start_utc: datetime, end_utc: datetime) -> bool:
             bucket_dt = _parse_bucket_utc(row.get("bucket"))
@@ -936,7 +928,7 @@ def _handle_temporal_comparison(
         }
 
     # Multi-metric: fetch merged timeseries and split by period
-    all_rows = api_client.fetch_merged_timeseries(resolved_lab_name, compare_metrics, full_window_hours)
+    all_rows = api_client.fetch_merged_timeseries(resolved_lab_name, compare_metrics, full_start, full_end)
 
     def _in_period(row: dict, start_utc: datetime, end_utc: datetime) -> bool:
         bucket_dt = _parse_bucket_utc(row.get("bucket"))
@@ -1001,13 +993,14 @@ def _handle_comparison(
         return None
     # Single-space fallback: fetch aggregation for the resolved lab
     if resolved_lab_name:
-        window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
-        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_start, window_end)
         rows = [agg] if agg else []
+        fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
         time_series_rows = api_client.fetch_timeseries_rows(
             resolved_lab_name,
             metric_alias,
-            max(window_hours, 6),
+            fetch_start,
+            fetch_end,
         )
         return {
             "operation_type": "aggregation",
@@ -1032,12 +1025,12 @@ def _handle_default(
     resolved_lab_name: Optional[str],
     compared_spaces: List[str],
 ) -> Dict[str, Any]:
-    window_hours = api_client.window_hours_from_datetimes(window_start, window_end)
+    fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
 
     if intent == IntentType.AGGREGATION_DB and len(compared_spaces) >= 2:
         rows = []
         for slug in compared_spaces[:2]:
-            agg = api_client.fetch_aggregation_row(slug, metric_alias, window_hours)
+            agg = api_client.fetch_aggregation_row(slug, metric_alias, window_start, window_end)
             if agg:
                 rows.append(agg)
         rows.sort(key=lambda r: (r.get("avg_value") or 0), reverse=True)
@@ -1051,7 +1044,7 @@ def _handle_default(
 
     if db_parsing.wants_time_series(question):
         slug = resolved_lab_name or ""
-        rows = api_client.fetch_timeseries_rows(slug, metric_alias, max(window_hours, 6))
+        rows = api_client.fetch_timeseries_rows(slug, metric_alias, fetch_start, fetch_end)
         return {
             "operation_type": "timeseries",
             "rows": rows,
@@ -1064,7 +1057,7 @@ def _handle_default(
     time_series_rows: List[Dict[str, Any]] = []
     aggregation_summary: Optional[Dict[str, Any]] = None
     if resolved_lab_name:
-        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_hours)
+        agg = api_client.fetch_aggregation_row(resolved_lab_name, metric_alias, window_start, window_end)
         rows = []
         if agg:
             aggregation_summary = agg
@@ -1082,10 +1075,11 @@ def _handle_default(
         time_series_rows = api_client.fetch_timeseries_rows(
             resolved_lab_name,
             metric_alias,
-            max(window_hours, 6),
+            fetch_start,
+            fetch_end,
         )
     else:
-        rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_hours)[:10]
+        rows = api_client.fetch_all_spaces_agg_rows_for_metric(metric_alias, window_start, window_end)[:10]
 
     return {
         "operation_type": "aggregation",

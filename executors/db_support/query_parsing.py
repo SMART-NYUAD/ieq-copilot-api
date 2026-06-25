@@ -586,6 +586,68 @@ def _shift_month(year: int, month: int, delta_months: int) -> Tuple[int, int]:
     return shifted_year, shifted_month
 
 
+# Month-name → month-number lookup (full names and 3-letter abbreviations).
+_MONTH_NAME_LOOKUP: Dict[str, int] = {}
+for _m_idx, _m_name in enumerate(calendar.month_name):
+    if _m_name:
+        _MONTH_NAME_LOOKUP[_m_name.lower()] = _m_idx
+for _m_idx, _m_name in enumerate(calendar.month_abbr):
+    if _m_name:
+        _MONTH_NAME_LOOKUP[_m_name.lower()] = _m_idx
+
+_WEEK_OF_MONTH_ORDINALS = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
+
+
+def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = None) -> Optional[datetime]:
+    """Parse a single date expression ("July 1", "1st of July", "2026-07-01", "July")
+    into a start-of-day datetime, or None when no date is recognized.
+    """
+    t = str(token or "").strip().lower().strip(".,?!")
+    if not t:
+        return None
+    months = "|".join(_MONTH_NAME_LOOKUP.keys())
+
+    iso = re.search(r"\b(20\d{2}|19\d{2})-(\d{1,2})-(\d{1,2})\b", t)
+    if iso:
+        try:
+            return datetime(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)), tzinfo=db_time_windows.TARGET_TZ)
+        except ValueError:
+            return None
+
+    day_month = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(" + months + r")\b", t)
+    if day_month:
+        day = int(day_month.group(1))
+        month = _MONTH_NAME_LOOKUP[day_month.group(2)]
+        year = _resolve_year_for_month(month, explicit_year, now)
+        try:
+            return datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+        except ValueError:
+            return None
+
+    month_day = re.search(r"\b(" + months + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b", t)
+    if month_day:
+        month = _MONTH_NAME_LOOKUP[month_day.group(1)]
+        day = int(month_day.group(2))
+        year = _resolve_year_for_month(month, explicit_year, now)
+        try:
+            return datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+        except ValueError:
+            return None
+
+    bare_month = re.search(r"\b(" + months + r")\b", t)
+    if bare_month:
+        month = _MONTH_NAME_LOOKUP[bare_month.group(1)]
+        year = _resolve_year_for_month(month, explicit_year, now)
+        return datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+    return None
+
+
+def _next_month_start(year: int, month: int) -> datetime:
+    if month == 12:
+        return datetime(year + 1, 1, 1, tzinfo=db_time_windows.TARGET_TZ)
+    return datetime(year, month + 1, 1, tzinfo=db_time_windows.TARGET_TZ)
+
+
 def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
     q = _latest_user_question(question).lower()
     now = datetime.now(db_time_windows.TARGET_TZ)
@@ -593,8 +655,45 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
     month_abbr = [m.lower() for m in calendar.month_abbr if m]
     month_lookup = {name: idx + 1 for idx, name in enumerate(month_names)}
     month_lookup.update({name: idx + 1 for idx, name in enumerate(month_abbr)})
+    months_alt = "|".join(_MONTH_NAME_LOOKUP.keys())
     year_match = re.search(r"\b(20\d{2}|19\d{2})\b", q)
     explicit_year = int(year_match.group(1)) if year_match else None
+
+    # Explicit bounded range: "from X to Y" / "between X and Y".
+    range_match = re.search(
+        r"\b(?:from|between)\s+(.+?)\s+(?:to|until|through|thru|till|and|[-–—])\s+(.+?)(?:[?.!,]|$)",
+        q,
+    )
+    if range_match:
+        start_dt = _parse_date_token(range_match.group(1), now, explicit_year)
+        end_dt = _parse_date_token(range_match.group(2), now, explicit_year)
+        if start_dt and end_dt:
+            # Treat the end day as inclusive (cover the whole end day).
+            end_inclusive = end_dt + timedelta(days=1)
+            if end_inclusive > start_dt:
+                capped_end = _cap_window_end_at_now(start_dt, end_inclusive, now)
+                label = f"{start_dt.strftime('%b %d, %Y')} – {end_dt.strftime('%b %d, %Y')}"
+                return start_dt, capped_end, label
+
+    # "first/second/third/fourth/last week of <month>".
+    week_of_month = re.search(
+        r"\b(first|second|third|fourth|fifth|last)\s+week\s+of\s+(" + months_alt + r")\b",
+        q,
+    )
+    if week_of_month:
+        ordinal = week_of_month.group(1)
+        month = _MONTH_NAME_LOOKUP[week_of_month.group(2)]
+        year = _resolve_year_for_month(month, explicit_year, now)
+        month_start = datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+        month_end = _next_month_start(year, month)
+        if ordinal == "last":
+            start = month_end - timedelta(days=7)
+        else:
+            start = month_start + timedelta(days=7 * _WEEK_OF_MONTH_ORDINALS[ordinal])
+        end = min(start + timedelta(days=7), month_end)
+        end = _cap_window_end_at_now(start, end, now)
+        label = f"{ordinal} week of {month_start.strftime('%B %Y')}"
+        return start, end, label
 
     day_month_re = r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(" + "|".join(month_lookup.keys()) + r")\b"
     day_month_match = re.search(day_month_re, q)
