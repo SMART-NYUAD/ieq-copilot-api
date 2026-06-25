@@ -144,6 +144,72 @@ class ConversationMemoryTests(unittest.TestCase):
         # The new metric is named in this turn, so nothing is carried for it.
         self.assertIsNone(details.get("carried_metric"))
 
+    def test_followup_carries_week_of_month_phrase(self):
+        # Prior turn scoped to "first week of May" — a follow-up that asks about
+        # "this data" must carry the whole phrase, not just "may" (which would
+        # widen the window to the entire month).
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: Show me the pm2.5 of the first week of may\n"
+            "Assistant: PM2.5 averaged 7.4."
+        )
+        current_question = "was there any peak in this data"
+        current_signals = compute_question_signals(current_question)
+        memory = extract_routing_memory(context, current_signals)
+        _, _, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(details.get("carried_time_phrase"), "first week of may")
+
+    def test_followup_carries_full_date_range(self):
+        # Prior turn scoped to a bounded range ("from May 1st to May 8th") — a
+        # follow-up ("what was the peak?") must keep BOTH bounds, not collapse to
+        # the start day. The carried phrase must round-trip through the time-window
+        # parser, which requires a from/between lead.
+        from executors.db_support.query_parsing import extract_time_window
+
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: What was the humidity from may 1st to may 8th?\n"
+            "Assistant: It averaged 51.1% RH."
+        )
+        current_question = "what was the peak?"
+        current_signals = compute_question_signals(current_question)
+        memory = extract_routing_memory(context, current_signals)
+        _, effective_lab, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        carried = details.get("carried_time_phrase")
+        self.assertEqual(carried, "from may 1st to may 8th")
+        # Round-trip: the carried phrase resolves back to the full 8-day window.
+        start, end, _ = extract_time_window(carried, default_hours=24)
+        self.assertEqual((start.month, start.day), (5, 1))
+        # End is exclusive and inclusive of May 8, i.e. midnight May 9.
+        self.assertEqual((end.month, end.day), (5, 9))
+
+    def test_between_and_date_range_carries_over(self):
+        context = (
+            "Previous conversation context (most recent last):\n"
+            "User: average co2 between May 1 and May 8 in smart_lab\n"
+            "Assistant: It averaged 435 ppm."
+        )
+        current_question = "what was the peak?"
+        current_signals = compute_question_signals(current_question)
+        memory = extract_routing_memory(context, current_signals)
+        _, _, details = apply_routing_memory(
+            question=current_question,
+            lab_name=None,
+            memory=memory,
+            current_signals=current_signals,
+        )
+        self.assertEqual(details.get("carried_time_phrase"), "from may 1 to may 8")
+
     def test_new_time_followup_carries_prior_metric(self):
         # "another time on that metric" — prior turn established the metric, the
         # follow-up changes only the time window, so the metric must carry over.

@@ -38,7 +38,7 @@ _SYSTEM_PROMPT = (
     "Given a user question and optional lab hint, output ONLY a JSON object with these fields:\n"
     '  "intent": one of [definition_explanation, current_status_db, point_lookup_db, '
     "forecast_db, aggregation_db, comparison_db, anomaly_analysis_db, viewer_control, "
-    "heatmap_control, download_data, ifc_model_qa, unknown_fallback]\n"
+    "heatmap_control, download_data, ifc_model_qa, sensor_inspection, unknown_fallback]\n"
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
     '  "metrics": list of relevant metrics from [co2, pm25, voc, humidity, temperature, light, sound, ieq]\n'
@@ -51,8 +51,8 @@ _SYSTEM_PROMPT = (
     '  "download_format": one of ["csv", "json"] when intent is download_data (default "csv"), else null\n'
     '  "download_metric": the single metric to export when intent is download_data, one of '
     '["temperature", "humidity", "co2", "voc", "pm25"] — null if the user did not name one\n'
-    '  "download_interval": aggregation interval phrase for the export when intent is download_data '
-    '(e.g. "1m", "1h", "1d"), else null\n\n'
+    '  "download_interval": aggregation bucket size for the export when intent is download_data '
+    '(e.g. "1m", "15m", "1h", "1d") — the granularity, NOT the time range; else null\n\n'
     "Routing rules:\n"
     "- DOMAIN GUARDRAIL: This assistant only handles indoor environmental quality, sensor data, "
     "building/BIM/IFC model questions, viewer-control, and heatmap-overlay requests. If the question is unrelated "
@@ -127,16 +127,29 @@ _SYSTEM_PROMPT = (
     "'switch the overlay to voc' (on, voc), 'show the pm2.5 heatmap' (on, pm25), "
     "'turn on the heatmap and use the metric temperature' (on, temperature), "
     "'set the heatmap metric to humidity' (on, humidity).\n"
-    "- download_data: The user wants to DOWNLOAD, EXPORT, or SAVE the sensor readings as a file "
-    "(CSV/JSON), or get a data dump / spreadsheet / report file of the measurements. This is a UI "
-    "action that hands the frontend the download parameters — it never returns sensor values inline, "
-    "and it is NOT a question about the data. Carry the time window in `time_phrase` exactly as stated "
-    "(e.g. 'last 7 days', 'March'); when no window is given the system defaults to the last hour. "
+    "- download_data: The user EXPLICITLY wants to DOWNLOAD, EXPORT, or SAVE the sensor readings as a "
+    "file (CSV/JSON), or get a data dump / spreadsheet / report FILE of the measurements. There must be "
+    "an explicit file/export verb — 'download', 'export', 'save to a file', 'CSV', 'JSON', 'spreadsheet', "
+    "'data dump'. This is a UI action that hands the frontend the download parameters — it never returns "
+    "sensor values inline, and it is NOT a question about the data. "
+    "IMPORTANT — do NOT route here for a bare data REQUEST. 'give me the CO2 data', 'show me the "
+    "temperature', 'get me last week's readings', 'what was the humidity', 'pull the data for May' are "
+    "data QUESTIONS — route them to the matching DB intent (aggregation_db / point_lookup_db / "
+    "current_status_db), NOT download_data. The word 'data' alone is NOT a download cue. When it is "
+    "AMBIGUOUS whether the user wants a file or an answer, PREFER the DB data path; only choose "
+    "download_data when a file/export verb is explicitly present. Likewise, do NOT inherit download_data "
+    "from a previous turn: if the prior question was a download but THIS question merely asks for data "
+    "(no explicit export verb), route it to the DB path. "
+    "Carry the time window in `time_phrase` exactly as stated "
+    "(e.g. 'last 7 days', 'March'); when no window is given the system defaults to the last 24 hours. "
     "Set download_format to 'json' only if the user explicitly asks for JSON, else 'csv'. "
     "Set download_metric to the single metric the user wants to export (temperature, humidity, co2, "
     "voc, pm25); leave it null if the user did not name a metric — a metric is REQUIRED, so the system "
-    "will ask the user which metric when it is missing. Set download_interval to an aggregation "
-    "granularity ('1m', '1h', '1d') only if the user names one (e.g. 'hourly', 'daily'), else null. "
+    "will ask the user which metric when it is missing. Set download_interval to the aggregation "
+    "granularity the user asks for — both named ('hourly'->'1h', 'daily'->'1d') and explicit numeric "
+    "('a 1 hour interval'->'1h', 'every 15 minutes'->'15m') forms; else null. The interval is the "
+    "bucket SIZE, not the time range — 'set the interval to 1 hour' / 'make it more granular, hourly' "
+    "changes download_interval (->'1h'); it does NOT set time_phrase. "
     "Distinguish from aggregation_db: 'what was the average CO2 last week?' is a "
     "data QUESTION (aggregation_db); 'download last week's data' / 'export the readings' is download_data. "
     "Examples: 'download the data', 'export the sensor readings', 'export last 7 days as CSV', "
@@ -162,6 +175,20 @@ _SYSTEM_PROMPT = (
     "'what is the GIA?', 'what is the gross internal area?', 'what is the gross floor area?', "
     "'what is the net internal area?', 'what is the building volume?', "
     "'what is the floor-to-floor height?', 'what is the wall thickness?', 'what is the perimeter?'.\n\n"
+    "- sensor_inspection: The question is about INDIVIDUAL sensors/devices rather than the "
+    "space as a whole — comparing sensors against each other (which sensor reads the "
+    "highest/lowest of a metric), or asking about a sensor's HEALTH / online status "
+    "(faulty, offline, dead, stale, hasn't reported, last seen, is it working). This is "
+    "answered from a per-device snapshot of each sensor's latest reading and timestamp. "
+    "Distinguish from current_status_db: 'what is the temperature?' asks for the SPACE "
+    "value (current_status_db); 'which SENSOR has the highest temperature?' / 'which sensor "
+    "is hottest?' compares sensors (sensor_inspection). Any question about a specific named "
+    "sensor/device, a ranking of sensors, or sensor faults/offline status goes here. "
+    "Examples: 'which sensor has the highest temperature?', 'which sensor reads the lowest "
+    "humidity?', 'which sensor is hottest?', 'are any sensors faulty?', 'which sensors are "
+    "offline?', 'find a dead sensor', 'which sensor hasn\\'t reported today?', 'list sensors "
+    "with stale data', 'is sensor 8 working?', 'when did sensor 67 last report?', "
+    "'show me broken sensors'.\n\n"
     "- unknown_fallback: The question is outside supported topics or makes no coherent request. "
     "Examples: 'who won the football match?', 'write me a poem about dragons', 'asdf qwer banana?', "
     "'what is the stock price of Apple?', 'tell me a joke', 'what is the weather in Paris?'.\n\n"
@@ -270,14 +297,56 @@ def _infer_download_metric(question: str) -> Optional[str]:
     return None
 
 
+def _canon_interval_unit(unit: str) -> Optional[str]:
+    """Map a spelled-out/abbreviated time unit to the export interval suffix (m/h/d)."""
+    u = unit.rstrip("s")
+    if u in ("minute", "min"):
+        return "m"
+    if u in ("hour", "hr"):
+        return "h"
+    if u == "day":
+        return "d"
+    return None
+
+
 def _infer_download_interval(question: str) -> Optional[str]:
-    """Derive the aggregation interval from a named granularity, else None (caller defaults it)."""
+    """Derive the aggregation interval (e.g. '1h', '15m', '1d') from the question, else None.
+
+    Recognises both named granularities ('hourly', 'daily') and explicit numeric
+    intervals ('1 hour interval', 'every 15 minutes', '1h'). A numeric value is only
+    read as an interval when it sits next to interval/cadence wording (or a compact
+    form like '1h'), so a plain time window such as 'last 1 hour' is never mistaken
+    for an interval. The caller defaults the interval when this returns None.
+    """
     q = question.lower()
-    if "daily" in q or "per day" in q or "by day" in q:
+
+    # Compact forms: "1h", "15m", "1d" (optionally hyphenated, e.g. "1-h").
+    compact = re.search(r"\b(\d+)\s*-?\s*(m|h|d)\b", q)
+    if compact:
+        return f"{int(compact.group(1))}{compact.group(2)}"
+
+    # Numeric interval tied to cadence/granularity wording: "every 15 minutes",
+    # "per 2 hours", "interval of 1 day", "1 hour interval", "30 minute buckets".
+    numeric = re.search(
+        r"(?:every|per|each|interval of)\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)\b"
+        r"|(?:intervals?|granularity|resolution)\s+(?:to|of|at|=|:)?\s*(\d+)\s*"
+        r"(minutes?|mins?|hours?|hrs?|days?)\b"
+        r"|(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)\s+"
+        r"(?:intervals?|granularity|resolution|buckets?)",
+        q,
+    )
+    if numeric:
+        num = numeric.group(1) or numeric.group(3) or numeric.group(5)
+        unit = _canon_interval_unit(numeric.group(2) or numeric.group(4) or numeric.group(6))
+        if unit:
+            return f"{int(num)}{unit}"
+
+    # Named granularities.
+    if "daily" in q or "per day" in q or "by day" in q or "every day" in q:
         return "1d"
-    if "hourly" in q or "per hour" in q or "by hour" in q:
+    if "hourly" in q or "per hour" in q or "by hour" in q or "every hour" in q:
         return "1h"
-    if "per minute" in q or "by minute" in q or "minute" in q:
+    if "per minute" in q or "by minute" in q or "every minute" in q or "minute" in q:
         return "1m"
     return None
 
@@ -318,13 +387,21 @@ def _extract_metrics_from_question(question: str) -> List[str]:
 _FALLBACK_COMPARISON_RE = re.compile(r"\b(compare|comparison|versus|vs\.?|between)\b")
 _FALLBACK_ANOMALY_RE = re.compile(r"\b(anomal|spike|outlier|unusual|abnormal|deviation)\b")
 _FALLBACK_AGGREGATION_RE = re.compile(r"\b(trend|average|avg|mean|sum|over\s+the|last\s+\d|past\s+\d|history|historical|weekly|daily)\b")
+# A per-sensor question pairs a device noun with a superlative or a health/offline keyword.
+_FALLBACK_SENSOR_RE = re.compile(r"\b(sensor|sensors|device|devices)\b")
+_FALLBACK_SENSOR_SIGNAL_RE = re.compile(
+    r"\b(highest|lowest|hottest|coldest|max|maximum|min|minimum|faulty|fault|offline|"
+    r"dead|broken|stale|working|down|not\s+reporting|hasn'?t\s+reported|last\s+(?:seen|report))\b"
+)
 
 
 def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
     """Emergency fallback when the LLM router is unreachable. Keeps only unambiguous structural keywords;
     defaults to current_status_db to avoid hallucination via the knowledge executor."""
     q = question.lower()
-    if _FALLBACK_COMPARISON_RE.search(q):
+    if _FALLBACK_SENSOR_RE.search(q) and _FALLBACK_SENSOR_SIGNAL_RE.search(q):
+        intent = IntentType.SENSOR_INSPECTION
+    elif _FALLBACK_COMPARISON_RE.search(q):
         intent = IntentType.COMPARISON_DB
     elif _FALLBACK_ANOMALY_RE.search(q):
         intent = IntentType.ANOMALY_ANALYSIS_DB

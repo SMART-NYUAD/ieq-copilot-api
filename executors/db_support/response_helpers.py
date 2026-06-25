@@ -14,6 +14,7 @@ from prompting.db_prompts import (
     DB_TOOL_RESPONSE_DIRECTIVE,
     DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
     DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
+    DB_TOOL_RESPONSE_DIRECTIVE_IEQ,
     DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
     DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
     DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
@@ -37,13 +38,31 @@ def is_air_quality_query_text(question: str) -> bool:
     q = (question or "").lower()
     if is_issue_triage_query_text(q):
         return True
-    if any(hint in q for hint in ("air quality", "indoor air quality", "ieq")):
+    if any(hint in q for hint in ("air quality", "indoor air quality")):
         return True
     if re.search(r"\bhow\s+(?:is|was)\s+the\s+air\b", q):
         return True
     if re.search(r"\bthe\s+air\b", q) and ("_lab" in q or re.search(r"\b[a-z0-9]+\s+lab\b", q) is not None):
         return True
     return False
+
+
+def is_ieq_index_query_text(question: str) -> bool:
+    """Detect explicit requests for the Indoor Environmental Quality *index* itself.
+
+    This is deliberately distinct from a pollutant air-quality query
+    (`is_air_quality_query_text`): "give me the IEQ data" wants the composite IEQ
+    score and its sub-indices (IAQ/ITC/IAC/IIL), not a CO2/PM2.5/VOC summary.
+    """
+    q = (question or "").lower()
+    ieq_hints = (
+        "ieq",
+        "indoor environmental quality",
+        "environmental quality",
+        "environment quality",
+        "indoor environment",
+    )
+    return any(hint in q for hint in ieq_hints)
 
 
 def is_issue_triage_query_text(question: str) -> bool:
@@ -116,8 +135,18 @@ def is_diagnostic_query_text(question: str) -> bool:
 def db_response_directive(intent: Any, question: str = "") -> str:
     if is_diagnostic_query_text(question):
         return DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC
+    # An explicit IEQ-index ask centers on the composite IEQ score and its
+    # sub-indices — never on CO2/pollutants. Comfort and pollutant air-quality
+    # asks keep their own richer directives below.
+    ieq_index_query = (
+        is_ieq_index_query_text(question)
+        and not is_air_quality_query_text(question)
+        and not is_comfort_assessment_query_text(question)
+    )
     intent_value = getattr(intent, "value", str(intent))
     if intent_value in {"point_lookup_db", "current_status_db"}:
+        if ieq_index_query:
+            return DB_TOOL_RESPONSE_DIRECTIVE_IEQ
         if (
             is_air_quality_query_text(question)
             or is_comfort_assessment_query_text(question)
@@ -129,6 +158,8 @@ def db_response_directive(intent: Any, question: str = "") -> str:
         return DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON
     if intent_value == "anomaly_analysis_db":
         return DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY
+    if ieq_index_query:
+        return DB_TOOL_RESPONSE_DIRECTIVE_IEQ
     return DB_TOOL_RESPONSE_DIRECTIVE
 
 

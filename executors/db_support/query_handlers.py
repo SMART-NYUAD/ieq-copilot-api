@@ -107,6 +107,22 @@ def _requested_metrics(
 
     metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
     is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
+
+    # Explicit IEQ-index ask: report the IEQ composite plus its sub-indices
+    # (IAQ/ITC/IAC/IIL) — NOT the CO2/PM2.5/VOC pollutant pack. Pollutant
+    # "air quality", comfort, and diagnostic asks are handled by their own
+    # packs below.
+    if (
+        db_helpers.is_ieq_index_query_text(question)
+        and not db_helpers.is_air_quality_query_text(question)
+        and not is_comfort_assessment_query
+        and not is_diagnostic_query_text(question)
+    ):
+        ieq_pack = ["ieq", "iaq", "itc", "iac", "iil"]
+        # Only carry over metrics the user explicitly named (e.g. "IEQ and CO2").
+        # Planner-hinted pollutants must not turn an IEQ-only ask into an
+        # air-quality summary.
+        return ieq_pack + [m for m in explicit_metrics if m not in ieq_pack]
     analytical_intents = {
         IntentType.AGGREGATION_DB,
         IntentType.COMPARISON_DB,
@@ -507,6 +523,12 @@ def _handle_aggregation_multi(
         selected_metrics = requested_metrics[:8]
     elif db_helpers.is_comfort_assessment_query_text(question):
         selected_metrics = requested_metrics[:8]
+    elif (
+        db_helpers.is_ieq_index_query_text(question)
+        and not db_helpers.is_air_quality_query_text(question)
+    ):
+        # IEQ index + its four sub-indices.
+        selected_metrics = requested_metrics[:5]
     elif db_helpers.is_air_quality_query_text(question):
         selected_metrics = requested_metrics[:5]
     else:

@@ -67,6 +67,28 @@ class TestInferDownload(unittest.TestCase):
         self.assertEqual(_infer_download_interval("download daily humidity"), "1d")
         self.assertIsNone(_infer_download_interval("download the data"))
 
+    def test_interval_inferred_from_explicit_numeric(self):
+        # The follow-up from the bug report: "1 hour interval" must read as a bucket
+        # size, not a time range.
+        self.assertEqual(
+            _infer_download_interval(
+                "can you set the interval for this to be more granular like a 1 hour interval"
+            ),
+            "1h",
+        )
+        self.assertEqual(_infer_download_interval("set the interval to 1 hour"), "1h")
+        self.assertEqual(_infer_download_interval("make it every 15 minutes"), "15m")
+        self.assertEqual(_infer_download_interval("use a 30 minute interval"), "30m")
+        self.assertEqual(_infer_download_interval("change granularity to 30 minutes"), "30m")
+        self.assertEqual(_infer_download_interval("give me 1h buckets"), "1h")
+        self.assertEqual(_infer_download_interval("interval of 1 day"), "1d")
+
+    def test_time_window_phrases_are_not_read_as_interval(self):
+        # A plain time range must NOT be mistaken for an aggregation interval.
+        self.assertIsNone(_infer_download_interval("download last 1 hour of temperature"))
+        self.assertIsNone(_infer_download_interval("export the last 7 days as csv"))
+        self.assertIsNone(_infer_download_interval("download 24 hours of data"))
+
 
 class TestParseDownload(unittest.TestCase):
     def _build_raw(self, intent, fmt=None, metric=None, interval=None, time_phrase=None, confidence=0.9):
@@ -112,16 +134,32 @@ class TestParseDownload(unittest.TestCase):
 class TestBuildDownloadParams(unittest.TestCase):
     def test_params_carry_required_fields(self):
         dl = _build_download(_make_route(fmt="csv", metric="pm25"), "export last 7 days")
-        self.assertEqual(dl["metric_type"], "pm2.5")
+        self.assertEqual(dl["metric_type"], "pm25")
         self.assertEqual(dl["format"], "csv")
         self.assertEqual(dl["slug"], "smart_lab")
         self.assertIn("T", dl["start"])
         self.assertIn("T", dl["end"])
         self.assertTrue(dl["interval"])
 
-    def test_interval_defaults_when_absent(self):
+    def test_interval_defaults_to_hourly_in_frontend_form(self):
+        # No interval named → default hourly, emitted in the endpoint's spelled-out form.
         dl = _build_download(_make_route(metric="temperature", interval=None), "download the data")
-        self.assertEqual(dl["interval"], "1m")
+        self.assertEqual(dl["interval"], "1hr")
+
+    def test_hour_interval_normalized_to_hr(self):
+        # The endpoint rejects "1h"; the canonical suffix must be spelled "1hr".
+        dl = _build_download(_make_route(metric="temperature", interval="1h"), "download hourly")
+        self.assertEqual(dl["interval"], "1hr")
+
+    def test_minute_and_day_intervals_pass_through(self):
+        dl_m = _build_download(_make_route(metric="temperature", interval="15m"), "download every 15 minutes")
+        self.assertEqual(dl_m["interval"], "15m")
+        dl_d = _build_download(_make_route(metric="temperature", interval="1d"), "download daily")
+        self.assertEqual(dl_d["interval"], "1d")
+
+    def test_window_defaults_to_last_24_hours(self):
+        dl = _build_download(_make_route(metric="temperature"), "download the data")
+        self.assertEqual(dl["window_label"], "last 24 hours")
 
     def test_lab_becomes_slug(self):
         dl = _build_download(_make_route(metric="co2", lab="Smart Lab"), "download co2")
@@ -143,7 +181,7 @@ class TestExecuteDownloadControl(unittest.TestCase):
         ui = meta["ui"]
         self.assertFalse(ui["download_needs_metric"])
         self.assertEqual(ui["download_slug"], "smart_lab")
-        self.assertEqual(ui["download_metric_type"], "pm2.5")
+        self.assertEqual(ui["download_metric_type"], "pm25")
         self.assertEqual(ui["download_format"], "csv")
         self.assertIn("T", ui["download_start"])
         self.assertIn("download_interval", ui)

@@ -16,6 +16,7 @@ class RouteExecutor(str, Enum):
     HEATMAP_CONTROL = "heatmap_control"
     DOWNLOAD_DATA = "download_data"
     IFC_QA = "ifc_qa"
+    SENSOR_INSPECTION = "sensor_inspection"
 
 
 @dataclass(frozen=True)
