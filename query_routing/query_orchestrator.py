@@ -19,6 +19,10 @@ from executors.knowledge_executor import (
     answer_env_question_with_metadata,
     stream_knowledge_tokens,
 )
+from executors.sensor_inspection_executor import (
+    answer_sensor_question_with_metadata,
+    stream_sensor_tokens,
+)
 from query_routing.intent_classifier import IntentType
 from query_routing.llm_router_planner import plan_route, plan_route_async
 from query_routing.metadata_builders import derive_ui_contract
@@ -65,6 +69,8 @@ def _choose_executor(route: RoutePlan) -> RouteExecutor:
         return RouteExecutor.DOWNLOAD_DATA
     if route.intent == IntentType.IFC_MODEL_QA:
         return RouteExecutor.IFC_QA
+    if route.intent == IntentType.SENSOR_INSPECTION:
+        return RouteExecutor.SENSOR_INSPECTION
     if route.intent in _KNOWLEDGE_INTENTS:
         return RouteExecutor.KNOWLEDGE_QA
     return RouteExecutor.DB_QUERY
@@ -286,6 +292,29 @@ def _execute_ifc(question: str, route: RoutePlan) -> Dict[str, Any]:
     }
 
 
+def _execute_sensor_inspection(question: str, lab_name: Optional[str], route: RoutePlan) -> Dict[str, Any]:
+    result = answer_sensor_question_with_metadata(user_question=question, space=lab_name)
+    return {
+        "answer": str(result.get("answer") or ""),
+        "footnotes": [],
+        "citation_sources": list(result.get("indexed_sources") or []),
+        "timescale": "sensors",
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "metadata": {
+            "executor": "sensor_inspection",
+            "intent": route.intent.value,
+            "lab_name": lab_name,
+            "llm_used": bool(result.get("llm_used", False)),
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
+        },
+        "data": None,
+    }
+
+
 def _execute_viewer_control(route: RoutePlan) -> Dict[str, Any]:
     viewer_type = route.viewer_type or "splat"
     confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
@@ -335,21 +364,36 @@ def _execute_heatmap_control(route: RoutePlan) -> Dict[str, Any]:
     }
 
 
-# A download request with no explicit window defaults to the last hour, matching the
-# "default to 1 hour when something is missing" contract of the download-agg-summary endpoint.
-_DOWNLOAD_DEFAULT_HOURS = 1
+# A download request with no explicit window defaults to the last 24 hours.
+_DOWNLOAD_DEFAULT_HOURS = 24
 
 # Canonical metric → metric_type path segment for /spaces/{slug}/metrics/{metric_type}/...
+# The endpoint accepts: co2, humidity, light, noise, pm25, temperature, voc.
 _DOWNLOAD_METRIC_TYPES: Dict[str, str] = {
     "temperature": "temperature",
     "humidity": "humidity",
     "co2": "co2",
     "voc": "voc",
-    "pm25": "pm2.5",
+    "pm25": "pm25",
 }
 
 # Human-friendly metric names for the "which metric?" follow-up question.
 _DOWNLOAD_METRIC_LABELS = "temperature, humidity, CO₂, VOC, or PM2.5"
+
+
+def _to_download_interval(interval: str) -> str:
+    """Normalize the canonical interval suffix (m/h/d) to the form the
+    ``download-agg-summary`` endpoint accepts.
+
+    The router and inference produce compact suffixes (``1h``, ``15m``, ``1d``), but the
+    download endpoint expects hours spelled as ``hr`` — it rejects ``1h``. Minutes and days
+    pass through unchanged. Idempotent: an already-normalized value (``1hr``) is returned as-is.
+    """
+    m = re.fullmatch(r"\s*(\d+)\s*(m|h|d)\s*", (interval or "").lower())
+    if not m:
+        return interval
+    num, unit = m.group(1), m.group(2)
+    return f"{num}{'hr' if unit == 'h' else unit}"
 
 
 def _slugify_space(lab_name: Optional[str]) -> str:
@@ -372,7 +416,7 @@ def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
     start, end, window_label = extract_time_window(question, default_hours=_DOWNLOAD_DEFAULT_HOURS)
     fmt = route.download_format or "csv"
     metric_type = _DOWNLOAD_METRIC_TYPES.get(route.download_metric or "", route.download_metric or "")
-    interval = route.download_interval or download_default_interval()
+    interval = _to_download_interval(route.download_interval or download_default_interval())
     return {
         "slug": _slugify_space(route.lab_name),
         "metric_type": metric_type,
@@ -454,6 +498,8 @@ def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, 
         return _execute_download_control(route, ctx.effective_question)
     if executor == RouteExecutor.IFC_QA:
         return _execute_ifc(ctx.effective_question, route)
+    if executor == RouteExecutor.SENSOR_INSPECTION:
+        return _execute_sensor_inspection(ctx.effective_question, ctx.effective_lab, route)
     if route.intent == IntentType.UNKNOWN_FALLBACK:
         return _execute_unknown_fallback(route)
     if executor == RouteExecutor.KNOWLEDGE_QA:
@@ -536,6 +582,30 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         yield f"data: {json.dumps({'event': 'meta', **ifc_meta})}\n\n"
         yield _status_event("reading_model", "Reading building model…")
         async for chunk in stream_ifc_tokens(user_question=ctx.effective_question):
+            yield chunk
+        return
+
+    if executor == RouteExecutor.SENSOR_INSPECTION:
+        sensor_meta = {
+            "executor": "sensor_inspection",
+            "intent": route.intent.value,
+            "lab_name": ctx.effective_lab,
+            "llm_used": True,
+            "route_confidence": route.confidence,
+            "planner_model": route.model,
+            "fallback_used": route.fallback_used,
+            "ui": {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
+            "timescale": "sensors",
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "visualization_type": "none",
+            "chart": None,
+            "citation_sources": [],
+            "footnotes": [],
+        }
+        yield f"data: {json.dumps({'event': 'meta', **sensor_meta})}\n\n"
+        yield _status_event("reading_sensors", "Reading sensor status…")
+        async for chunk in stream_sensor_tokens(user_question=ctx.effective_question, space=ctx.effective_lab):
             yield chunk
         return
 

@@ -15,4 +15,5 @@ class IntentType(str, Enum):
     HEATMAP_CONTROL = "heatmap_control"
     DOWNLOAD_DATA = "download_data"
     IFC_MODEL_QA = "ifc_model_qa"
+    SENSOR_INSPECTION = "sensor_inspection"
     UNKNOWN_FALLBACK = "unknown_fallback"

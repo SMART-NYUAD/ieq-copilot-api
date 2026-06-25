@@ -100,6 +100,12 @@ def _requested_time_phrase(question: str) -> Optional[str]:
     )
     if g:
         return g.group(0)
+    # Explicit bounded date range ("from May 1 to May 8", "between May 1 and
+    # May 8"). Must be checked before the single-date fallback so a follow-up
+    # ("what was the peak?") keeps BOTH bounds, not just the start day.
+    r = _explicit_date_range_phrase(q)
+    if r:
+        return r
     # Explicit calendar dates ("June 2", "2 June", "on the 2nd of June",
     # "2026-06-02", "June"). These must be carried over too so a follow-up that
     # only changes the metric ("what about humidity?") keeps the prior day.
@@ -115,6 +121,12 @@ _MONTH_NAMES = (
     "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
 )
 _EXPLICIT_DATE_PATTERNS = (
+    # "first/second/.../last week of May" — must precede the bare-month pattern so a
+    # follow-up carries the whole phrase (not just "May", which would widen the
+    # window to the entire month). extract_time_window resolves this phrase directly.
+    re.compile(
+        r"\b(?:first|second|third|fourth|fifth|last)\s+week\s+of\s+(?:" + _MONTH_NAMES + r")\b"
+    ),
     re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b"),
     re.compile(r"\b\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:" + _MONTH_NAMES + r")\b"),
     re.compile(r"\b(?:" + _MONTH_NAMES + r")\s+\d{1,2}(?:st|nd|rd|th)?\b"),
@@ -128,6 +140,31 @@ def _explicit_date_phrase(question: str) -> Optional[str]:
         m = pattern.search(q)
         if m:
             return m.group(0)
+    return None
+
+
+# "from X to Y" / "between X and Y" range connectors, mirroring the parser in
+# query_parsing.extract_time_window so a carried phrase round-trips cleanly.
+_DATE_RANGE_RE = re.compile(
+    r"\b(?:from|between)\s+(.+?)\s+(?:to|until|through|thru|till|and|[-–—])\s+(.+?)(?:[?.!,]|$)"
+)
+
+
+def _explicit_date_range_phrase(question: str) -> Optional[str]:
+    """Return a normalized ``from <start> to <end>`` phrase when the question
+
+    names an explicit bounded date range, else None. The normalized form is what
+    ``extract_time_window`` expects (its range parser requires a from/between
+    lead), so carrying it over keeps both bounds on a follow-up turn.
+    """
+    q = str(question or "").lower()
+    m = _DATE_RANGE_RE.search(q)
+    if not m:
+        return None
+    start_date = _explicit_date_phrase(m.group(1))
+    end_date = _explicit_date_phrase(m.group(2))
+    if start_date and end_date:
+        return f"from {start_date} to {end_date}"
     return None
 
 

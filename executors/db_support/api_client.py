@@ -25,6 +25,7 @@ _SPACES_CACHE_TTL_SECONDS = 300.0
 _AGG_CACHE_TTL_SECONDS = 45.0
 _INDOOR_CACHE_TTL_SECONDS = 45.0
 _PREDICTIONS_CACHE_TTL_SECONDS = 120.0
+_HEATMAP_CACHE_TTL_SECONDS = 30.0
 
 _CLIENT: Optional[httpx.Client] = None
 _RESPONSE_CACHE: Dict[str, Tuple[float, Any]] = {}
@@ -204,6 +205,37 @@ def fetch_space_metrics(slug: str) -> Optional[Dict[str, Any]]:
     if stale is not None:
         return stale[1]
     return None
+
+
+def fetch_heatmap_metrics(slug: str) -> List[Dict[str, Any]]:
+    """GET /spaces/{slug}/heatmap/metrics — per-device latest readings.
+
+    Returns the ``devices`` list, where each device carries its ``metrics`` with
+    ``latest_value``/``unit``/``latest_timestamp``. Used by the sensor-inspection
+    executor to rank individual sensors and flag stale/offline ones. Returns ``[]``
+    on failure (falling back to the last cached value when one exists).
+    """
+    cache_key = f"heatmap_metrics:{slug}"
+    cached = _cache_get(cache_key, _HEATMAP_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    try:
+        resp = _get_client().get(
+            f"{API_BASE_URL}/spaces/{slug}/heatmap/metrics",
+            headers={"accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            devices = list(data.get("devices") or [])
+            _cache_set(cache_key, devices)
+            return devices
+    except Exception:
+        pass
+    stale = _RESPONSE_CACHE.get(cache_key)
+    if stale is not None:
+        return stale[1]
+    return []
 
 
 def fetch_metric_agg_summary(

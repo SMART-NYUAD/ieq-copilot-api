@@ -96,6 +96,21 @@ You are answering a current air-quality point lookup from a structured DB query 
 - If the question is risk-focused, start with the risk level and the top risk drivers (or say no major risk is evident).
 """.strip()
 
+_BASE_IEQ = """
+You are answering a question about the Indoor Environmental Quality (IEQ) index from a structured DB query result.
+- IEQ is a well-defined composite Indoor Environmental Quality index (0–100, unitless, HIGHER = BETTER). Do not question or speculate about what it represents, and never describe it with % or ppm.
+- LEAD WITH THE IEQ INDEX SCORE — this is the metric the user asked for. Do NOT lead with CO2 or any single pollutant, and do not reframe the answer as an "air quality" report.
+- State the overall IEQ score and classify it (e.g. high ≥75, medium, low) for the analysis window, using the provided time bounds ("from ... to ...").
+- If IEQ sub-indices are available in rows/context, report every available sub-index explicitly:
+  IAQ (air quality), ITC (thermal comfort), IAC (acoustic comfort), and IIL (illumination). Each is also 0–100 where higher = better.
+- Never swap sub-index meanings (IAC is acoustic comfort, not air quality). A high ITC (e.g. 90+) means EXCELLENT thermal comfort — never describe it as warm, hot, or stuffy.
+- Pollutant metrics (CO2, PM2.5, VOC) are NOT the subject here. Mention them only if they appear in the data, and only as brief supporting context AFTER the IEQ index and its sub-indices — never as the headline.
+- Use a friendly, reassuring tone; explain in plain language what the IEQ score means for occupants.
+- When `display_start` and `display_end` are present in measured room facts, copy those values verbatim when mentioning the analysis window. Do not rewrite or infer date/month values.
+- If the user asks for recommendations or actions, provide specific actionable ones grounded in the data. If none were requested, end with the assessment only.
+- If IEQ is not available in this window, say so clearly.
+""".strip()
+
 _BASE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 The comparison may be cross-space (two labs) or temporal (same lab, two time periods).
@@ -158,6 +173,7 @@ _SUFFIX = (
 DB_TOOL_RESPONSE_DIRECTIVE = f"{_BASE_DIRECTIVE}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = f"{_BASE_POINT_LOOKUP}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = f"{_BASE_AIR_QUALITY_POINT_LOOKUP}{_SUFFIX}".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_IEQ = f"{_BASE_IEQ}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"{_BASE_COMPARISON}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"{_BASE_ANOMALY}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = f"{_BASE_DIAGNOSTIC}{_SUFFIX}".strip()

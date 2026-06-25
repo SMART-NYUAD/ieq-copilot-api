@@ -239,11 +239,24 @@ def download_default_interval() -> str:
     """Default aggregation interval for the download-agg-summary endpoint.
 
     Used when the question does not name a granularity. Override with
-    ``DOWNLOAD_DEFAULT_INTERVAL`` (e.g. ``1m``, ``1h``, ``1d``).
+    ``DOWNLOAD_DEFAULT_INTERVAL`` (e.g. ``1m``, ``1h``, ``1d``). Defaults to hourly
+    (``1h``) — the download endpoint expects the spelled-out ``1hr`` form, which the
+    orchestrator normalizes to before emitting the meta event.
     """
     ensure_env_loaded()
     raw = (os.getenv("DOWNLOAD_DEFAULT_INTERVAL", "") or "").strip()
-    return raw or "1m"
+    return raw or "1h"
+
+
+def sensor_stale_hours() -> int:
+    """Age threshold (hours) above which a sensor reading is treated as stale/offline.
+
+    The sensor-inspection executor flags a device's metric as faulty/offline when its
+    ``latest_timestamp`` is older than this many hours. Override with ``SENSOR_STALE_HOURS``
+    (default 24 — i.e. a sensor that hasn't reported in the last day).
+    """
+    ensure_env_loaded()
+    return _parse_int(os.getenv("SENSOR_STALE_HOURS", "24"), default=24, minimum=1)
 
 
 def router_semantic_rewrite_enabled() -> bool:

@@ -880,5 +880,58 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual((result.get("rows") or [{}])[0].get("lab_space"), "smart_lab")
 
 
+class IeqIndexQueryTests(unittest.TestCase):
+    """An explicit IEQ-index ask reports the IEQ composite + sub-indices, not CO2."""
+
+    def test_requested_metrics_returns_ieq_family_not_pollutant_pack(self):
+        from executors.db_support.query_handlers import _requested_metrics
+
+        metrics = _requested_metrics(
+            "Give me the IEQ data from May 1st to May 8th",
+            explicit_metrics=["ieq"],
+            hinted_metrics=["ieq", "co2", "pm25"],
+            intent=IntentType.AGGREGATION_DB,
+        )
+        # IEQ index leads, with its sub-indices — no CO2/PM2.5 pollutant pack.
+        self.assertEqual(metrics[0], "ieq")
+        for sub in ("iaq", "itc", "iac", "iil"):
+            self.assertIn(sub, metrics)
+        self.assertNotIn("co2", metrics)
+        self.assertNotIn("pm25", metrics)
+
+    def test_air_quality_query_is_unaffected(self):
+        from executors.db_support.query_handlers import _requested_metrics
+
+        metrics = _requested_metrics(
+            "How is the air quality from May 1st to May 8th?",
+            explicit_metrics=[],
+            hinted_metrics=[],
+            intent=IntentType.AGGREGATION_DB,
+        )
+        self.assertIn("co2", metrics)
+        self.assertIn("ieq", metrics)
+
+    def test_ieq_query_is_not_treated_as_air_quality(self):
+        from executors.db_support.response_helpers import (
+            is_air_quality_query_text,
+            is_ieq_index_query_text,
+        )
+
+        self.assertTrue(is_ieq_index_query_text("Give me the IEQ data from May 1st to May 8th"))
+        self.assertFalse(is_air_quality_query_text("Give me the IEQ data from May 1st to May 8th"))
+        # "air quality" remains a pollutant air-quality query.
+        self.assertTrue(is_air_quality_query_text("How is the air quality today?"))
+
+    def test_ieq_directive_leads_with_ieq_not_co2(self):
+        from executors.db_support.response_helpers import db_response_directive
+
+        directive = db_response_directive(
+            IntentType.AGGREGATION_DB,
+            question="Give me the IEQ data from May 1st to May 8th",
+        )
+        self.assertIn("LEAD WITH THE IEQ INDEX SCORE", directive)
+        self.assertIn("Do NOT lead with CO2", directive)
+
+
 if __name__ == "__main__":
     unittest.main()
