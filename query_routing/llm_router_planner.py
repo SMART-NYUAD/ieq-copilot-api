@@ -49,7 +49,10 @@ _SYSTEM_PROMPT = (
     '  "heatmap_metric": one of ["temperature", "humidity", "voc", "pm25"] when intent is '
     "heatmap_control and a metric is named, else null\n"
     '  "download_format": one of ["csv", "json"] when intent is download_data (default "csv"), else null\n'
-    '  "download_type": one of ["aggregated", "raw"] when intent is download_data (default "aggregated"), else null\n\n'
+    '  "download_metric": the single metric to export when intent is download_data, one of '
+    '["temperature", "humidity", "co2", "voc", "pm25"] — null if the user did not name one\n'
+    '  "download_interval": aggregation interval phrase for the export when intent is download_data '
+    '(e.g. "1m", "1h", "1d"), else null\n\n'
     "Routing rules:\n"
     "- DOMAIN GUARDRAIL: This assistant only handles indoor environmental quality, sensor data, "
     "building/BIM/IFC model questions, viewer-control, and heatmap-overlay requests. If the question is unrelated "
@@ -126,12 +129,15 @@ _SYSTEM_PROMPT = (
     "'set the heatmap metric to humidity' (on, humidity).\n"
     "- download_data: The user wants to DOWNLOAD, EXPORT, or SAVE the sensor readings as a file "
     "(CSV/JSON), or get a data dump / spreadsheet / report file of the measurements. This is a UI "
-    "action that hands the frontend a download link — it never returns sensor values inline, and it "
-    "is NOT a question about the data. Carry the time window in `time_phrase` exactly as stated "
-    "(e.g. 'last 7 days', 'March'), default to the full available range when no window is given. "
+    "action that hands the frontend the download parameters — it never returns sensor values inline, "
+    "and it is NOT a question about the data. Carry the time window in `time_phrase` exactly as stated "
+    "(e.g. 'last 7 days', 'March'); when no window is given the system defaults to the last hour. "
     "Set download_format to 'json' only if the user explicitly asks for JSON, else 'csv'. "
-    "Set download_type to 'raw' only if the user explicitly asks for raw/unaggregated readings, "
-    "else 'aggregated'. Distinguish from aggregation_db: 'what was the average CO2 last week?' is a "
+    "Set download_metric to the single metric the user wants to export (temperature, humidity, co2, "
+    "voc, pm25); leave it null if the user did not name a metric — a metric is REQUIRED, so the system "
+    "will ask the user which metric when it is missing. Set download_interval to an aggregation "
+    "granularity ('1m', '1h', '1d') only if the user names one (e.g. 'hourly', 'daily'), else null. "
+    "Distinguish from aggregation_db: 'what was the average CO2 last week?' is a "
     "data QUESTION (aggregation_db); 'download last week's data' / 'export the readings' is download_data. "
     "Examples: 'download the data', 'export the sensor readings', 'export last 7 days as CSV', "
     "'can I get a CSV of the readings?', 'download March data', 'save the measurements to a file', "
@@ -220,7 +226,31 @@ _HEATMAP_OFF_HINTS = (
 
 
 _VALID_DOWNLOAD_FORMATS = {"csv", "json"}
-_VALID_DOWNLOAD_TYPES = {"aggregated", "raw"}
+_VALID_DOWNLOAD_METRICS = {"temperature", "humidity", "co2", "voc", "pm25"}
+
+# Canonical metric → metric_type path segment expected by the download-agg-summary endpoint.
+_DOWNLOAD_METRIC_TYPES: Dict[str, str] = {
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "co2": "co2",
+    "voc": "voc",
+    "pm25": "pm2.5",
+}
+
+# Aliases for the downloadable metrics (superset of the heatmap aliases — also covers co2).
+_DOWNLOAD_METRIC_ALIASES: Dict[str, str] = {
+    "temperature": "temperature",
+    "temp": "temperature",
+    "humidity": "humidity",
+    "tvoc": "voc",
+    "voc": "voc",
+    "co2": "co2",
+    "carbon dioxide": "co2",
+    "pm 2.5": "pm25",
+    "pm2.5": "pm25",
+    "pm 25": "pm25",
+    "pm25": "pm25",
+}
 
 
 def _infer_download_format(question: str) -> str:
@@ -228,12 +258,28 @@ def _infer_download_format(question: str) -> str:
     return "json" if "json" in question.lower() else "csv"
 
 
-def _infer_download_type(question: str) -> str:
-    """Pick aggregated vs raw from question text when the LLM omits it. Defaults to aggregated."""
+def _infer_download_metric(question: str) -> Optional[str]:
+    """Derive the export metric from question text without regex when the LLM omits it.
+
+    Returns None when no metric is named — the caller treats that as "must ask the user".
+    """
     q = question.lower()
-    if "raw" in q or "unaggregated" in q or "un-aggregated" in q:
-        return "raw"
-    return "aggregated"
+    for alias in sorted(_DOWNLOAD_METRIC_ALIASES, key=len, reverse=True):
+        if alias in q:
+            return _DOWNLOAD_METRIC_ALIASES[alias]
+    return None
+
+
+def _infer_download_interval(question: str) -> Optional[str]:
+    """Derive the aggregation interval from a named granularity, else None (caller defaults it)."""
+    q = question.lower()
+    if "daily" in q or "per day" in q or "by day" in q:
+        return "1d"
+    if "hourly" in q or "per hour" in q or "by hour" in q:
+        return "1h"
+    if "per minute" in q or "by minute" in q or "minute" in q:
+        return "1m"
+    return None
 
 
 def _infer_heatmap_metric(question: str) -> Optional[str]:
@@ -358,12 +404,16 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         heatmap_metric = raw_metric if raw_metric in _VALID_HEATMAP_METRICS else _infer_heatmap_metric(question)
 
     download_format: Optional[str] = None
-    download_type: Optional[str] = None
+    download_metric: Optional[str] = None
+    download_interval: Optional[str] = None
     if intent == IntentType.DOWNLOAD_DATA:
         raw_format = str(data.get("download_format") or "").strip().lower()
         download_format = raw_format if raw_format in _VALID_DOWNLOAD_FORMATS else _infer_download_format(question)
-        raw_type = str(data.get("download_type") or "").strip().lower()
-        download_type = raw_type if raw_type in _VALID_DOWNLOAD_TYPES else _infer_download_type(question)
+        raw_metric = str(data.get("download_metric") or "").strip().lower()
+        raw_metric = _METRIC_CANONICAL.get(raw_metric, raw_metric)
+        download_metric = raw_metric if raw_metric in _VALID_DOWNLOAD_METRICS else _infer_download_metric(question)
+        raw_interval = str(data.get("download_interval") or "").strip().lower()
+        download_interval = raw_interval or _infer_download_interval(question)
 
     return RoutePlan(
         intent=intent,
@@ -378,7 +428,8 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         heatmap_action=heatmap_action,
         heatmap_metric=heatmap_metric,
         download_format=download_format,
-        download_type=download_type,
+        download_metric=download_metric,
+        download_interval=download_interval,
     )
 
 

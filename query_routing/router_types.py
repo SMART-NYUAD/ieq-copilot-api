@@ -32,4 +32,5 @@ class RoutePlan:
     heatmap_action: Optional[str] = None   # "on" | "off" when intent is heatmap_control
     heatmap_metric: Optional[str] = None   # temperature | humidity | voc | pm25, else None
     download_format: Optional[str] = None  # "csv" | "json" when intent is download_data
-    download_type: Optional[str] = None    # "aggregated" | "raw" when intent is download_data
+    download_metric: Optional[str] = None  # canonical metric (temperature|humidity|co2|voc|pm25) — REQUIRED to fulfil a download
+    download_interval: Optional[str] = None  # aggregation interval (e.g. "1m", "1h", "1d") when intent is download_data

@@ -223,26 +223,27 @@ def ifc_model_path() -> str:
     return str(Path(__file__).resolve().parent / "smart.ifc")
 
 
-def download_base_url() -> str:
-    """Base URL of the sensor-readings download endpoint the frontend opens.
+def download_space_slug() -> str:
+    """Default space slug used in the download-agg-summary endpoint path.
 
-    Defaults to the production endpoint; override with ``DOWNLOAD_BASE_URL``.
+    The frontend calls ``/spaces/{slug}/metrics/{metric_type}/download-agg-summary``;
+    this is the ``{slug}`` to use when the question names no specific space. Override
+    with ``DOWNLOAD_SPACE_SLUG``.
     """
     ensure_env_loaded()
-    raw = (os.getenv("DOWNLOAD_BASE_URL", "") or "").strip()
-    if raw:
-        return raw.rstrip("/")
-    return "https://api.smart-crg.com/download/sensor-readings"
+    raw = (os.getenv("DOWNLOAD_SPACE_SLUG", "") or "").strip()
+    return raw or "smart_lab"
 
 
-def download_sensor_alias() -> str:
-    """Sensor alias passed to the download endpoint.
+def download_default_interval() -> str:
+    """Default aggregation interval for the download-agg-summary endpoint.
 
-    Single-sensor deployment for now; override with ``DOWNLOAD_SENSOR_ALIAS``.
+    Used when the question does not name a granularity. Override with
+    ``DOWNLOAD_DEFAULT_INTERVAL`` (e.g. ``1m``, ``1h``, ``1d``).
     """
     ensure_env_loaded()
-    raw = (os.getenv("DOWNLOAD_SENSOR_ALIAS", "") or "").strip()
-    return raw or "Atmocube Sensor 02"
+    raw = (os.getenv("DOWNLOAD_DEFAULT_INTERVAL", "") or "").strip()
+    return raw or "1m"
 
 
 def router_semantic_rewrite_enabled() -> bool:
