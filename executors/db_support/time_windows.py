@@ -50,6 +50,45 @@ def format_display_window_bounds(window_start: datetime, window_end: datetime) -
     return format_display_datetime(window_start), format_display_datetime(window_end)
 
 
+def granularity_hours_for_window(window_start: datetime, window_end: datetime) -> int:
+    """Derive the aggregation granularity (hours per bucket) from the window span.
+
+    Mirrors the frontend's range-based granularity rule for the
+    ``indoor-data`` / ``agg-summary`` endpoints:
+
+    - a month or more  → 12 hours
+    - a week up to a month → 6 hours
+    - less than a week → 1 hour
+    """
+    try:
+        span_hours = max(0.0, (window_end - window_start).total_seconds() / 3600.0)
+    except Exception:
+        span_hours = 0.0
+    span_days = span_hours / 24.0
+    if span_days >= 28.0:
+        return 12
+    if span_days >= 7.0:
+        return 6
+    return 1
+
+
+def widen_window_to_min_span(
+    window_start: datetime, window_end: datetime, min_hours: float
+) -> Tuple[datetime, datetime]:
+    """Extend ``window_start`` backward so the span is at least ``min_hours``.
+
+    Used where downstream analysis (trend/anomaly baselines) needs a minimum
+    number of buckets regardless of the user's stated window.
+    """
+    try:
+        span_hours = (window_end - window_start).total_seconds() / 3600.0
+    except Exception:
+        return window_start, window_end
+    if span_hours < float(min_hours):
+        return window_end - timedelta(hours=float(min_hours)), window_end
+    return window_start, window_end
+
+
 def wants_time_series(question: str) -> bool:
     q = (question or "").lower()
     hints = (

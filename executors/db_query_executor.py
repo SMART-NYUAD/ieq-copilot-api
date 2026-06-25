@@ -28,6 +28,7 @@ from executors.knowledge_executor import (
 from executors.db_support import query_handlers as db_handlers
 from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
+from executors.db_support.time_windows import granularity_hours_for_window
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from http_schemas import validate_tool_evidence
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
@@ -198,9 +199,10 @@ def _attach_time_series_context(
     if len(series_rows) < 2 and resolved_lab_name and metric_alias:
         try:
             from executors.db_support import api_client as db_api
+            from executors.db_support import time_windows as db_time_windows
 
-            window_hours = db_api.window_hours_from_datetimes(window_start, window_end)
-            fetched = db_api.fetch_timeseries_rows(resolved_lab_name, metric_alias, max(window_hours, 6))
+            fetch_start, fetch_end = db_time_windows.widen_window_to_min_span(window_start, window_end, 6)
+            fetched = db_api.fetch_timeseries_rows(resolved_lab_name, metric_alias, fetch_start, fetch_end)
             if fetched:
                 series_rows = fetched
         except Exception:
@@ -373,6 +375,7 @@ def prepare_db_query(
                 "end": window_end.isoformat(),
                 "display_start": display_start,
                 "display_end": display_end,
+                "interval_hours": granularity_hours_for_window(window_start, window_end),
             },
             "resolved_lab_name": resolved_lab_name,
             "knowledge_cards": [],
@@ -493,6 +496,7 @@ def prepare_db_query(
             "end": window_end.isoformat(),
             "display_start": display_start,
             "display_end": display_end,
+            "interval_hours": granularity_hours_for_window(window_start, window_end),
         },
         "resolved_lab_name": resolved_lab_name,
         "knowledge_cards": knowledge_cards,

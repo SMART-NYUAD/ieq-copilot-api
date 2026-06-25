@@ -25,6 +25,89 @@ from executors.db_support.query_parsing import (
     strip_conversation_context,
     validate_db_execution_invariants,
 )
+from executors.db_support.time_windows import (
+    granularity_hours_for_window,
+    widen_window_to_min_span,
+)
+
+
+class GranularityRuleTests(unittest.TestCase):
+    """The aggregation granularity (interval_hours) derived from the window span."""
+
+    def _gran(self, hours):
+        end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        start = end - timedelta(hours=hours)
+        return granularity_hours_for_window(start, end)
+
+    def test_less_than_a_week_is_hourly(self):
+        self.assertEqual(self._gran(1), 1)
+        self.assertEqual(self._gran(24), 1)
+        self.assertEqual(self._gran(6 * 24), 1)
+
+    def test_a_week_up_to_a_month_is_six_hours(self):
+        self.assertEqual(self._gran(7 * 24), 6)
+        self.assertEqual(self._gran(20 * 24), 6)
+
+    def test_a_month_or_more_is_twelve_hours(self):
+        self.assertEqual(self._gran(28 * 24), 12)
+        self.assertEqual(self._gran(31 * 24), 12)
+        self.assertEqual(self._gran(120 * 24), 12)
+
+    def test_widen_window_extends_short_spans_only(self):
+        end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        start = end - timedelta(hours=1)
+        ws, we = widen_window_to_min_span(start, end, 6)
+        self.assertEqual(we, end)
+        self.assertAlmostEqual((we - ws).total_seconds(), 6 * 3600.0, delta=1.0)
+        # A window already wider than the minimum is left untouched.
+        wide_start = end - timedelta(hours=48)
+        ws2, we2 = widen_window_to_min_span(wide_start, end, 6)
+        self.assertEqual((ws2, we2), (wide_start, end))
+
+
+class TimeRangeParsingTests(unittest.TestCase):
+    """Calendar-week and explicit 'from X to Y' range parsing for the data endpoints."""
+
+    def test_first_week_of_month_resolves_to_seven_day_window(self):
+        start, end, label = extract_time_window("get the pm2.5 from the first week of July")
+        self.assertEqual(start.month, 7)
+        self.assertEqual(start.day, 1)
+        self.assertEqual((end - start).days, 7)
+        self.assertIn("first week of July", label)
+
+    def test_second_week_of_month_offsets_by_seven_days(self):
+        start, end, _ = extract_time_window("voc in the second week of August")
+        self.assertEqual(start.month, 8)
+        self.assertEqual(start.day, 8)
+        self.assertEqual((end - start).days, 7)
+
+    def test_last_week_of_month_ends_at_month_boundary(self):
+        start, end, _ = extract_time_window("co2 in the last week of January 2025")
+        self.assertEqual(start.month, 1)
+        self.assertEqual(start.day, 25)
+        self.assertEqual(end.month, 2)
+        self.assertEqual(end.day, 1)
+
+    def test_explicit_from_to_date_range(self):
+        start, end, label = extract_time_window("pm2.5 data from July 1 to July 7 2025")
+        self.assertEqual((start.month, start.day, start.year), (7, 1, 2025))
+        # End day is inclusive — window covers through the whole of July 7.
+        self.assertEqual((end.month, end.day), (7, 8))
+        self.assertIn("–", label)
+
+    def test_explicit_iso_from_to_range(self):
+        start, end, _ = extract_time_window("temperature from 2025-07-01 to 2025-07-08")
+        self.assertEqual((start.month, start.day, start.year), (7, 1, 2025))
+        self.assertEqual((end.month, end.day, end.year), (7, 9, 2025))
+
+    def test_between_and_range(self):
+        start, end, _ = extract_time_window("show humidity between july 3 and july 10 2025")
+        self.assertEqual((start.month, start.day), (7, 3))
+        self.assertEqual((end.month, end.day), (7, 11))
+
+    def test_range_phrases_count_as_explicit_time_hint(self):
+        self.assertTrue(has_explicit_time_hint("pm2.5 from July 1 to July 7"))
+        self.assertTrue(has_explicit_time_hint("co2 in the first week of July"))
 
 
 class DbDefaultWindowTests(unittest.TestCase):
