@@ -255,15 +255,6 @@ _HEATMAP_OFF_HINTS = (
 _VALID_DOWNLOAD_FORMATS = {"csv", "json"}
 _VALID_DOWNLOAD_METRICS = {"temperature", "humidity", "co2", "voc", "pm25"}
 
-# Canonical metric → metric_type path segment expected by the download-agg-summary endpoint.
-_DOWNLOAD_METRIC_TYPES: Dict[str, str] = {
-    "temperature": "temperature",
-    "humidity": "humidity",
-    "co2": "co2",
-    "voc": "voc",
-    "pm25": "pm2.5",
-}
-
 # Aliases for the downloadable metrics (superset of the heatmap aliases — also covers co2).
 _DOWNLOAD_METRIC_ALIASES: Dict[str, str] = {
     "temperature": "temperature",

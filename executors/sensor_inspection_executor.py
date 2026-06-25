@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from core_settings import (
-    download_space_slug,
+    slugify_space,
     ollama_base_url,
     ollama_model,
     ollama_temperature,
@@ -83,14 +83,6 @@ _HEALTH_RE = re.compile(
     r"\b(faulty|fault|offline|dead|broken|stale|down|not\s+reporting|hasn'?t\s+reported|"
     r"last\s+(?:seen|report(?:ed)?)|working|online|alive|disconnected)\b"
 )
-
-
-def _resolve_slug(lab: Optional[str]) -> str:
-    """Turn a lab/space name into the API {slug}, falling back to the configured default."""
-    if not lab:
-        return download_space_slug()
-    slug = re.sub(r"[^a-z0-9]+", "_", lab.strip().lower()).strip("_")
-    return slug or download_space_slug()
 
 
 def _parse_ts(raw: Any) -> Optional[datetime]:
@@ -305,7 +297,7 @@ def _no_data_answer() -> str:
 
 def answer_sensor_question_with_metadata(user_question: str, space: Optional[str] = None) -> Dict[str, Any]:
     """Synchronously answer a per-sensor question with grounding metadata."""
-    slug = _resolve_slug(space)
+    slug = slugify_space(space)
     threshold = sensor_stale_hours()
     now = datetime.now(tz=timezone.utc)
     devices = api_client.fetch_heatmap_metrics(slug)
@@ -353,7 +345,7 @@ def answer_sensor_question_with_metadata(user_question: str, space: Optional[str
 
 async def stream_sensor_tokens(user_question: str, space: Optional[str] = None) -> AsyncIterator[str]:
     """Stream a per-sensor answer as SSE token events."""
-    slug = _resolve_slug(space)
+    slug = slugify_space(space)
     threshold = sensor_stale_hours()
     now = datetime.now(tz=timezone.utc)
     devices = api_client.fetch_heatmap_metrics(slug)

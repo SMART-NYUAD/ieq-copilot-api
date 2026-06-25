@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi.concurrency import run_in_threadpool
 
-from core_settings import download_default_interval, download_space_slug
+from core_settings import download_default_interval, slugify_space
 from executors.db_query_executor import prepare_db_query, run_db_query, stream_db_tokens
 from executors.db_support.query_parsing import extract_time_window
 from executors.ifc_executor import (
@@ -396,21 +396,13 @@ def _to_download_interval(interval: str) -> str:
     return f"{num}{'hr' if unit == 'h' else unit}"
 
 
-def _slugify_space(lab_name: Optional[str]) -> str:
-    """Turn a lab/space name into the {slug} path segment, falling back to the configured default."""
-    if not lab_name:
-        return download_space_slug()
-    slug = re.sub(r"[^a-z0-9]+", "_", lab_name.strip().lower()).strip("_")
-    return slug or download_space_slug()
-
-
 def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
     """Resolve the download request into the parameters the frontend needs for the
     ``/spaces/{slug}/metrics/{metric_type}/download-agg-summary`` endpoint.
 
     We hand the frontend the discrete parameters (not a pre-built URL) so it can call the
     endpoint itself. The time window is resolved server-side (mirroring the DB path, defaulting
-    to the last hour) so the frontend never reconstructs date ranges. Callers must ensure a
+    to the last 24 hours) so the frontend never reconstructs date ranges. Callers must ensure a
     metric is present before calling this — see :func:`_execute_download_control`.
     """
     start, end, window_label = extract_time_window(question, default_hours=_DOWNLOAD_DEFAULT_HOURS)
@@ -418,7 +410,7 @@ def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
     metric_type = _DOWNLOAD_METRIC_TYPES.get(route.download_metric or "", route.download_metric or "")
     interval = _to_download_interval(route.download_interval or download_default_interval())
     return {
-        "slug": _slugify_space(route.lab_name),
+        "slug": slugify_space(route.lab_name),
         "metric_type": metric_type,
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -513,6 +505,41 @@ def _status_event(stage: str, message: str) -> str:
     return f"data: {json.dumps({'event': 'status', 'stage': stage, 'message': message})}\n\n"
 
 
+def _control_stream_meta(
+    executor: str,
+    route: RoutePlan,
+    ui: Dict[str, Any],
+    *,
+    lab_name: Optional[str] = None,
+    llm_used: bool = False,
+    timescale: str = "instant",
+) -> Dict[str, Any]:
+    """Flat SSE ``meta`` payload for the short-circuit control branches
+    (viewer / heatmap / download / sensor / guardrail).
+
+    These branches bypass the DB/evidence layers, so they each emit the same fixed
+    field set with no chart/citations. Centralizing it here keeps the branches from
+    drifting apart. Callers spread the result after ``{'event': 'meta'}``.
+    """
+    return {
+        "executor": executor,
+        "intent": route.intent.value,
+        "lab_name": lab_name,
+        "llm_used": llm_used,
+        "route_confidence": route.confidence,
+        "planner_model": route.model,
+        "fallback_used": route.fallback_used,
+        "ui": ui,
+        "timescale": timescale,
+        "cards_retrieved": 0,
+        "recent_card": False,
+        "visualization_type": "none",
+        "chart": None,
+        "citation_sources": [],
+        "footnotes": [],
+    }
+
+
 async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "query_stream") -> AsyncIterator[str]:
     """Stream a query given a fully-resolved ConversationContext."""
     yield _status_event("routing", "Classifying question…")
@@ -522,7 +549,8 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
     if executor == RouteExecutor.VIEWER_CONTROL:
         viewer_type = route.viewer_type or "splat"
         confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
-        yield f"data: {json.dumps({'event': 'meta', 'executor': 'viewer_control', 'intent': route.intent.value, 'lab_name': None, 'llm_used': False, 'route_confidence': route.confidence, 'planner_model': route.model, 'fallback_used': route.fallback_used, 'ui': {'viewer_type': viewer_type}, 'timescale': 'instant', 'cards_retrieved': 0, 'recent_card': False, 'visualization_type': 'none', 'chart': None, 'citation_sources': [], 'footnotes': []})}\n\n"
+        meta = _control_stream_meta("viewer_control", route, {"viewer_type": viewer_type})
+        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return
@@ -531,32 +559,18 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         action = route.heatmap_action or "on"
         metric = route.heatmap_metric
         confirmation = _heatmap_confirmation(action, metric)
-        yield f"data: {json.dumps({'event': 'meta', 'executor': 'heatmap_control', 'intent': route.intent.value, 'lab_name': None, 'llm_used': False, 'route_confidence': route.confidence, 'planner_model': route.model, 'fallback_used': route.fallback_used, 'ui': {'heatmap_action': action, 'heatmap_metric': metric}, 'timescale': 'instant', 'cards_retrieved': 0, 'recent_card': False, 'visualization_type': 'none', 'chart': None, 'citation_sources': [], 'footnotes': []})}\n\n"
+        meta = _control_stream_meta(
+            "heatmap_control", route, {"heatmap_action": action, "heatmap_metric": metric}
+        )
+        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return
 
     if executor == RouteExecutor.DOWNLOAD_DATA:
         result = _execute_download_control(route, ctx.effective_question)
-        meta = {
-            "event": "meta",
-            "executor": "download_data",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": result["metadata"]["ui"],
-            "timescale": "instant",
-            "cards_retrieved": 0,
-            "recent_card": False,
-            "visualization_type": "none",
-            "chart": None,
-            "citation_sources": [],
-            "footnotes": [],
-        }
-        yield f"data: {json.dumps(meta)}\n\n"
+        meta = _control_stream_meta("download_data", route, result["metadata"]["ui"])
+        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': result['answer']})}\n\n"
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return
@@ -586,23 +600,14 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         return
 
     if executor == RouteExecutor.SENSOR_INSPECTION:
-        sensor_meta = {
-            "executor": "sensor_inspection",
-            "intent": route.intent.value,
-            "lab_name": ctx.effective_lab,
-            "llm_used": True,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
-            "timescale": "sensors",
-            "cards_retrieved": 0,
-            "recent_card": False,
-            "visualization_type": "none",
-            "chart": None,
-            "citation_sources": [],
-            "footnotes": [],
-        }
+        sensor_meta = _control_stream_meta(
+            "sensor_inspection",
+            route,
+            {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
+            lab_name=ctx.effective_lab,
+            llm_used=True,
+            timescale="sensors",
+        )
         yield f"data: {json.dumps({'event': 'meta', **sensor_meta})}\n\n"
         yield _status_event("reading_sensors", "Reading sensor status…")
         async for chunk in stream_sensor_tokens(user_question=ctx.effective_question, space=ctx.effective_lab):
@@ -610,25 +615,13 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         return
 
     if route.intent == IntentType.UNKNOWN_FALLBACK:
-        meta = {
-            "event": "meta",
-            "executor": "guardrail",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
-            "timescale": "guardrail",
-            "cards_retrieved": 0,
-            "recent_card": False,
-            "visualization_type": "none",
-            "chart": None,
-            "citation_sources": [],
-            "footnotes": [],
-        }
-        yield f"data: {json.dumps(meta)}\n\n"
+        meta = _control_stream_meta(
+            "guardrail",
+            route,
+            {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
+            timescale="guardrail",
+        )
+        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': _UNKNOWN_FALLBACK_ANSWER})}\n\n"
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
         return

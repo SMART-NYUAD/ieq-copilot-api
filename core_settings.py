@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 _ENV_LOADED = False
 
@@ -233,6 +234,19 @@ def download_space_slug() -> str:
     ensure_env_loaded()
     raw = (os.getenv("DOWNLOAD_SPACE_SLUG", "") or "").strip()
     return raw or "smart_lab"
+
+
+def slugify_space(lab_name: Optional[str]) -> str:
+    """Turn a lab/space name into the API ``{slug}`` path segment.
+
+    Falls back to :func:`download_space_slug` when no name is given or the name
+    slugifies to empty. Shared by the download and sensor-inspection paths so they
+    resolve space slugs identically.
+    """
+    if not lab_name:
+        return download_space_slug()
+    slug = re.sub(r"[^a-z0-9]+", "_", lab_name.strip().lower()).strip("_")
+    return slug or download_space_slug()
 
 
 def download_default_interval() -> str:
