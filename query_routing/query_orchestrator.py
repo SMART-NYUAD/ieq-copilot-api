@@ -70,9 +70,20 @@ def _choose_executor(route: RoutePlan) -> RouteExecutor:
     return RouteExecutor.DB_QUERY
 
 
-def _build_planner_hints(route: RoutePlan, carried_time_phrase: Optional[str] = None) -> Dict[str, Any]:
+def _build_planner_hints(
+    route: RoutePlan,
+    carried_time_phrase: Optional[str] = None,
+    carried_metric: Optional[str] = None,
+) -> Dict[str, Any]:
+    metrics_priority = list(route.metrics)
+    # Carry the prior turn's metric only when the current question named none
+    # (the LLM/regex produced no metric for this turn). ``carried_metric`` is
+    # already gated upstream so it is only set when the question omits a metric,
+    # but guard here too so an explicit current metric always wins.
+    if carried_metric and not metrics_priority:
+        metrics_priority = [carried_metric]
     hints: Dict[str, Any] = {
-        "metrics_priority": list(route.metrics),
+        "metrics_priority": metrics_priority,
         "needs_cards": route.intent in _KNOWLEDGE_INTENTS,
         "card_topics": ["definitions", "metric_explanations"] if route.intent in _KNOWLEDGE_INTENTS else ["metric_explanations"],
         "max_cards": 2,
@@ -171,8 +182,11 @@ def _execute_db(
     route: RoutePlan,
     llm_history: str = "",
     carried_time_phrase: Optional[str] = None,
+    carried_metric: Optional[str] = None,
 ) -> Dict[str, Any]:
-    planner_hints = _build_planner_hints(route, carried_time_phrase=carried_time_phrase)
+    planner_hints = _build_planner_hints(
+        route, carried_time_phrase=carried_time_phrase, carried_metric=carried_metric
+    )
     db_result = run_db_query(
         question=question,
         intent=route.intent,
@@ -445,7 +459,8 @@ def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, 
     if executor == RouteExecutor.KNOWLEDGE_QA:
         return _execute_knowledge(ctx.effective_question, k, ctx.effective_lab, route)
     return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history,
-                       carried_time_phrase=ctx.carried_time_phrase)
+                       carried_time_phrase=ctx.carried_time_phrase,
+                       carried_metric=ctx.carried_metric)
 
 
 def _status_event(stage: str, message: str) -> str:
@@ -567,7 +582,9 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
             yield chunk
         return
 
-    planner_hints = _build_planner_hints(route, carried_time_phrase=ctx.carried_time_phrase)
+    planner_hints = _build_planner_hints(
+        route, carried_time_phrase=ctx.carried_time_phrase, carried_metric=ctx.carried_metric
+    )
 
     yield _status_event("querying_db", "Fetching sensor data…")
     query_context = await run_in_threadpool(
