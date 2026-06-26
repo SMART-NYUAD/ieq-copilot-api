@@ -9,7 +9,7 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import PoolError, ThreadedConnectionPool
 
-from storage.db_config import DATABASE_URL
+from storage.db_config import load_database_url
 
 
 _POOL_LOCK = Lock()
@@ -42,7 +42,7 @@ def _get_pool() -> ThreadedConnectionPool:
                 _POOL = ThreadedConnectionPool(
                     minconn=_pool_minconn(),
                     maxconn=_pool_maxconn(),
-                    dsn=DATABASE_URL,
+                    dsn=load_database_url(),
                 )
     return _POOL
 
@@ -66,7 +66,7 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
         conn = pool.getconn()
     except PoolError:
         # Keep behavior resilient if pool is temporarily unavailable.
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(load_database_url())
         using_pool = False
     else:
         using_pool = True

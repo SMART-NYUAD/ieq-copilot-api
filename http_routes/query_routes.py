@@ -101,13 +101,20 @@ async def query_cards_stream(request: QueryRequest):
         except Exception as exc:
             log_exception(exc, scope="query.stream")
             yield stream_error_payload(exc)
-            return
-
-        persist_turn(
-            conversation_id=ctx.conversation_id,
-            question=question,
-            answer="".join(accumulated),
-        )
+        finally:
+            # Persist whatever was produced — including on client disconnect (GeneratorExit)
+            # — so the turn is not lost from conversation context. Skip empties so a failed
+            # turn doesn't pollute the history with a blank answer.
+            answer = "".join(accumulated).strip()
+            if answer:
+                try:
+                    persist_turn(
+                        conversation_id=ctx.conversation_id,
+                        question=question,
+                        answer=answer,
+                    )
+                except Exception as exc:
+                    log_exception(exc, scope="query.stream.persist")
 
     return StreamingResponse(
         _generate(),

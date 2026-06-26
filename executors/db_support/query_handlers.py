@@ -18,6 +18,15 @@ from executors.db_support import response_helpers as db_helpers
 from executors.db_support.response_helpers import is_diagnostic_query_text
 from executors import metric_registry
 
+# Full comfort-assessment metric pack: IEQ + sub-indices, air quality, thermal, acoustic
+# (sound), and visual (light) comfort. Acoustic/visual are what make this a *comfort*
+# assessment rather than an air-quality one, so the per-branch caps below must not truncate
+# below the full pack length.
+_COMFORT_ASSESSMENT_PACK = [
+    "ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light",
+]
+_COMFORT_PACK_SIZE = len(_COMFORT_ASSESSMENT_PACK)
+
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
     return {
@@ -192,7 +201,7 @@ def _requested_metrics(
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
-        ["ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light"]
+        list(_COMFORT_ASSESSMENT_PACK)
         if is_comfort_assessment_query
         else ["co2", "pm25", "voc", "humidity", "ieq"]
     )
@@ -522,7 +531,7 @@ def _handle_aggregation_multi(
     if _is_full_assessment_query(question):
         selected_metrics = requested_metrics[:8]
     elif db_helpers.is_comfort_assessment_query_text(question):
-        selected_metrics = requested_metrics[:8]
+        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE]
     elif (
         db_helpers.is_ieq_index_query_text(question)
         and not db_helpers.is_air_quality_query_text(question)
@@ -638,7 +647,7 @@ def _handle_point_lookup(
         or (len(requested_metrics) >= 2 and current_snapshot_query)
     )
     if is_multi:
-        selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
+        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
         metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
         if "ieq" in metric_names:
             for sub in ("iaq", "itc", "iac", "iil"):
@@ -868,7 +877,7 @@ def _handle_temporal_comparison(
         or db_helpers.is_comfort_assessment_query_text(question)
     )
     if is_multi and len(requested_metrics) >= 2:
-        cap = 8 if db_helpers.is_comfort_assessment_query_text(question) else 5
+        cap = _COMFORT_PACK_SIZE if db_helpers.is_comfort_assessment_query_text(question) else 5
         compare_metrics = [m for m in requested_metrics[:cap] if metric_registry.metric_column(m) is not None]
     else:
         compare_metrics = [metric_alias]

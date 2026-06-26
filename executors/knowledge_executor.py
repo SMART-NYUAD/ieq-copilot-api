@@ -1,7 +1,7 @@
 """Knowledge card QA executor: semantic search + Ollama LLM answering."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import os
 from threading import Lock
 import time
@@ -10,13 +10,18 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 
 from core_settings import (
+    display_timezone,
     ollama_base_url,
     ollama_model,
     ollama_temperature,
     ollama_thinking,
     ollama_timeout_seconds,
 )
-from ollama_helpers import extract_generate_chunk, extract_generate_text
+from ollama_helpers import (
+    build_prompt_text_from_messages,
+    extract_generate_chunk,
+    generate_ollama_text,
+)
 from storage.embeddings import embed_texts
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
@@ -34,7 +39,6 @@ You are answering from card-based retrieval context.
 - Do not provide recommendations unless the user explicitly asks for recommendations or next steps.
 """.strip()
 
-_TARGET_TZ = timezone(timedelta(hours=4))
 _KNOWLEDGE_CONTEXT_CACHE_LOCK = Lock()
 _KNOWLEDGE_CONTEXT_CACHE: Dict[Tuple[str, int, Optional[str]], Tuple[float, Dict[str, Any]]] = {}
 
@@ -67,7 +71,7 @@ def _serialize_timestamp_gmt4(value: Any) -> str:
         return text
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(_TARGET_TZ).isoformat()
+    return parsed.astimezone(display_timezone()).isoformat()
 
 
 def _is_explanation_query(question: str) -> bool:
@@ -238,53 +242,6 @@ def _build_knowledge_context(
     return context
 
 
-def _coerce_chunk_text(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                parts.append(str(item.get("text", "")))
-            else:
-                parts.append(str(item))
-        return "".join(parts)
-    if isinstance(value, dict):
-        return str(value.get("text", ""))
-    return str(value)
-
-
-def _build_prompt_text_from_messages(messages: List[Any]) -> str:
-    """Convert LangChain-style message objects to a plain prompt string."""
-    prompt_parts = []
-    for message in messages:
-        role = getattr(message, "type", "user").upper()
-        content = _coerce_chunk_text(getattr(message, "content", ""))
-        prompt_parts.append(f"{role}:\n{content}")
-    return "\n\n".join(prompt_parts)
-
-
-def _generate_ollama_text(prompt_text: str, *, temperature: float) -> str:
-    payload: Dict[str, Any] = {
-        "model": ollama_model(),
-        "prompt": prompt_text,
-        "stream": False,
-        "think": ollama_thinking(),
-        "temperature": temperature,
-    }
-
-    with httpx.Client(timeout=ollama_timeout_seconds()) as client:
-        response = client.post(f"{ollama_base_url()}/api/generate", json=payload)
-        response.raise_for_status()
-        event = response.json()
-
-    return extract_generate_text(event)
-
-
 def get_knowledge_context_stats(user_question: str, k: int = 5, space: Optional[str] = None) -> Dict[str, Any]:
     context = _build_knowledge_context(user_question=user_question, k=k, space=space)
     knowledge_cards = context.get("knowledge_cards") or []
@@ -338,8 +295,8 @@ def answer_env_question_with_metadata(
         context_label=context_label,
         context_data=grounded_context,
     )
-    prompt_text = _build_prompt_text_from_messages(messages)
-    answer = _generate_ollama_text(prompt_text, temperature=ollama_temperature())
+    prompt_text = build_prompt_text_from_messages(messages)
+    answer = generate_ollama_text(prompt_text, temperature=ollama_temperature())
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
         guideline_records=effective_guideline_records,
@@ -421,7 +378,7 @@ async def stream_knowledge_tokens(
         context_label=context_label,
         context_data=grounded_context,
     )
-    prompt_text = _build_prompt_text_from_messages(messages)
+    prompt_text = build_prompt_text_from_messages(messages)
 
     ollama_payload = {
         "model": ollama_model(),
@@ -487,7 +444,7 @@ async def stream_answer_env_question(
         context_label="Measured room facts with knowledge grounding",
         context_data=grounded_context,
     )
-    prompt_text = _build_prompt_text_from_messages(messages)
+    prompt_text = build_prompt_text_from_messages(messages)
 
     payload = {
         "model": ollama_model(),
