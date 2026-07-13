@@ -380,6 +380,12 @@ def prepare_db_query(
             "sources": [],
             "invariant_violation": invariant,
         }
+    # LLM-driven root-cause signal from the router (see RoutePlan.analysis_mode).
+    # When present it deterministically triggers the diagnostic decomposition;
+    # the question-text regex remains an emergency fallback inside the handler.
+    diagnostic_hint = (
+        str((planner_hints or {}).get("analysis_mode") or "").strip().lower() == "diagnostic"
+    )
     branch_result = db_handlers.execute_intent_query(
         question=query_text,
         intent=intent,
@@ -393,6 +399,7 @@ def prepare_db_query(
         compared_spaces=compared_spaces,
         explicit_metrics=explicit_metrics,
         hinted_metrics=hinted_metrics,
+        diagnostic_hint=diagnostic_hint,
     )
 
     operation_type = str(branch_result["operation_type"])
@@ -529,9 +536,12 @@ def _build_db_prompt_text(
     question: str,
     intent: IntentType,
     context_data: str,
+    diagnostic: Optional[bool] = None,
 ) -> str:
     prompt_template = get_shared_prompt_template(
-        response_directive=db_helpers.db_response_directive(intent, question=question)
+        response_directive=db_helpers.db_response_directive(
+            intent, question=question, diagnostic=diagnostic
+        )
     )
     messages = prompt_template.format_messages(
         question=question,
@@ -616,7 +626,12 @@ def _render_db_answer_with_llm(
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
     )
-    prompt_text = _build_db_prompt_text(question=question, intent=intent, context_data=context_data)
+    prompt_text = _build_db_prompt_text(
+        question=question,
+        intent=intent,
+        context_data=context_data,
+        diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+    )
     try:
         text = generate_ollama_text(prompt_text, temperature=ollama_temperature())
         if text:
@@ -812,7 +827,12 @@ async def stream_db_tokens(
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
     )
-    prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
+    prompt_text = _build_db_prompt_text(
+        question=query_text,
+        intent=intent,
+        context_data=context_data,
+        diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+    )
 
     ollama_payload = {
         "model": ollama_model(),

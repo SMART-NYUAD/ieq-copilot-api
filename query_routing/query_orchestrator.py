@@ -94,6 +94,10 @@ def _build_planner_hints(
         "card_topics": ["definitions", "metric_explanations"] if route.intent in _KNOWLEDGE_INTENTS else ["metric_explanations"],
         "max_cards": 2,
         "second_lab_name": route.second_lab_name,
+        # LLM-driven root-cause signal: when set to "diagnostic" the DB executor
+        # decomposes the named index into all contributing sub-scores/metrics
+        # rather than returning the single named value.
+        "analysis_mode": route.analysis_mode,
     }
     if carried_time_phrase:
         hints["carried_time_phrase"] = carried_time_phrase

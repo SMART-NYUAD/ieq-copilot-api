@@ -848,7 +848,19 @@ def build_ifc_context_text(path: str) -> str:
                 parts.append(f"{k.replace('_', ' ')}: {v}")
             if el.materials:
                 parts.append(f"materials: {', '.join(el.materials)}")
+            # Pset_Measurements carries real measured bounding-box dimensions
+            # (Width/Depth/Height). These are authoritative — surface them first
+            # and labelled as such so the model trusts them over the name label.
+            measured = el.properties.get("Pset_Measurements")
+            if measured:
+                dim_str = ", ".join(f"{pk}={pv}" for pk, pv in measured.items())
+                if dim_str:
+                    parts.append(
+                        f"measured dimensions (authoritative, from Pset_Measurements): {dim_str}"
+                    )
             for pset_name, props in el.properties.items():
+                if pset_name == "Pset_Measurements":
+                    continue
                 prop_str = ", ".join(f"{pk}={pv}" for pk, pv in props.items())
                 if prop_str:
                     parts.append(f"{pset_name}: {prop_str}")

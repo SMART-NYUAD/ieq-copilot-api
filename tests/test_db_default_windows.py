@@ -933,5 +933,153 @@ class IeqIndexQueryTests(unittest.TestCase):
         self.assertIn("Do NOT lead with CO2", directive)
 
 
+class DiagnosticSignalTests(unittest.TestCase):
+    """The LLM router's analysis_mode=diagnostic drives root-cause decomposition,
+    independent of question phrasing — so 'main driver making the IEQ bad' (which
+    the keyword heuristic misses) still pulls every contributing metric."""
+
+    def test_diagnostic_hint_pulls_full_pack_for_unmatched_phrasing(self):
+        from executors.db_support.query_handlers import _requested_metrics
+
+        # This phrasing is NOT caught by the is_diagnostic_query_text heuristic.
+        question = "What is the main driver making the IEQ bad?"
+        from executors.db_support.response_helpers import is_diagnostic_query_text
+
+        self.assertFalse(is_diagnostic_query_text(question))
+
+        # Without the LLM hint it collapses to the IEQ-index family only.
+        without_hint = _requested_metrics(
+            question, explicit_metrics=[], hinted_metrics=["ieq"], intent=IntentType.CURRENT_STATUS_DB
+        )
+        self.assertNotIn("co2", without_hint)
+
+        # With the LLM diagnostic hint it pulls the full contributing pack.
+        with_hint = _requested_metrics(
+            question,
+            explicit_metrics=[],
+            hinted_metrics=["ieq"],
+            intent=IntentType.CURRENT_STATUS_DB,
+            is_diagnostic=True,
+        )
+        for metric in ("co2", "pm25", "voc", "humidity", "temperature", "ieq"):
+            self.assertIn(metric, with_hint)
+
+    def test_diagnostic_hint_routes_to_diagnostic_handler(self):
+        from executors.db_support import query_handlers as qh
+
+        captured = {}
+        orig = qh._handle_diagnostic
+
+        def _spy(**kwargs):
+            captured["is_diagnostic"] = kwargs.get("is_diagnostic")
+            return None  # let the chain continue; we only assert the gate value
+
+        qh._handle_diagnostic = _spy
+        try:
+            qh.execute_intent_query(
+                question="What is the main driver making the IEQ bad?",
+                intent=IntentType.CURRENT_STATUS_DB,
+                metric_alias="ieq",
+                metric_column="ieq_index",
+                unit="index",
+                window_start=datetime(2025, 1, 1),
+                window_end=datetime(2025, 1, 2),
+                window_label="last 24 hours",
+                resolved_lab_name=None,
+                compared_spaces=[],
+                explicit_metrics=[],
+                hinted_metrics=["ieq"],
+                diagnostic_hint=True,
+            )
+        finally:
+            qh._handle_diagnostic = orig
+        self.assertTrue(captured.get("is_diagnostic"))
+
+    def test_directive_follows_executed_diagnostic_operation(self):
+        from executors.db_support.response_helpers import db_response_directive
+
+        # Even when the question text would not trip the heuristic, an explicit
+        # diagnostic flag yields the diagnostic directive.
+        directive = db_response_directive(
+            IntentType.CURRENT_STATUS_DB,
+            question="What is the main driver making the IEQ bad?",
+            diagnostic=True,
+        )
+        from prompting.db_prompts import DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC
+
+        self.assertEqual(directive, DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC)
+
+
+class IeqCompositeFanoutTests(unittest.TestCase):
+    """A plain IEQ question (no snapshot noun, not diagnostic) must still fan out to
+    the IEQ composite's sub-indices rather than collapsing to a single IEQ value."""
+
+    def test_plain_ieq_question_pulls_sub_indices(self):
+        from executors.db_support import query_handlers as qh
+        from executors.db_support import api_client
+
+        captured = {}
+
+        def _fake_point_row(slug, metrics):
+            captured["metrics"] = list(metrics)
+            return {m: 50.0 for m in metrics}
+
+        orig = api_client.fetch_multi_metric_point_row
+        api_client.fetch_multi_metric_point_row = _fake_point_row
+        try:
+            result = qh.execute_intent_query(
+                question="Is the IEQ good?",  # no "current/now/reading/value/level" snapshot noun
+                intent=IntentType.CURRENT_STATUS_DB,
+                metric_alias="ieq",
+                metric_column="index_value",
+                unit="index",
+                window_start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                window_end=datetime(2025, 1, 2, tzinfo=timezone.utc),
+                window_label="last 24 hours",
+                resolved_lab_name="smart_lab",
+                compared_spaces=[],
+                explicit_metrics=["ieq"],
+                hinted_metrics=["ieq"],
+            )
+        finally:
+            api_client.fetch_multi_metric_point_row = orig
+
+        self.assertEqual(result.get("operation_type"), "point_lookup_multi_metric")
+        metrics_used = list(result.get("metrics_used") or [])
+        self.assertEqual(metrics_used[0], "ieq")
+        for sub in ("iaq", "itc", "iac", "iil"):
+            self.assertIn(sub, metrics_used)
+
+
+class RouterAnalysisModeTests(unittest.TestCase):
+    """The router carries the LLM's analysis_mode through to the RoutePlan, and the
+    emergency keyword fallback recovers it only when the LLM is unreachable."""
+
+    def test_parser_extracts_diagnostic_mode(self):
+        import json
+        from query_routing.llm_router_planner import _parse_llm_response
+
+        raw = json.dumps(
+            {"intent": "current_status_db", "metrics": ["ieq"], "confidence": 0.9, "analysis_mode": "diagnostic"}
+        )
+        plan = _parse_llm_response(raw, "what is the main driver making the IEQ bad?", None)
+        self.assertEqual(plan.analysis_mode, "diagnostic")
+
+    def test_parser_defaults_to_none(self):
+        import json
+        from query_routing.llm_router_planner import _parse_llm_response
+
+        for value in ({}, {"analysis_mode": "bogus"}, {"analysis_mode": None}):
+            payload = {"intent": "current_status_db", "metrics": ["ieq"], "confidence": 0.9, **value}
+            plan = _parse_llm_response(json.dumps(payload), "what is the IEQ?", None)
+            self.assertIsNone(plan.analysis_mode)
+
+    def test_fallback_recovers_diagnostic_via_keyword_heuristic(self):
+        from query_routing.llm_router_planner import _fallback_plan
+
+        self.assertEqual(_fallback_plan("why is the IEQ low?", None).analysis_mode, "diagnostic")
+        self.assertIsNone(_fallback_plan("what is the IEQ?", None).analysis_mode)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -132,8 +132,13 @@ def is_diagnostic_query_text(question: str) -> bool:
     return any(hint in q for hint in diagnostic_hints)
 
 
-def db_response_directive(intent: Any, question: str = "") -> str:
-    if is_diagnostic_query_text(question):
+def db_response_directive(intent: Any, question: str = "", diagnostic: Optional[bool] = None) -> str:
+    # ``diagnostic`` is the resolved root-cause signal (LLM analysis_mode, or the
+    # operation actually executed). When the caller does not pass it, fall back to
+    # the question-text heuristic so direct callers keep their behaviour.
+    if diagnostic is None:
+        diagnostic = is_diagnostic_query_text(question)
+    if diagnostic:
         return DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC
     # An explicit IEQ-index ask centers on the composite IEQ score and its
     # sub-indices — never on CO2/pollutants. Comfort and pollutant air-quality
