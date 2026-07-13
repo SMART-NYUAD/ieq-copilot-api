@@ -681,6 +681,98 @@ def _next_month_start(year: int, month: int) -> datetime:
     return datetime(year, month + 1, 1, tzinfo=db_time_windows.TARGET_TZ)
 
 
+# Range connectors that do NOT require a "from"/"between" lead. Word connectors need
+# surrounding whitespace (so "total" never matches "to"); dashes allow optional spaces.
+# "and" is intentionally excluded here — too ambiguous without a "between" lead.
+_RANGE_CONNECTOR = r"(?:\s+(?:to|until|through|thru|till)\s+|\s*[-–—]\s*)"
+
+
+def _range_window(
+    start_dt: datetime, end_dt: datetime, now: datetime
+) -> Optional[Tuple[datetime, datetime, str]]:
+    """Build an inclusive day-range window from two parsed bounds.
+
+    The end day is covered in full (window end = end day + 1 day). Returns ``None``
+    for a reversed range (end before start). The window end is capped at ``now`` when
+    the range reaches into the future.
+    """
+    if end_dt < start_dt:
+        return None
+    end_inclusive = end_dt + timedelta(days=1)
+    capped_end = _cap_window_end_at_now(start_dt, end_inclusive, now)
+    label = f"{start_dt.strftime('%b %d, %Y')} – {end_dt.strftime('%b %d, %Y')}"
+    return start_dt, capped_end, label
+
+
+def _same_month_range(
+    month_token: str, day_start: str, day_end: str, now: datetime, explicit_year: Optional[int]
+) -> Optional[Tuple[datetime, datetime, str]]:
+    """Resolve a same-month day range ("May 1-7") into a window."""
+    month = _MONTH_NAME_LOOKUP[month_token]
+    year = _resolve_year_for_month(month, explicit_year, now)
+    try:
+        start_dt = datetime(year, month, int(day_start), tzinfo=db_time_windows.TARGET_TZ)
+        end_dt = datetime(year, month, int(day_end), tzinfo=db_time_windows.TARGET_TZ)
+    except ValueError:
+        return None
+    return _range_window(start_dt, end_dt, now)
+
+
+def _parse_date_range(
+    q: str, now: datetime, explicit_year: Optional[int]
+) -> Optional[Tuple[datetime, datetime, str]]:
+    """Parse a bounded date range that does NOT require a "from"/"between" lead.
+
+    Handles the shorthand forms users type directly, each of which otherwise
+    collapses to a single day via the single-date parsers further down:
+
+    * full date – full date : ``1 May - 7 May``, ``May 1 to May 7``,
+      ISO ``2026-05-01 to 2026-05-07``
+    * month day – day       : ``May 1-7``, ``May 1 to 7``
+    * day – day month       : ``1-7 May``, ``1 to 7 May``
+    """
+    month_alt = "|".join(_MONTH_NAME_LOOKUP.keys())
+    full_date = (
+        r"(?:\d{4}-\d{1,2}-\d{1,2}"
+        r"|\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:" + month_alt + r")"
+        r"|(?:" + month_alt + r")\s+\d{1,2}(?:st|nd|rd|th)?)"
+    )
+
+    # Form C: two fully-qualified dates joined by a connector.
+    m = re.search(r"\b(" + full_date + r")" + _RANGE_CONNECTOR + r"(" + full_date + r")\b", q)
+    if m:
+        start_dt = _parse_date_token(m.group(1), now, explicit_year)
+        end_dt = _parse_date_token(m.group(2), now, explicit_year)
+        if start_dt and end_dt:
+            window = _range_window(start_dt, end_dt, now)
+            if window:
+                return window
+
+    # Form A: "month day - day" (same month).
+    m = re.search(
+        r"\b(" + month_alt + r")\s+(\d{1,2})(?:st|nd|rd|th)?"
+        + _RANGE_CONNECTOR + r"(\d{1,2})(?:st|nd|rd|th)?\b",
+        q,
+    )
+    if m:
+        window = _same_month_range(m.group(1), m.group(2), m.group(3), now, explicit_year)
+        if window:
+            return window
+
+    # Form B: "day - day month" (same month).
+    m = re.search(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?"
+        + _RANGE_CONNECTOR + r"(\d{1,2})(?:st|nd|rd|th)?\s+(" + month_alt + r")\b",
+        q,
+    )
+    if m:
+        window = _same_month_range(m.group(3), m.group(1), m.group(2), now, explicit_year)
+        if window:
+            return window
+
+    return None
+
+
 def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
     q = _latest_user_question(question).lower()
     now = datetime.now(db_time_windows.TARGET_TZ)
@@ -701,12 +793,16 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         start_dt = _parse_date_token(range_match.group(1), now, explicit_year)
         end_dt = _parse_date_token(range_match.group(2), now, explicit_year)
         if start_dt and end_dt:
-            # Treat the end day as inclusive (cover the whole end day).
-            end_inclusive = end_dt + timedelta(days=1)
-            if end_inclusive > start_dt:
-                capped_end = _cap_window_end_at_now(start_dt, end_inclusive, now)
-                label = f"{start_dt.strftime('%b %d, %Y')} – {end_dt.strftime('%b %d, %Y')}"
-                return start_dt, capped_end, label
+            window = _range_window(start_dt, end_dt, now)
+            if window:
+                return window
+
+    # Lead-optional bounded ranges users type directly ("May 1-7", "1 May - 7 May",
+    # "May 1 to May 7", "1-7 May", ISO "2026-05-01 to 2026-05-07"). Without this they
+    # collapse to a single day via the single-date parsers below.
+    lead_optional_range = _parse_date_range(q, now, explicit_year)
+    if lead_optional_range:
+        return lead_optional_range
 
     # "first/second/third/fourth/last week of <month>".
     week_of_month = re.search(
