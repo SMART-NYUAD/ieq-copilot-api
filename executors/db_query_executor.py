@@ -1,30 +1,26 @@
 """Executor for point lookup, aggregation, and comparison DB queries."""
 
-from datetime import datetime, timedelta, timezone
-import calendar
+from datetime import datetime, timezone
 import json
-import os
-import re
-import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
-import pandas as pd
 
 from core_settings import (
+    display_timezone,
     ollama_base_url,
     ollama_model,
     ollama_temperature,
     ollama_thinking,
     ollama_timeout_seconds,
 )
-from ollama_helpers import extract_generate_chunk, extract_generate_text
+from ollama_helpers import (
+    build_prompt_text_from_messages,
+    extract_generate_chunk,
+    generate_ollama_text,
+)
 from query_routing.intent_classifier import IntentType
 from executors import metric_registry
-from executors.knowledge_executor import (
-    _build_prompt_text_from_messages,
-    _generate_ollama_text,
-    search_knowledge_cards,
-)
+from executors.knowledge_executor import search_knowledge_cards
 from executors.db_support import query_handlers as db_handlers
 from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
@@ -37,12 +33,11 @@ from storage.guideline_store import get_thresholds_for_metrics
 
 LLM_PAYLOAD_MAX_RECENT_POINTS = 48
 LLM_PAYLOAD_MAX_NON_TIMESERIES_ROWS = 12
-_TARGET_TZ = timezone(timedelta(hours=4))
 
 
 def _to_target_timezone(dt: datetime) -> datetime:
     normalized = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    return normalized.astimezone(_TARGET_TZ)
+    return normalized.astimezone(display_timezone())
 
 
 def _serialize_datetime_iso(dt: datetime) -> str:
@@ -385,6 +380,12 @@ def prepare_db_query(
             "sources": [],
             "invariant_violation": invariant,
         }
+    # LLM-driven root-cause signal from the router (see RoutePlan.analysis_mode).
+    # When present it deterministically triggers the diagnostic decomposition;
+    # the question-text regex remains an emergency fallback inside the handler.
+    diagnostic_hint = (
+        str((planner_hints or {}).get("analysis_mode") or "").strip().lower() == "diagnostic"
+    )
     branch_result = db_handlers.execute_intent_query(
         question=query_text,
         intent=intent,
@@ -398,6 +399,7 @@ def prepare_db_query(
         compared_spaces=compared_spaces,
         explicit_metrics=explicit_metrics,
         hinted_metrics=hinted_metrics,
+        diagnostic_hint=diagnostic_hint,
     )
 
     operation_type = str(branch_result["operation_type"])
@@ -415,9 +417,6 @@ def prepare_db_query(
             context_payload=None,
         )
         guideline_records = get_thresholds_for_metrics(citation_metrics)
-    requested_window_start = window_start
-    requested_window_end = window_end
-    requested_window_label = window_label
     window_start = branch_result.get("window_start") or window_start
     window_end = branch_result.get("window_end") or window_end
     window_label = str(branch_result.get("window_label") or window_label)
@@ -537,16 +536,19 @@ def _build_db_prompt_text(
     question: str,
     intent: IntentType,
     context_data: str,
+    diagnostic: Optional[bool] = None,
 ) -> str:
     prompt_template = get_shared_prompt_template(
-        response_directive=db_helpers.db_response_directive(intent, question=question)
+        response_directive=db_helpers.db_response_directive(
+            intent, question=question, diagnostic=diagnostic
+        )
     )
     messages = prompt_template.format_messages(
         question=question,
         context_label="Structured DB Query Result with knowledge grounding",
         context_data=context_data,
     )
-    return _build_prompt_text_from_messages(messages)
+    return build_prompt_text_from_messages(messages)
 
 
 def _build_db_context_data(
@@ -624,9 +626,14 @@ def _render_db_answer_with_llm(
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
     )
-    prompt_text = _build_db_prompt_text(question=question, intent=intent, context_data=context_data)
+    prompt_text = _build_db_prompt_text(
+        question=question,
+        intent=intent,
+        context_data=context_data,
+        diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+    )
     try:
-        text = _generate_ollama_text(prompt_text, temperature=ollama_temperature())
+        text = generate_ollama_text(prompt_text, temperature=ollama_temperature())
         if text:
             return text, True, indexed_sources
     except Exception:
@@ -820,7 +827,12 @@ async def stream_db_tokens(
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
     )
-    prompt_text = _build_db_prompt_text(question=query_text, intent=intent, context_data=context_data)
+    prompt_text = _build_db_prompt_text(
+        question=query_text,
+        intent=intent,
+        context_data=context_data,
+        diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+    )
 
     ollama_payload = {
         "model": ollama_model(),

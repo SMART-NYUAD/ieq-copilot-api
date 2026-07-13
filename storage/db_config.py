@@ -44,6 +44,3 @@ def load_database_url() -> str:
             f"(missing: {missing_keys})."
         )
     return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-
-
-DATABASE_URL = load_database_url()

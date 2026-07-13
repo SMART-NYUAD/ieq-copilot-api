@@ -9,15 +9,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import httpx
 
+from core_settings import predictions_api_base_url, sensor_api_base_url
 from executors.db_support.time_windows import granularity_hours_for_window
 
-API_BASE_URL = "http://192.168.50.99:7001"
-# Predictions (forecasts) are served from the public API, not the internal sensor host.
-# Override via PREDICTIONS_API_BASE_URL env var if needed.
-import os as _os
-_PREDICTIONS_API_BASE_URL = _os.getenv("PREDICTIONS_API_BASE_URL", "https://api.smart-crg.com").rstrip("/")
-del _os
+# Host URLs resolve through core_settings (``SENSOR_API_BASE_URL`` for latest readings /
+# agg-summaries, ``PREDICTIONS_API_BASE_URL`` for forecasts) so they are configurable per
+# environment instead of hardcoded.
 _MAX_CONCURRENT_API_CALLS = 6
+_MAX_CACHE_ENTRIES = 512
 _T = TypeVar("_T")
 
 _METRICS_CACHE_TTL_SECONDS = 45.0
@@ -67,7 +66,15 @@ def _cache_get(key: str, ttl_seconds: float) -> Optional[Any]:
 
 
 def _cache_set(key: str, value: Any) -> None:
-    _RESPONSE_CACHE[key] = (time.time(), value)
+    now = time.time()
+    _RESPONSE_CACHE[key] = (now, value)
+    # Bound the cache so a long-running process can't grow it without limit. Evict the
+    # oldest entries (by insertion/refresh time) once over the cap. Cheap and only runs
+    # when the cap is exceeded.
+    if len(_RESPONSE_CACHE) > _MAX_CACHE_ENTRIES:
+        overflow = len(_RESPONSE_CACHE) - _MAX_CACHE_ENTRIES
+        for old_key in sorted(_RESPONSE_CACHE, key=lambda k: _RESPONSE_CACHE[k][0])[:overflow]:
+            _RESPONSE_CACHE.pop(old_key, None)
 
 
 def warm_client() -> None:
@@ -169,7 +176,7 @@ def fetch_spaces() -> List[Dict[str, Any]]:
     if cached is not None:
         return cached
     try:
-        resp = _get_client().get(f"{API_BASE_URL}/spaces/", headers={"accept": "application/json"})
+        resp = _get_client().get(f"{sensor_api_base_url()}/spaces/", headers={"accept": "application/json"})
         resp.raise_for_status()
         spaces = list(resp.json().get("spaces") or [])
         _cache_set(cache_key, spaces)
@@ -189,7 +196,7 @@ def fetch_space_metrics(slug: str) -> Optional[Dict[str, Any]]:
         return cached
     try:
         resp = _get_client().get(
-            f"{API_BASE_URL}/spaces/{slug}/metrics",
+            f"{sensor_api_base_url()}/spaces/{slug}/metrics",
             headers={"accept": "application/json"},
         )
         resp.raise_for_status()
@@ -221,7 +228,7 @@ def fetch_heatmap_metrics(slug: str) -> List[Dict[str, Any]]:
         return cached
     try:
         resp = _get_client().get(
-            f"{API_BASE_URL}/spaces/{slug}/heatmap/metrics",
+            f"{sensor_api_base_url()}/spaces/{slug}/heatmap/metrics",
             headers={"accept": "application/json"},
         )
         resp.raise_for_status()
@@ -262,7 +269,7 @@ def fetch_metric_agg_summary(
         return cached
     try:
         resp = _get_client().get(
-            f"{API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/agg-summary",
+            f"{sensor_api_base_url()}/spaces/{slug}/metrics/{api_slug}/agg-summary",
             params={
                 "window_start": start_iso,
                 "window_end": end_iso,
@@ -306,7 +313,7 @@ def fetch_indoor_data(
         return cached
     try:
         resp = _get_client().get(
-            f"{API_BASE_URL}/spaces/{slug}/indoor-data",
+            f"{sensor_api_base_url()}/spaces/{slug}/indoor-data",
             params={
                 "type": score_type,
                 "interval": resolved_interval,
@@ -557,7 +564,7 @@ def fetch_predictions(slug: str, metric: str) -> Optional[Dict[str, Any]]:
         return cached
     try:
         resp = _get_client().get(
-            f"{_PREDICTIONS_API_BASE_URL}/spaces/{slug}/metrics/{api_slug}/predictions",
+            f"{predictions_api_base_url()}/spaces/{slug}/metrics/{api_slug}/predictions",
             headers={"accept": "application/json"},
         )
         resp.raise_for_status()

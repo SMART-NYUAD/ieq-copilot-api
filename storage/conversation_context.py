@@ -12,9 +12,15 @@ _ROUTING_SNIPPET_LINES = 4   # lines fed to the router LLM
 _LLM_HISTORY_MAX_CHARS = 800  # chars fed to the answer LLM
 
 
-def _extract_content_lines(raw_block: str) -> list[str]:
+def extract_context_lines(raw_block: str) -> list[str]:
+    """Return the conversation content lines from a compact context block, dropping the
+    ``Previous conversation context…`` header and blank lines.
+
+    Shared by the context builder and the router so the snippet fed to the LLM is derived
+    one way only.
+    """
     return [
-        line for line in raw_block.strip().splitlines()
+        line for line in str(raw_block or "").strip().splitlines()
         if line.strip() and not line.startswith("Previous conversation context")
     ]
 
@@ -58,7 +64,7 @@ def build_conversation_context(
     original_question = str(question or "").strip()
     cid, raw_block = build_compact_context(conversation_id)
 
-    content_lines = _extract_content_lines(raw_block)
+    content_lines = extract_context_lines(raw_block)
     routing_snippet = "\n".join(content_lines[-_ROUTING_SNIPPET_LINES:])
     llm_history = "\n".join(content_lines[-6:])[:_LLM_HISTORY_MAX_CHARS]
 

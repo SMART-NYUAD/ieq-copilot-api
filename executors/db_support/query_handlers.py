@@ -18,6 +18,15 @@ from executors.db_support import response_helpers as db_helpers
 from executors.db_support.response_helpers import is_diagnostic_query_text
 from executors import metric_registry
 
+# Full comfort-assessment metric pack: IEQ + sub-indices, air quality, thermal, acoustic
+# (sound), and visual (light) comfort. Acoustic/visual are what make this a *comfort*
+# assessment rather than an air-quality one, so the per-branch caps below must not truncate
+# below the full pack length.
+_COMFORT_ASSESSMENT_PACK = [
+    "ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light",
+]
+_COMFORT_PACK_SIZE = len(_COMFORT_ASSESSMENT_PACK)
+
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
     return {
@@ -99,7 +108,13 @@ def _requested_metrics(
     explicit_metrics: List[str],
     hinted_metrics: List[str],
     intent: IntentType,
+    is_diagnostic: Optional[bool] = None,
 ) -> List[str]:
+    # ``is_diagnostic`` is the resolved root-cause signal (LLM analysis_mode with
+    # the question-text heuristic as fallback). When the caller does not supply it,
+    # fall back to the heuristic so direct callers/tests keep working.
+    if is_diagnostic is None:
+        is_diagnostic = is_diagnostic_query_text(question)
     q = str(question or "").lower()
     if _is_full_assessment_query(question):
         full_pack = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
@@ -116,7 +131,7 @@ def _requested_metrics(
         db_helpers.is_ieq_index_query_text(question)
         and not db_helpers.is_air_quality_query_text(question)
         and not is_comfort_assessment_query
-        and not is_diagnostic_query_text(question)
+        and not is_diagnostic
     ):
         ieq_pack = ["ieq", "iaq", "itc", "iac", "iil"]
         # Only carry over metrics the user explicitly named (e.g. "IEQ and CO2").
@@ -152,7 +167,7 @@ def _requested_metrics(
             and intent in analytical_intents
         )
         if not (
-            is_diagnostic_query_text(question)
+            is_diagnostic
             or (
                 intent == IntentType.COMPARISON_DB
                 and explicit_air_metric
@@ -170,7 +185,7 @@ def _requested_metrics(
             )
         ):
             return metrics
-    if is_diagnostic_query_text(question):
+    if is_diagnostic:
         required_pack = ["co2", "pm25", "voc", "humidity", "temperature", "ieq", "sound", "light"]
         return required_pack + [m for m in metrics if m not in required_pack]
     is_air_quality_query = db_helpers.is_air_quality_query_text(question)
@@ -192,7 +207,7 @@ def _requested_metrics(
     if not (is_air_quality_query or is_comfort_assessment_query):
         return metrics
     required_pack = (
-        ["ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light"]
+        list(_COMFORT_ASSESSMENT_PACK)
         if is_comfort_assessment_query
         else ["co2", "pm25", "voc", "humidity", "ieq"]
     )
@@ -208,8 +223,11 @@ def _handle_diagnostic(
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
+    is_diagnostic: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
-    if not is_diagnostic_query_text(question):
+    if is_diagnostic is None:
+        is_diagnostic = is_diagnostic_query_text(question)
+    if not is_diagnostic:
         return None
     core_metrics = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
     # Only fetch metrics the API supports
@@ -522,7 +540,7 @@ def _handle_aggregation_multi(
     if _is_full_assessment_query(question):
         selected_metrics = requested_metrics[:8]
     elif db_helpers.is_comfort_assessment_query_text(question):
-        selected_metrics = requested_metrics[:8]
+        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE]
     elif (
         db_helpers.is_ieq_index_query_text(question)
         and not db_helpers.is_air_quality_query_text(question)
@@ -631,14 +649,22 @@ def _handle_point_lookup(
             "metrics_used": [metric_alias],
         }
 
+    # An IEQ-composite ask must always fan out to its sub-indices — IEQ alone is
+    # a bare number with no breakdown to explain it. ``_requested_metrics`` is the
+    # single source of truth: it only injects the IAQ/ITC/IAC/IIL sub-indices when
+    # it classified the question as an IEQ-index query, so their presence here is a
+    # phrasing-independent signal (covers "what is the IEQ?", "is the IEQ good?",
+    # etc. that carry no snapshot noun).
+    ieq_composite_query = any(m in {"iaq", "itc", "iac", "iil"} for m in requested_metrics)
     is_multi = (
         db_helpers.is_air_quality_query_text(question)
         or db_helpers.is_comfort_assessment_query_text(question)
         or db_helpers.is_issue_triage_query_text(question)
+        or ieq_composite_query
         or (len(requested_metrics) >= 2 and current_snapshot_query)
     )
     if is_multi:
-        selected_metrics = requested_metrics[:8] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
+        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
         metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
         if "ieq" in metric_names:
             for sub in ("iaq", "itc", "iac", "iil"):
@@ -868,7 +894,7 @@ def _handle_temporal_comparison(
         or db_helpers.is_comfort_assessment_query_text(question)
     )
     if is_multi and len(requested_metrics) >= 2:
-        cap = 8 if db_helpers.is_comfort_assessment_query_text(question) else 5
+        cap = _COMFORT_PACK_SIZE if db_helpers.is_comfort_assessment_query_text(question) else 5
         compare_metrics = [m for m in requested_metrics[:cap] if metric_registry.metric_column(m) is not None]
     else:
         compare_metrics = [metric_alias]
@@ -1208,6 +1234,10 @@ def execute_intent_query(
     compared_spaces: List[str],
     explicit_metrics: List[str],
     hinted_metrics: List[str],
+    # LLM router's root-cause signal (RoutePlan.analysis_mode == "diagnostic").
+    # When True the diagnostic decomposition fires regardless of question phrasing;
+    # is_diagnostic_query_text stays as the emergency (LLM-unreachable) fallback.
+    diagnostic_hint: bool = False,
     # Legacy parameter kept for backwards compatibility — no longer used
     cur: Any = None,
 ) -> Dict[str, Any]:
@@ -1216,11 +1246,14 @@ def execute_intent_query(
     result["window_end"] = window_end
     result["compared_spaces"] = list(compared_spaces)
 
+    is_diagnostic = bool(diagnostic_hint) or is_diagnostic_query_text(question)
+
     requested_metrics = _requested_metrics(
         question,
         explicit_metrics,
         hinted_metrics,
         intent,
+        is_diagnostic=is_diagnostic,
     )
 
     handlers: List[Tuple[str, Any]] = [
@@ -1237,6 +1270,7 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
+            is_diagnostic=is_diagnostic,
         )),
         ("correlation", lambda: _handle_correlation(
             question=question,

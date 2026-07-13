@@ -115,7 +115,11 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `OLLAMA_ROUTER_MODEL` | LLM used for intent routing (default: `qwen3:30b-a3b-instruct-2507-q4_K_M`) |
 | `OLLAMA_ROUTER_BASE_URL` | Ollama endpoint for the router |
 | `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | Separate model/endpoint for answer generation |
-| `DATABASE_URL` | Postgres connection (or use `DB_*` components) |
+| `DATABASE_URL` | Postgres connection (or use `DB_*` components). Resolved lazily on first use — the process no longer fails at import when it is unset (only the guideline/knowledge-card path requires it) |
+| `SENSOR_API_BASE_URL` | Base URL of the Smart CRG sensor REST API for latest readings / agg-summaries (default: `http://192.168.50.99:7001`) |
+| `PREDICTIONS_API_BASE_URL` | Base URL of the forecast/predictions API (default: `https://api.smart-crg.com`) |
+| `DISPLAY_UTC_OFFSET_HOURS` | UTC offset used when serializing/labelling timestamps for the user (default: `4`, Gulf Standard Time) |
+| `RAG_API_CORS_ALLOW_ORIGINS` / `RAG_API_CORS_ALLOW_CREDENTIALS` | CORS origins/credentials. Credentials are auto-disabled when origins are wildcarded (`*`), since browsers reject that combination — set explicit origins to use credentialed CORS |
 | `ROUTER_CLARIFY_THRESHOLD` | Confidence below which queries trigger clarification |
 | `IFC_MODEL_PATH` | Path to the IFC building model for `ifc_model_qa` (default: `./smart.ifc`) |
 | `DOWNLOAD_SPACE_SLUG` | Default `{slug}` for the `download_data` endpoint path when no space is named (default: `smart_lab`) |

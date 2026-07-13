@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
 import time
@@ -24,7 +25,10 @@ from core_settings import (
 from ollama_helpers import extract_chat_content
 from query_routing.intent_classifier import IntentType
 from query_routing.router_types import RoutePlan
+from storage.conversation_context import extract_context_lines
 
+
+_log = logging.getLogger(__name__)
 
 _INTENT_VALUES = {i.value for i in IntentType}
 _METRIC_RE = re.compile(r"\b(co2|pm\s*2\.?\s*5|pm25|tvoc|voc|temperature|temp|humidity|light|lux|sound|noise|ieq)\b")
@@ -52,7 +56,10 @@ _SYSTEM_PROMPT = (
     '  "download_metric": the single metric to export when intent is download_data, one of '
     '["temperature", "humidity", "co2", "voc", "pm25"] — null if the user did not name one\n'
     '  "download_interval": aggregation bucket size for the export when intent is download_data '
-    '(e.g. "1m", "15m", "1h", "1d") — the granularity, NOT the time range; else null\n\n'
+    '(e.g. "1m", "15m", "1h", "1d") — the granularity, NOT the time range; else null\n'
+    '  "analysis_mode": "diagnostic" when the user asks WHY an index/metric is bad/good/'
+    "changing or what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE for / BEHIND it "
+    "(a root-cause question), else null\n\n"
     "Routing rules:\n"
     "- DOMAIN GUARDRAIL: This assistant only handles indoor environmental quality, sensor data, "
     "building/BIM/IFC model questions, viewer-control, and heatmap-overlay requests. If the question is unrelated "
@@ -70,7 +77,19 @@ _SYSTEM_PROMPT = (
     "- When Prior conversation is present, use it only to fill missing lab/time slots. "
     "The current Question sets metric/topic scope; do not route to a prior-turn metric when "
     "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature). "
-    "Prior context NEVER overrides the CRITICAL OVERRIDE rule above.\n\n"
+    "Prior context NEVER overrides the CRITICAL OVERRIDE rule above.\n"
+    "- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to \"diagnostic\" whenever the user asks what is "
+    "DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or "
+    "REASON for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the "
+    "underlying cause, not just the value. This is INDEPENDENT of intent: a diagnostic question usually "
+    "routes to `current_status_db` or `anomaly_analysis_db`, but always set `analysis_mode=\"diagnostic\"` "
+    "so the system pulls every contributing sub-score/metric, not just the named index. Leave it null for a "
+    "plain value/status request. "
+    "Examples (all analysis_mode=\"diagnostic\"): 'what is the main driver making the IEQ bad?', "
+    "'why is the IEQ low?', 'what's dragging down the IEQ?', 'what is hurting indoor environmental quality?', "
+    "'what's the biggest contributor to poor air quality?', 'which factor is making the score worse?', "
+    "'what is behind the drop in IEQ?', 'what's causing the bad comfort score?'. "
+    "Non-diagnostic (analysis_mode=null): 'what is the IEQ?', 'is the IEQ good?', 'show me the IEQ'.\n\n"
     "Intent definitions:\n"
     "- definition_explanation: ONLY for conceptual/educational questions asking what a metric means, "
     "with no definite article before the metric name. "
@@ -255,6 +274,10 @@ _HEATMAP_OFF_HINTS = (
 _VALID_DOWNLOAD_FORMATS = {"csv", "json"}
 _VALID_DOWNLOAD_METRICS = {"temperature", "humidity", "co2", "voc", "pm25"}
 
+# Root-cause / driver-decomposition analysis mode. Kept open for future modes
+# (e.g. "correlation") but only "diagnostic" is acted on today.
+_VALID_ANALYSIS_MODES = {"diagnostic"}
+
 # Aliases for the downloadable metrics (superset of the heatmap aliases — also covers co2).
 _DOWNLOAD_METRIC_ALIASES: Dict[str, str] = {
     "temperature": "temperature",
@@ -401,6 +424,12 @@ def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
     else:
         intent = IntentType.CURRENT_STATUS_DB
 
+    # Emergency-only: when the LLM is unreachable, fall back to the keyword
+    # heuristic to recover the diagnostic signal. The LLM is the primary driver.
+    from executors.db_support.response_helpers import is_diagnostic_query_text
+
+    analysis_mode = "diagnostic" if is_diagnostic_query_text(question) else None
+
     return RoutePlan(
         intent=intent,
         confidence=0.5,
@@ -410,6 +439,7 @@ def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
         time_phrase=None,
         model="fallback",
         fallback_used=True,
+        analysis_mode=analysis_mode,
     )
 
 
@@ -483,6 +513,9 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         raw_interval = str(data.get("download_interval") or "").strip().lower()
         download_interval = raw_interval or _infer_download_interval(question)
 
+    raw_analysis = str(data.get("analysis_mode") or "").strip().lower()
+    analysis_mode = raw_analysis if raw_analysis in _VALID_ANALYSIS_MODES else None
+
     return RoutePlan(
         intent=intent,
         confidence=confidence,
@@ -498,6 +531,7 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         download_format=download_format,
         download_metric=download_metric,
         download_interval=download_interval,
+        analysis_mode=analysis_mode,
     )
 
 
@@ -506,91 +540,93 @@ def _build_router_user_message(question: str, lab_name: Optional[str], conversat
     base = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
     if not conversation_context:
         return base
-    ctx_lines = [
-        line for line in conversation_context.strip().splitlines()
-        if line.strip() and not line.startswith("Previous conversation context")
-    ]
-    # Keep last 4 lines (≈ 2 prior turns) to avoid ballooning the router prompt.
-    snippet = "\n".join(ctx_lines[-4:])
+    # Keep last 4 lines (≈ 2 prior turns) to avoid ballooning the router prompt. Uses the
+    # same line-extraction as the context builder so the two never diverge.
+    snippet = "\n".join(extract_context_lines(conversation_context)[-4:])
+    if not snippet:
+        return base
     return f"Prior conversation:\n{snippet}\n\n{base}"
 
 
+def _router_chat_request(question: str, lab_name: Optional[str], conversation_context: str) -> tuple[str, dict]:
+    """Build the (url, json_body) for the router ``/api/chat`` call.
+
+    Shared by the sync (`requests`) and async (`httpx`) transports so the prompt,
+    options, and endpoint stay identical between them.
+    """
+    user_message = _build_router_user_message(question, lab_name, conversation_context)
+    body = {
+        "model": router_model(),
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        "stream": False,
+        "think": router_thinking(),
+        "options": {"temperature": router_temperature(), "num_predict": 256},
+    }
+    return f"{router_base_url()}/api/chat", body
+
+
+def _plan_from_response_json(payload: dict, question: str, lab_name: Optional[str]) -> Optional[RoutePlan]:
+    raw = extract_chat_content((payload or {}).get("message", {}))
+    return _parse_llm_response(raw, question, lab_name)
+
+
+def _log_router_fallback(question: str, attempts: int, last_error: object) -> None:
+    """Surface router degradation. The fallback is emergency-only (regex), so an operator
+    needs to know the LLM router was unreachable rather than silently degrading."""
+    _log.warning(
+        "Router LLM unavailable after %d attempt(s) (%s); using regex fallback for question: %r",
+        attempts, last_error, (question or "")[:120],
+    )
+
+
 def plan_route(question: str, lab_name: Optional[str] = None, conversation_context: str = "") -> RoutePlan:
-    base_url = router_base_url()
-    model = router_model()
+    url, body = _router_chat_request(question, lab_name, conversation_context)
     timeout = router_timeout_seconds()
-    temperature = router_temperature()
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
-
-    user_message = _build_router_user_message(question, lab_name, conversation_context)
-    options: dict = {"temperature": temperature, "num_predict": 256}
+    last_error: object = "no response"
 
     for attempt in range(max_retries):
         if attempt > 0:
             time.sleep((jitter_ms / 1000.0) * (1 + random.random()))
         try:
-            resp = requests.post(
-                f"{base_url}/api/chat",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    "stream": False,
-                    "think": router_thinking(),
-                    "options": options,
-                },
-                timeout=timeout,
-            )
+            resp = requests.post(url, json=body, timeout=timeout)
             resp.raise_for_status()
-            raw = extract_chat_content(resp.json().get("message", {}))
-            plan = _parse_llm_response(raw, question, lab_name)
+            plan = _plan_from_response_json(resp.json(), question, lab_name)
             if plan is not None:
                 return plan
-        except Exception:
-            pass
+            last_error = "unparseable router response"
+        except Exception as exc:
+            last_error = exc
 
+    _log_router_fallback(question, max_retries, last_error)
     return _fallback_plan(question, lab_name)
 
 
 async def plan_route_async(question: str, lab_name: Optional[str] = None, conversation_context: str = "") -> RoutePlan:
     """Async version of plan_route — uses httpx so the event loop is never blocked."""
-    base_url = router_base_url()
-    model = router_model()
+    url, body = _router_chat_request(question, lab_name, conversation_context)
     timeout = router_timeout_seconds()
-    temperature = router_temperature()
     max_retries = router_max_retries()
     jitter_ms = router_retry_jitter_ms()
-
-    user_message = _build_router_user_message(question, lab_name, conversation_context)
-    options: dict = {"temperature": temperature, "num_predict": 256}
+    last_error: object = "no response"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(max_retries):
             if attempt > 0:
                 await asyncio.sleep((jitter_ms / 1000.0) * (1 + random.random()))
             try:
-                resp = await client.post(
-                    f"{base_url}/api/chat",
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": _SYSTEM_PROMPT},
-                            {"role": "user", "content": user_message},
-                        ],
-                        "stream": False,
-                        "think": router_thinking(),
-                        "options": options,
-                    },
-                )
+                resp = await client.post(url, json=body)
                 resp.raise_for_status()
-                raw = extract_chat_content(resp.json().get("message", {}))
-                plan = _parse_llm_response(raw, question, lab_name)
+                plan = _plan_from_response_json(resp.json(), question, lab_name)
                 if plan is not None:
                     return plan
-            except Exception:
-                pass
+                last_error = "unparseable router response"
+            except Exception as exc:
+                last_error = exc
 
+    _log_router_fallback(question, max_retries, last_error)
     return _fallback_plan(question, lab_name)

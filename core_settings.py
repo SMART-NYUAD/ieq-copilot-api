@@ -8,6 +8,8 @@ changing call sites by extending ``AppSettings``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta, timezone
+import logging
 import os
 import re
 from pathlib import Path
@@ -100,11 +102,23 @@ class AppSettings:
 def load_settings() -> AppSettings:
     """Load settings from environment using safe defaults."""
     ensure_env_loaded()
+    allow_origins = _parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_ORIGINS", ""), default=["*"])
+    allow_credentials = _parse_bool(os.getenv("RAG_API_CORS_ALLOW_CREDENTIALS", "true"), default=True)
+    # The CORS spec forbids combining credentials with a wildcard origin — browsers reject
+    # `Access-Control-Allow-Origin: *` when credentials are sent, so the credentialed request
+    # silently fails. Disable credentials when origins are wildcarded and warn the operator to
+    # set an explicit RAG_API_CORS_ALLOW_ORIGINS list if they need credentialed CORS.
+    if allow_credentials and "*" in allow_origins:
+        logging.getLogger(__name__).warning(
+            "CORS: allow_credentials=true is incompatible with wildcard origins; disabling "
+            "credentials. Set RAG_API_CORS_ALLOW_ORIGINS to explicit origins to enable them."
+        )
+        allow_credentials = False
     return AppSettings(
         server_host=str(os.getenv("RAG_API_HOST", "0.0.0.0")).strip() or "0.0.0.0",
         server_port=_parse_int(os.getenv("RAG_API_PORT", "8001"), default=8001, minimum=1),
-        cors_allow_origins=_parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_ORIGINS", ""), default=["*"]),
-        cors_allow_credentials=_parse_bool(os.getenv("RAG_API_CORS_ALLOW_CREDENTIALS", "true"), default=True),
+        cors_allow_origins=allow_origins,
+        cors_allow_credentials=allow_credentials,
         cors_allow_methods=_parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_METHODS", ""), default=["*"]),
         cors_allow_headers=_parse_csv_list(os.getenv("RAG_API_CORS_ALLOW_HEADERS", ""), default=["*"]),
     )
@@ -271,6 +285,40 @@ def sensor_stale_hours() -> int:
     """
     ensure_env_loaded()
     return _parse_int(os.getenv("SENSOR_STALE_HOURS", "24"), default=24, minimum=1)
+
+
+def sensor_api_base_url() -> str:
+    """Base URL for the Smart CRG sensor REST API (latest readings, agg-summaries).
+
+    Override with ``SENSOR_API_BASE_URL``. Defaults to the on-prem sensor host so existing
+    deployments keep working, but is now configurable for other environments.
+    """
+    ensure_env_loaded()
+    raw = (os.getenv("SENSOR_API_BASE_URL", "") or "").strip()
+    return (raw or "http://192.168.50.99:7001").rstrip("/")
+
+
+def predictions_api_base_url() -> str:
+    """Base URL for the forecast/predictions API (served from the public API, not the
+    on-prem sensor host). Override with ``PREDICTIONS_API_BASE_URL``."""
+    ensure_env_loaded()
+    raw = (os.getenv("PREDICTIONS_API_BASE_URL", "") or "").strip()
+    return (raw or "https://api.smart-crg.com").rstrip("/")
+
+
+def display_utc_offset_hours() -> int:
+    """UTC offset (hours) used when serializing/labelling timestamps for the user.
+
+    Defaults to +4 (Gulf Standard Time) to preserve existing behavior. Override with
+    ``DISPLAY_UTC_OFFSET_HOURS`` for other regions.
+    """
+    ensure_env_loaded()
+    return _parse_int(os.getenv("DISPLAY_UTC_OFFSET_HOURS", "4"), default=4, minimum=-23)
+
+
+def display_timezone() -> timezone:
+    """The display timezone derived from :func:`display_utc_offset_hours`."""
+    return timezone(timedelta(hours=display_utc_offset_hours()))
 
 
 def router_semantic_rewrite_enabled() -> bool:

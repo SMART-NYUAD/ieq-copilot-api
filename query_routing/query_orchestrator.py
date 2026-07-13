@@ -94,6 +94,10 @@ def _build_planner_hints(
         "card_topics": ["definitions", "metric_explanations"] if route.intent in _KNOWLEDGE_INTENTS else ["metric_explanations"],
         "max_cards": 2,
         "second_lab_name": route.second_lab_name,
+        # LLM-driven root-cause signal: when set to "diagnostic" the DB executor
+        # decomposes the named index into all contributing sub-scores/metrics
+        # rather than returning the single named value.
+        "analysis_mode": route.analysis_mode,
     }
     if carried_time_phrase:
         hints["carried_time_phrase"] = carried_time_phrase
@@ -205,7 +209,7 @@ def _execute_db(
         execution_intent=route.intent,
         metrics=metrics,
         has_floor_comparison=False,
-        clarification_required="clarify" in str(db_result.get("timescale", "")),
+        clarification_required=(db_result.get("timescale") == "clarify"),
         use_knowledge_executor=False,
     )
     return {
@@ -658,9 +662,28 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         planner_hints,
     )
 
-    time_window = query_context.get("time_window")
-    if time_window:
-        yield f"data: {json.dumps({'event': 'meta_update', 'time_window': time_window, 'resolved_lab_name': query_context.get('resolved_lab_name'), 'metrics_used': list(query_context.get('metrics_used') or [])})}\n\n"
+    # Reconcile the placeholder meta (emitted before the DB ran, with timescale
+    # "pending" and a route-metric-derived UI) with the resolved values now that the
+    # query has executed. This keeps the streamed metadata in parity with the sync
+    # /query response, which derives its UI/timescale from the same resolved facts.
+    metrics_used = list(query_context.get("metrics_used") or [])
+    resolved_timescale = query_context.get("timescale")
+    resolved_ui = derive_ui_contract(
+        execution_intent=route.intent,
+        metrics=metrics_used or list(route.metrics),
+        has_floor_comparison=False,
+        clarification_required=(resolved_timescale == "clarify"),
+        use_knowledge_executor=False,
+    )
+    meta_update: Dict[str, Any] = {
+        "event": "meta_update",
+        "timescale": resolved_timescale,
+        "time_window": query_context.get("time_window"),
+        "resolved_lab_name": query_context.get("resolved_lab_name"),
+        "metrics_used": metrics_used,
+        "ui": resolved_ui,
+    }
+    yield f"data: {json.dumps(meta_update)}\n\n"
 
     yield _status_event("building_response", "Building response…")
     async for chunk in stream_db_tokens(
@@ -672,11 +695,6 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         conversation_context=ctx.llm_history,
     ):
         yield chunk
-
-
-# Legacy compatibility shims.
-def get_route_plan(question: str, lab_name: Optional[str] = None) -> RoutePlan:
-    return plan_route(question, lab_name)
 
 
 def resolve_execution_intent(intent: IntentType) -> IntentType:
