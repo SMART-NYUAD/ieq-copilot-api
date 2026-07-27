@@ -22,6 +22,7 @@ from ollama_helpers import (
     extract_generate_chunk,
     generate_ollama_text,
 )
+from executors import sse
 from storage.embeddings import embed_texts
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
@@ -30,6 +31,12 @@ from http_schemas import validate_tool_evidence
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import search_guideline_records, wants_guideline_detail
 
+
+_NO_LLM_KNOWLEDGE_ANSWER = (
+    "I can't reach the language model right now, and I don't have a knowledge card "
+    "that covers this question. Please try again in a moment."
+)
+_DETERMINISTIC_ANSWER_MAX_CHARS = 600
 
 CARD_TOOL_RESPONSE_DIRECTIVE = """
 You are answering from card-based retrieval context.
@@ -257,6 +264,25 @@ def get_guideline_records_for_question(user_question: str, k: int = 3) -> List[D
     return search_guideline_records(question=user_question, k=max(1, int(k or 3)))
 
 
+def _deterministic_knowledge_answer(knowledge_cards: List[Dict[str, Any]]) -> str:
+    """Answer built from retrieved cards alone, for when the LLM is unreachable.
+
+    Mirrors the deterministic fallbacks in the DB, IFC, and sensor executors: the
+    text is quoted from the highest-ranked retrieved card, never generated, so an
+    LLM outage degrades to a grounded answer instead of an empty response.
+    """
+    for card in knowledge_cards or []:
+        body = str(card.get("summary") or card.get("content") or "").strip()
+        if not body:
+            continue
+        title = str(card.get("title") or "").strip()
+        answer = f"**{title}** — {body}" if title else body
+        if len(answer) > _DETERMINISTIC_ANSWER_MAX_CHARS:
+            answer = answer[:_DETERMINISTIC_ANSWER_MAX_CHARS].rstrip() + "…"
+        return answer
+    return _NO_LLM_KNOWLEDGE_ANSWER
+
+
 def answer_env_question_with_metadata(
     user_question: str,
     k: int = 5,
@@ -296,13 +322,21 @@ def answer_env_question_with_metadata(
         context_data=grounded_context,
     )
     prompt_text = build_prompt_text_from_messages(messages)
-    answer = generate_ollama_text(prompt_text, temperature=ollama_temperature())
+    knowledge_cards = context.get("knowledge_cards") or []
+    try:
+        answer = generate_ollama_text(prompt_text, temperature=ollama_temperature())
+    except Exception:
+        answer = ""
+    llm_used = bool(answer.strip())
+    if not llm_used:
+        # An unreachable answer model must not surface as a 500 — fall back to the
+        # retrieved cards, the same way the DB path falls back to its row summary.
+        answer = _deterministic_knowledge_answer(knowledge_cards)
     resolved_answer, footnotes = process_answer_citations(
         answer_text=answer,
         guideline_records=effective_guideline_records,
         indexed_sources=indexed_sources,
     )
-    knowledge_cards = context.get("knowledge_cards") or []
     evidence_sources = [
         {
             "source_kind": "knowledge_card",
@@ -336,6 +370,7 @@ def answer_env_question_with_metadata(
         "cards_retrieved": int(len(knowledge_cards)),
         "knowledge_cards_retrieved": int(len(knowledge_cards)),
         "guideline_records": effective_guideline_records,
+        "llm_used": llm_used,
         "evidence": evidence,
     }
 
@@ -352,7 +387,7 @@ async def stream_knowledge_tokens(
         searched_guidelines = search_guideline_records(question=user_question, k=3)
         if searched_guidelines:
             effective_guideline_records = searched_guidelines
-    numbered_sources_block, _ = build_numbered_sources_block(effective_guideline_records)
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
 
     context = _build_knowledge_context(
         user_question=user_question,
@@ -388,6 +423,7 @@ async def stream_knowledge_tokens(
         "temperature": ollama_temperature(),
     }
 
+    emitted: List[str] = []
     try:
         async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
             async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=ollama_payload) as response:
@@ -402,11 +438,17 @@ async def stream_knowledge_tokens(
 
                     response_text = extract_generate_chunk(event)
                     if response_text:
-                        yield f"data: {json.dumps({'event': 'token', 'text': response_text})}\n\n"
+                        emitted.append(response_text)
+                        yield sse.token_event(response_text)
     except Exception:
         pass
 
-    yield f"data: {json.dumps({'event': 'done'})}\n\n"
+    if not emitted:
+        # LLM unreachable — emit the card-grounded answer so the stream is never empty.
+        yield sse.token_event(_deterministic_knowledge_answer(context.get("knowledge_cards") or []))
+
+    yield sse.sources_event_for_answer(emitted, effective_guideline_records, indexed_sources)
+    yield sse.done_event()
 
 
 async def stream_answer_env_question(

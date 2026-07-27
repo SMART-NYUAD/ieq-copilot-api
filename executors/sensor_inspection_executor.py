@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 
 from core_settings import (
     slugify_space,
@@ -348,7 +349,9 @@ async def stream_sensor_tokens(user_question: str, space: Optional[str] = None) 
     slug = slugify_space(space)
     threshold = sensor_stale_hours()
     now = datetime.now(tz=timezone.utc)
-    devices = api_client.fetch_heatmap_metrics(slug)
+    # Blocking HTTP call (up to the client's 15s timeout) — keep it off the event loop
+    # so a slow sensor API cannot stall other in-flight requests.
+    devices = await run_in_threadpool(api_client.fetch_heatmap_metrics, slug)
     facts = _build_device_facts(devices, now, threshold)
 
     if not facts:

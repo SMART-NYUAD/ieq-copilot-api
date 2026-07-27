@@ -1,9 +1,10 @@
 """Health and root endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from executors.sensors_endpoint import get_sensor_latest
+from http_routes.auth import require_api_key
 
 router = APIRouter()
 
@@ -26,12 +27,12 @@ async def health():
     return {"status": "healthy"}
 
 
-@router.get("/sensors/latest/{space}")
+@router.get("/sensors/latest/{space}", dependencies=[Depends(require_api_key)])
 async def sensors_latest(space: str):
     return await run_in_threadpool(get_sensor_latest, space)
 
 
-@router.get("/ifc/summary")
+@router.get("/ifc/summary", dependencies=[Depends(require_api_key)])
 async def ifc_summary():
     """Debug: parsed structured summary of the IFC building model."""
     from core_settings import ifc_model_path

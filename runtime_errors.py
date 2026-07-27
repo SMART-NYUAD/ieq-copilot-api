@@ -7,6 +7,7 @@ It gives routes a consistent shape for logs and streamed error payloads.
 from __future__ import annotations
 
 from enum import Enum
+import json
 import logging
 from typing import Any, Dict
 
@@ -57,12 +58,21 @@ def log_exception(exc: Exception, *, scope: str, extra: Dict[str, Any] | None = 
     return code
 
 
-def stream_error_payload(exc: Exception, *, scope: str, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Build a consistent payload for SSE/OpenAI stream errors."""
+def stream_error_payload(exc: Exception, *, scope: str, extra: Dict[str, Any] | None = None) -> str:
+    """Build the SSE frames for a stream failure: an ``error`` event, then ``done``.
+
+    Returns ready-to-yield SSE text rather than a dict — the caller is inside a
+    streaming generator where a half-written response can only be terminated by
+    sending frames, and a client that never receives ``done`` waits on a dead
+    connection. Logging the exception is part of building the payload so callers
+    cannot emit an untracked error frame.
+    """
     code = log_exception(exc, scope=scope, extra=extra)
-    return {
+    error_event = {
+        "event": "error",
         "detail": str(exc),
         "code": code.value,
         "scope": scope,
     }
+    return f"data: {json.dumps(error_event)}\n\ndata: {json.dumps({'event': 'done'})}\n\n"
 

@@ -1,5 +1,11 @@
 # RAG API Server Deep-Dive Architecture
 
+> **⚠️ Outdated.** This document describes an earlier design and still references modules and
+> routes that no longer exist (`query_routing/observability.py`, the critic stage, Prophet
+> forecasting, `/health/router`, `/observability/*`, `/query/route`, `/query/db-proof`,
+> OpenAI-compatible routes). Treat `CLAUDE.md` as authoritative for the current architecture
+> and endpoint list; keep this only for historical context until it is rewritten.
+
 This document explains exactly how requests move through `RAG_API_SERVER`,
 which modules participate, and what each major component/tool is responsible for.
 

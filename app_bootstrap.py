@@ -1,12 +1,13 @@
 """FastAPI application bootstrap."""
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from core_settings import load_settings
+from core_settings import api_keys, load_settings
 from http_routes.health_routes import router as health_router
 from http_routes.query_routes import router as query_router
 
@@ -30,6 +31,12 @@ async def _lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = load_settings()
+    if not api_keys():
+        logging.getLogger(__name__).warning(
+            "RAG_API_KEYS is not set: the query and sensor endpoints are unauthenticated and "
+            "all callers share one conversation history namespace. Set RAG_API_KEYS before "
+            "exposing this service beyond localhost."
+        )
     app = FastAPI(
         title="Environment Cards RAG API",
         description="API for indoor air quality queries with knowledge-card grounding",

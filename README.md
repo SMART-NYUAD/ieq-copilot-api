@@ -16,43 +16,42 @@ This folder is structured to be standalone-repo friendly.
 - Environment template: `.env.example`
 - Container runtime: `Dockerfile`, `docker-compose.yml`
 - Contributor workflow: `CONTRIBUTING.md`
-- Release process: `RELEASE_CHECKLIST.md`
+- Architecture reference: `CLAUDE.md`
 - API contracts: `docs/API_CONTRACTS.md`
-- Blueprint guide: `docs/BLUEPRINT_GUIDE.md`
 
 ## Architecture
 
 The service uses a layered architecture:
 
-1. **API layer** receives requests (`/query`, `/query/stream`, OpenAI-compatible routes).
-2. **Routing layer** classifies intent and enforces deterministic policy.
-3. **Execution layer** runs exactly one branch (`clarify_gate`, `knowledge_qa`, or `db_query`).
-4. **Normalization layer** repairs and validates evidence/metadata before response mapping.
-5. **Response layer** returns a contract-stable payload (sync JSON or SSE events).
+1. **API layer** receives requests (`/query`, `/query/stream`), authenticates the caller,
+   and builds the per-turn `ConversationContext`.
+2. **Routing layer** turns the question into a `RoutePlan` via a single LLM call.
+3. **Execution layer** runs exactly one branch (DB, knowledge, IFC, sensor inspection, or a
+   viewer/heatmap/download UI control).
+4. **Response layer** returns a contract-stable payload (sync JSON or SSE events).
 
 Main modules by layer:
 
 - `rag_api_server.py`: runtime entrypoint
 - `app_bootstrap.py`: FastAPI app + route registration
-- `core_settings.py`: centralized runtime settings (server, CORS, routing thresholds)
+- `core_settings.py`: centralized runtime settings (server, CORS, API keys, model endpoints)
 - `http_routes/`: HTTP endpoints
-  - `health_routes.py`
-  - `query_routes.py`
+  - `health_routes.py`, `query_routes.py`
+  - `auth.py`: API-key dependency and caller identity
+  - `route_helpers.py`: conversation context construction + turn persistence
 - `query_routing/`: intent routing + orchestration
-  - `intent_classifier.py` (deterministic classifier utilities)
-  - `llm_router_planner.py`
-  - `route_policy_engine.py`
+  - `intent_classifier.py` (intent taxonomy)
+  - `llm_router_planner.py` (LLM route plan + emergency regex fallback)
   - `query_orchestrator.py` (branch execution and payload assembly)
-- `http_routes/query_runtime.py`: shared runtime adapters used by both native and OpenAI-compatible routes
-- `http_routes/route_helpers.py`: route metadata helpers + conversation persistence hooks
+  - `metadata_builders.py` (UI contract shared by sync and stream)
 - `executors/`: execution engines
-  - `db_query_executor.py` (SQL + LLM answer rendering)
-- `executors/env_query_langchain.py`: knowledge-card retrieval + shared LLM chain utilities
-- `evidence/evidence_layer.py`: explicit evidence normalization/repair layer
-- `contracts/progressive_contracts.py`: progressive contracts (stable core + extensible fields)
-- `storage/postgres_client.py`: shared DB cursor/connection helper
+  - `db_query_executor.py` + `db_support/` (sensor data retrieval + LLM answer rendering)
+  - `knowledge_executor.py`, `ifc_executor.py`, `sensor_inspection_executor.py`
+  - `sse.py`: shared SSE frame builders (`token`, `sources`, `done`)
+- `storage/`: conversation store (SQLite, caller-owned), Postgres client, guideline store
+- `evidence/citation_processor.py`: numbered citation resolution shared by both paths
 
-Primary architecture reference: `docs/router_architecture.md`.
+Primary architecture reference: `CLAUDE.md`.
 
 ## Local Setup
 
@@ -103,20 +102,23 @@ docker compose logs -f rag-api
 
 ## Request Flow
 
-1. Client calls `POST /query` (or `POST /query/stream`).
-2. Router plans intent via `llm_router_planner.py` and policy validation via `route_policy_engine.py`.
-3. Orchestrator executes through DB or knowledge executors.
-4. Executor provenance is normalized by `evidence/evidence_layer.py`.
-5. For DB intents, SQL rows are converted to a grounded LLM answer (with deterministic fallback).
-6. Unified response is returned with route and evidence metadata.
+1. Client calls `POST /query` (or `POST /query/stream`) with an API key.
+2. `build_conversation_context` loads the caller's prior turns and builds the per-turn context.
+3. `llm_router_planner.py` plans the intent in one LLM call, resolving follow-up references.
+4. Orchestrator executes exactly one branch (DB, knowledge, IFC, sensor, or UI control).
+5. For DB intents, retrieved rows are converted to a grounded LLM answer (with a deterministic
+   fallback if the answer model is unreachable).
+6. Unified response is returned with route metadata and citations; the stream sends citations
+   in a terminal `sources` frame.
 
-For architecture and routing behavior details, see `docs/router_architecture.md`.
+For architecture and routing behavior details, see `CLAUDE.md`.
 
 ## Documentation Map
 
-- `docs/router_architecture.md`: architecture overview, routing policy, planner contract, and metadata details
-- `docs/API_CONTRACTS.md`: request/response contracts and compatibility payloads
-- `docs/BLUEPRINT_GUIDE.md`: implementation and blueprint guidance
+- `CLAUDE.md`: current architecture, intent taxonomy, configuration, and endpoint list (authoritative)
+- `docs/API_CONTRACTS.md`: request/response contracts (partially outdated — see its banner)
+- `docs/router_architecture.md`, `docs/architecture_deep_dive.md`, `docs/BLUEPRINT_GUIDE.md`:
+  earlier design notes, kept for history; they describe modules and routes that no longer exist
 
 ## Intent Types
 
@@ -133,13 +135,12 @@ Router outputs one of:
 
 ## New Capabilities
 
-- **Deterministic forecasting (Meta Prophet)**
-  - Questions like `Forecast PM2.5 for next week in smart_lab` route to the DB executor.
-  - Backend uses Meta Prophet to generate a short- to medium-horizon forecast.
-  - The LLM only explains the forecast; it never invents future values.
-  - `/query` and `/query/stream` responses include:
-    - `metadata.forecast_model`, `metadata.forecast_confidence`, `metadata.forecast_horizon_hours`
-    - A line chart with both **history** and **prediction** series.
+- **Forecasting via the predictions API**
+  - Questions like `Forecast PM2.5 in smart_lab` route to the DB executor's forecast branch.
+  - The forecast itself is fetched from the predictions service (`PREDICTIONS_API_BASE_URL`),
+    which serves roughly 6 hours ahead. No forecasting model runs inside this process.
+  - The LLM only explains the returned predictions; it never invents future values.
+  - When the predictions service is unavailable the branch says so rather than guessing.
 
 - **Smarter lab resolution**
   - Lab names are discovered from the `app_lab` table (`name` column), not hardcoded.
@@ -147,9 +148,10 @@ Router outputs one of:
   - Comparison questions with two lab-like names (for example, `shores_office and concrete_lab`) automatically route to `comparison_db`.
 
 - **Safer numeric explanations**
-  - DB executor always runs SQL first, then passes structured rows + optional forecast to the LLM.
+  - DB executor always fetches the data first (Smart CRG REST API), then passes structured
+    rows + optional forecast to the LLM.
   - If the LLM fails or times out, a deterministic text fallback is returned.
-  - Forecasts are clearly labeled with confidence and are never extrapolated by the LLM itself.
+  - Forecasts come from the predictions service and are never extrapolated by the LLM itself.
 
 ## Run the API
 
@@ -180,11 +182,15 @@ Docs UI:
 Targeted regressions:
 
 ```bash
-python -m unittest discover -s tests -p "test_general_qa_routing.py"
-python -m unittest discover -s tests -p "test_stream_route_metadata.py"
-python -m unittest discover -s tests -p "test_query_routes_preview.py"
-python -m unittest discover -s tests -p "test_llm_router_planner.py"
+python -m unittest discover -s tests -p "test_context_resolution.py"        # follow-up resolution
+python -m unittest discover -s tests -p "test_stream_metadata_parity.py"    # sync/stream metadata
+python -m unittest discover -s tests -p "test_stream_error_and_sources.py"  # stream error + citations
+python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows + clarify gate
+python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
 ```
+
+Note that `discover -p` silently reports "Ran 0 tests" for a pattern that matches no file,
+so check the test count when adding a new pattern.
 
 All tests:
 
@@ -200,34 +206,21 @@ Returns service info and endpoint list.
 
 ### `GET /health`
 
-Basic health check.
+Basic health check. Unauthenticated, for liveness probes.
 
-### `POST /query/route`
+### Authentication
 
-Preview only: classify a question without executing query.
+Set `RAG_API_KEYS` to a comma-separated list of keys to protect `/query`, `/query/stream`,
+`/sensors/latest/{space}`, and `/ifc/summary`. Send the key as `X-API-Key: <key>` or
+`Authorization: Bearer <key>`. When `RAG_API_KEYS` is unset those endpoints are open and all
+callers share one conversation namespace — fine locally, not for a deployed service.
 
-Request:
+Each key owns the conversations it creates: passing a `conversation_id` created under a
+different key returns `403`.
 
-```json
-{
-  "question": "Compare smart_lab vs concrete_lab CO2 in the last 24 hours",
-  "lab_name": "smart_lab"
-}
-```
-
-Response:
-
-```json
-{
-  "route_source": "llm_planner",
-  "route_type": "comparison_db",
-  "intent_category": "analytical_visualization",
-  "route_confidence": 0.9,
-  "route_reason": "comparison_keyword",
-  "planner_model": "qwen3:30b",
-  "planner_fallback_used": false
-}
-```
+To inspect a routing decision without a dedicated preview endpoint, read `metadata` on the
+`/query` response (`intent`, `route_confidence`, `planner_model`, `fallback_used`,
+`resolved_question`).
 
 ### `POST /query`
 
@@ -296,77 +289,16 @@ curl -N -X POST "http://127.0.0.1:8001/query/stream" \
   -d '{"question":"Show the trend of CO2 in smart_lab over time","k":3,"lab_name":"smart_lab"}'
 ```
 
-### `GET /v1/models`
-
-OpenAI-compatible model listing endpoint.
-
-Example:
-
-```bash
-curl "http://127.0.0.1:8001/v1/models"
-```
-
-### `POST /v1/chat/completions` (OpenAI-compatible)
-
-OpenAI-style chat endpoint that routes internally through the same `/query` logic.
-
-Supported fields:
-
-- `model` (optional, default `rag-router`)
-- `messages` (required, uses last `role=user` message as query)
-- `stream` (optional, default `false`)
-- `temperature`, `max_tokens`, `user`, `metadata` (accepted for compatibility)
-- `k` (optional, extension field for retrieval depth)
-- `lab_name` (optional, extension field for space filter)
-
-Non-stream example:
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "rag-router",
-    "messages": [
-      {"role": "system", "content": "You are helpful."},
-      {"role": "user", "content": "What is the current CO2 in smart_lab?"}
-    ],
-    "stream": false,
-    "k": 3,
-    "lab_name": "smart_lab"
-  }'
-```
-
-Stream example:
-
-```bash
-curl -N -X POST "http://127.0.0.1:8001/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "rag-router",
-    "messages": [
-      {"role": "user", "content": "Find anomalies in CO2 in smart_lab"}
-    ],
-    "stream": true,
-    "k": 3,
-    "lab_name": "smart_lab"
-  }'
-```
-
-OpenAI compatibility notes:
-
-- Returns OpenAI-like objects:
-  - non-stream: `chat.completion`
-  - stream: `chat.completion.chunk` SSE + `[DONE]`
-- Includes `x_router` metadata in non-stream responses so route/debug info is preserved.
-- Includes `x_citation_sources` in non-stream responses and first stream chunk.
-
 ### Citation Sources in Streaming
 
-When the query involves IEQ thresholds or standards, the `meta`
-event includes a `citation_sources` array:
+Tokens may include inline citation markers like `[1]`, `[2]`. The sources they refer to
+arrive in a single `sources` event emitted after the last token and immediately before
+`done` — the answer has to be complete before the server knows which markers the model
+actually used:
 
 ```json
 {
+  "event": "sources",
   "citation_sources": [
     {
       "index": 1,
@@ -375,18 +307,21 @@ event includes a `citation_sources` array:
       "citation_tier": "regulatory",
       "source_url": "https://reset.build/standard/air"
     }
-  ]
+  ],
+  "footnotes": [{ "index": 1, "source_label": "RESET Air Standard v2.1" }]
 }
 ```
 
-Tokens may include inline citation markers like `[1]`, `[2]`
-that correspond to the `index` values in `citation_sources`.
+- `citation_sources`: every source that was offered to the model.
+- `footnotes`: only the sources the answer actually cited, in appearance order.
 
-The `citations` event (emitted after all tokens) contains only
-the sources that were actually cited in the answer.
+These are the same two fields the sync `/query` response returns in its body, so a client
+can render both paths identically. Frontend rendering: replace `[N]` with a superscript
+that links to or highlights the matching `index`.
 
-Frontend rendering: replace `[N]` with a superscript that links to
-or highlights the corresponding source.
+The full SSE event sequence is `status` → `meta` → (`meta_update` on the DB path) →
+`token`… → `sources` → `done`. A failure mid-stream emits an `error` event followed by
+`done`, so the stream always terminates.
 
 ## How DB Time Parsing Works
 
@@ -428,12 +363,18 @@ Common HTTP status codes:
 
 - `200`: success
 - `400`: invalid input (for example, empty question)
+- `401`: missing or invalid API key (when `RAG_API_KEYS` is set)
+- `403`: `conversation_id` belongs to a different caller
 - `500`: internal execution error (DB/LLM/runtime)
 
 Runtime reliability notes:
 
-- Non-streaming route execution is offloaded via threadpool to reduce event-loop blocking.
-- Streaming errors now include stable error codes (for example, `execution_error`, `stream_error`) in payload metadata.
+- Non-streaming route execution is offloaded via threadpool to reduce event-loop blocking;
+  streaming paths offload their blocking work (IFC parse, sensor API fetch) the same way.
+- A streaming failure emits an `error` event carrying a stable code (for example
+  `execution_error`, `stream_error`) followed by `done`, so the client is never left hanging.
+- If the answer model is unreachable, each executor emits a deterministic, grounded fallback
+  answer instead of failing or returning an empty stream.
 
 ## Notes
 

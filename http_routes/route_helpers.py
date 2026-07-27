@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from storage.conversation_context import ConversationContext, build_conversation_context
-from storage.conversation_store import append_conversation_turn
+from storage.conversation_store import ANONYMOUS_OWNER, append_conversation_turn
 
 
 SSE_HEADERS: Dict[str, str] = {
@@ -19,22 +19,30 @@ def build_query_context(
     question: str,
     lab_name: Optional[str],
     conversation_id: Optional[str],
+    owner: str = ANONYMOUS_OWNER,
 ) -> ConversationContext:
     """Build the canonical ConversationContext for one HTTP turn."""
     return build_conversation_context(
         question=question,
         lab_name=lab_name,
         conversation_id=conversation_id,
+        owner=owner,
     )
 
 
-def persist_turn(conversation_id: Optional[str], question: str, answer: str) -> Optional[int]:
+def persist_turn(
+    conversation_id: Optional[str],
+    question: str,
+    answer: str,
+    owner: str = ANONYMOUS_OWNER,
+) -> Optional[int]:
     if not conversation_id:
         return None
     return append_conversation_turn(
         conversation_id=conversation_id,
         user_message=question,
         assistant_message=answer,
+        owner=owner,
     )
 
 

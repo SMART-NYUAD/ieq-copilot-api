@@ -162,7 +162,7 @@ def _execute_knowledge(
             "executor": "knowledge_qa",
             "intent": route.intent.value,
             "lab_name": lab_name,
-            "llm_used": True,
+            "llm_used": bool(result.get("llm_used", False)),
             "route_confidence": route.confidence,
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
