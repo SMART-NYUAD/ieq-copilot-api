@@ -81,12 +81,21 @@ def _build_planner_hints(
     carried_time_phrase: Optional[str] = None,
     carried_metric: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # Regex carry-over (carried_metric / carried_time_phrase) is EMERGENCY-ONLY: it
+    # applies only when the LLM router was unreachable (``fallback_used``). When the
+    # router ran, ``RoutePlan.resolved_question`` already folds every prior-turn
+    # reference into the question text — that is the canonical, LLM-driven carry-over.
+    # Injecting the regex-guessed prior window on top of it double-resolves and can
+    # override the day the user actually asked for: a bare day-of-month like
+    # "what about on the 11" is invisible to the time regex, so the stale prior date
+    # ("june 9") would win and answer the wrong day. See feat/llm-context-resolution.
+    apply_regex_carryover = route.fallback_used
     metrics_priority = list(route.metrics)
     # Carry the prior turn's metric only when the current question named none
     # (the LLM/regex produced no metric for this turn). ``carried_metric`` is
     # already gated upstream so it is only set when the question omits a metric,
     # but guard here too so an explicit current metric always wins.
-    if carried_metric and not metrics_priority:
+    if apply_regex_carryover and carried_metric and not metrics_priority:
         metrics_priority = [carried_metric]
     hints: Dict[str, Any] = {
         "metrics_priority": metrics_priority,
@@ -99,7 +108,7 @@ def _build_planner_hints(
         # rather than returning the single named value.
         "analysis_mode": route.analysis_mode,
     }
-    if carried_time_phrase:
+    if apply_regex_carryover and carried_time_phrase:
         hints["carried_time_phrase"] = carried_time_phrase
     return hints
 
@@ -298,10 +307,13 @@ def _execute_ifc(question: str, route: RoutePlan) -> Dict[str, Any]:
 
 def _execute_sensor_inspection(question: str, lab_name: Optional[str], route: RoutePlan) -> Dict[str, Any]:
     result = answer_sensor_question_with_metadata(user_question=question, space=lab_name)
+    # Sensor snapshot has no per-claim numbered citations, so citation_sources stays
+    # empty; provenance (the heatmap/metrics snapshot) is surfaced in metadata instead —
+    # mirrors _execute_ifc's model_source handling.
     return {
         "answer": str(result.get("answer") or ""),
         "footnotes": [],
-        "citation_sources": list(result.get("indexed_sources") or []),
+        "citation_sources": [],
         "timescale": "sensors",
         "cards_retrieved": 0,
         "recent_card": False,
@@ -310,6 +322,7 @@ def _execute_sensor_inspection(question: str, lab_name: Optional[str], route: Ro
             "intent": route.intent.value,
             "lab_name": lab_name,
             "llm_used": bool(result.get("llm_used", False)),
+            "model_source": list(result.get("indexed_sources") or []),
             "route_confidence": route.confidence,
             "planner_model": route.model,
             "fallback_used": route.fallback_used,
@@ -481,28 +494,47 @@ def _execute_download_control(route: RoutePlan, question: str) -> Dict[str, Any]
     }
 
 
+def _resolved_question(ctx: ConversationContext, route: RoutePlan) -> str:
+    """The self-contained question the executors and answer LLM should act on.
+
+    Prefer the router's LLM-resolved rewrite (references filled from prior turns);
+    fall back to the clean current-turn question when the router produced none
+    (e.g. regex fallback, or an already self-contained question)."""
+    resolved = str(route.resolved_question or "").strip()
+    return resolved or ctx.effective_question
+
+
 def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, endpoint_key: str = "query_sync") -> Dict[str, Any]:
     """Execute a query given a fully-resolved ConversationContext."""
     route = plan_route(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
     executor = _choose_executor(route)
+    question = _resolved_question(ctx, route)
 
     if executor == RouteExecutor.VIEWER_CONTROL:
-        return _execute_viewer_control(route)
-    if executor == RouteExecutor.HEATMAP_CONTROL:
-        return _execute_heatmap_control(route)
-    if executor == RouteExecutor.DOWNLOAD_DATA:
-        return _execute_download_control(route, ctx.effective_question)
-    if executor == RouteExecutor.IFC_QA:
-        return _execute_ifc(ctx.effective_question, route)
-    if executor == RouteExecutor.SENSOR_INSPECTION:
-        return _execute_sensor_inspection(ctx.effective_question, ctx.effective_lab, route)
-    if route.intent == IntentType.UNKNOWN_FALLBACK:
-        return _execute_unknown_fallback(route)
-    if executor == RouteExecutor.KNOWLEDGE_QA:
-        return _execute_knowledge(ctx.effective_question, k, ctx.effective_lab, route)
-    return _execute_db(ctx.effective_question, k, ctx.effective_lab, route, ctx.llm_history,
-                       carried_time_phrase=ctx.carried_time_phrase,
-                       carried_metric=ctx.carried_metric)
+        result = _execute_viewer_control(route)
+    elif executor == RouteExecutor.HEATMAP_CONTROL:
+        result = _execute_heatmap_control(route)
+    elif executor == RouteExecutor.DOWNLOAD_DATA:
+        result = _execute_download_control(route, question)
+    elif executor == RouteExecutor.IFC_QA:
+        result = _execute_ifc(question, route)
+    elif executor == RouteExecutor.SENSOR_INSPECTION:
+        result = _execute_sensor_inspection(question, ctx.effective_lab, route)
+    elif route.intent == IntentType.UNKNOWN_FALLBACK:
+        result = _execute_unknown_fallback(route)
+    elif executor == RouteExecutor.KNOWLEDGE_QA:
+        result = _execute_knowledge(question, k, ctx.effective_lab, route)
+    else:
+        result = _execute_db(question, k, ctx.effective_lab, route, ctx.llm_history,
+                             carried_time_phrase=ctx.carried_time_phrase,
+                             carried_metric=ctx.carried_metric)
+
+    # Surface the resolved question for observability when it differs from what the
+    # user literally typed (i.e. context was actually resolved).
+    md = result.get("metadata")
+    if isinstance(md, dict) and question.strip() != ctx.original_question.strip():
+        md["resolved_question"] = question
+    return result
 
 
 def _status_event(stage: str, message: str) -> str:
@@ -549,6 +581,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
     yield _status_event("routing", "Classifying question…")
     route = await plan_route_async(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
     executor = _choose_executor(route)
+    question = _resolved_question(ctx, route)
 
     if executor == RouteExecutor.VIEWER_CONTROL:
         viewer_type = route.viewer_type or "splat"
@@ -572,7 +605,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         return
 
     if executor == RouteExecutor.DOWNLOAD_DATA:
-        result = _execute_download_control(route, ctx.effective_question)
+        result = _execute_download_control(route, question)
         meta = _control_stream_meta("download_data", route, result["metadata"]["ui"])
         yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
         yield f"data: {json.dumps({'event': 'token', 'text': result['answer']})}\n\n"
@@ -599,7 +632,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         }
         yield f"data: {json.dumps({'event': 'meta', **ifc_meta})}\n\n"
         yield _status_event("reading_model", "Reading building model…")
-        async for chunk in stream_ifc_tokens(user_question=ctx.effective_question):
+        async for chunk in stream_ifc_tokens(user_question=question):
             yield chunk
         return
 
@@ -614,7 +647,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
         )
         yield f"data: {json.dumps({'event': 'meta', **sensor_meta})}\n\n"
         yield _status_event("reading_sensors", "Reading sensor status…")
-        async for chunk in stream_sensor_tokens(user_question=ctx.effective_question, space=ctx.effective_lab):
+        async for chunk in stream_sensor_tokens(user_question=question, space=ctx.effective_lab):
             yield chunk
         return
 
@@ -633,15 +666,17 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
     use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA
 
     meta = await _build_stream_meta(route, ctx.effective_lab, use_knowledge_executor)
+    if question.strip() != ctx.original_question.strip():
+        meta["resolved_question"] = question
     yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
 
     if use_knowledge_executor:
         yield _status_event("searching_knowledge", "Searching knowledge base…")
         live_sensor_data = await run_in_threadpool(
-            _fetch_live_sensor_data, ctx.effective_question, ctx.effective_lab, route
+            _fetch_live_sensor_data, question, ctx.effective_lab, route
         )
         async for chunk in stream_knowledge_tokens(
-            user_question=ctx.effective_question,
+            user_question=question,
             k=max(1, min(k, 8)),
             space=ctx.effective_lab,
             live_sensor_data=live_sensor_data,
@@ -656,7 +691,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
     yield _status_event("querying_db", "Fetching sensor data…")
     query_context = await run_in_threadpool(
         prepare_db_query,
-        ctx.effective_question,
+        question,
         route.intent,
         ctx.effective_lab,
         planner_hints,
@@ -687,7 +722,7 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
 
     yield _status_event("building_response", "Building response…")
     async for chunk in stream_db_tokens(
-        question=ctx.effective_question,
+        question=question,
         intent=route.intent,
         lab_name=ctx.effective_lab,
         planner_hints=planner_hints,

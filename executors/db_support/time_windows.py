@@ -51,24 +51,14 @@ def format_display_window_bounds(window_start: datetime, window_end: datetime) -
 
 
 def granularity_hours_for_window(window_start: datetime, window_end: datetime) -> int:
-    """Derive the aggregation granularity (hours per bucket) from the window span.
+    """Aggregation granularity (hours per bucket) for the ``indoor-data`` /
+    ``agg-summary`` endpoints.
 
-    Mirrors the frontend's range-based granularity rule for the
-    ``indoor-data`` / ``agg-summary`` endpoints:
-
-    - a month or more  → 12 hours
-    - a week up to a month → 6 hours
-    - less than a week → 1 hour
+    Always **1 hour**, regardless of the window span. We deliberately do NOT
+    coarsen to 6h/12h buckets for wide ranges: every data aggregation in this
+    app is hourly so the numbers stay consistent across questions. The window
+    arguments are retained for signature compatibility with the call sites.
     """
-    try:
-        span_hours = max(0.0, (window_end - window_start).total_seconds() / 3600.0)
-    except Exception:
-        span_hours = 0.0
-    span_days = span_hours / 24.0
-    if span_days >= 28.0:
-        return 12
-    if span_days >= 7.0:
-        return 6
     return 1
 
 

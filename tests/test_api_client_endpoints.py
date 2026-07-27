@@ -30,9 +30,9 @@ class AggSummaryParamTests(unittest.TestCase):
     def setUp(self):
         api_client._RESPONSE_CACHE.clear()
 
-    def test_agg_summary_sends_window_bounds_and_derived_interval(self):
+    def test_agg_summary_sends_window_bounds_and_hourly_interval(self):
         end = datetime(2026, 6, 10, tzinfo=timezone.utc)
-        start = end - timedelta(days=10)  # a week-to-a-month span → 6h granularity
+        start = end - timedelta(days=10)  # aggregation is always hourly, even for wide spans
         client = MagicMock()
         client.get.return_value = _ok_response({"aggregate_readings": []})
         with patch.object(api_client, "_get_client", return_value=client):
@@ -41,7 +41,7 @@ class AggSummaryParamTests(unittest.TestCase):
         params = kwargs["params"]
         self.assertEqual(params["window_start"], start.isoformat())
         self.assertEqual(params["window_end"], end.isoformat())
-        self.assertEqual(params["interval_hours"], 6)
+        self.assertEqual(params["interval_hours"], 1)
         self.assertNotIn("window_hours", params)
 
     def test_agg_summary_explicit_interval_overrides_derivation(self):
@@ -60,7 +60,7 @@ class IndoorDataParamTests(unittest.TestCase):
 
     def test_indoor_data_sends_window_bounds_and_type(self):
         end = datetime(2026, 6, 10, tzinfo=timezone.utc)
-        start = end - timedelta(days=40)  # a month-plus span → 12h granularity
+        start = end - timedelta(days=40)  # aggregation is always hourly, even for wide spans
         client = MagicMock()
         client.get.return_value = _ok_response({"readings": []})
         with patch.object(api_client, "_get_client", return_value=client):
@@ -69,7 +69,7 @@ class IndoorDataParamTests(unittest.TestCase):
         self.assertEqual(params["type"], "IEQ")
         self.assertEqual(params["window_start"], start.isoformat())
         self.assertEqual(params["window_end"], end.isoformat())
-        self.assertEqual(params["interval"], 12)
+        self.assertEqual(params["interval"], 1)
         self.assertNotIn("timeframe", params)
 
 

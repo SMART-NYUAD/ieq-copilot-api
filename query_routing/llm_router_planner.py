@@ -59,7 +59,13 @@ _SYSTEM_PROMPT = (
     '(e.g. "1m", "15m", "1h", "1d") — the granularity, NOT the time range; else null\n'
     '  "analysis_mode": "diagnostic" when the user asks WHY an index/metric is bad/good/'
     "changing or what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE for / BEHIND it "
-    "(a root-cause question), else null\n\n"
+    "(a root-cause question), else null\n"
+    '  "resolved_question": the current Question rewritten as a FULLY SELF-CONTAINED question — '
+    "every elliptical reference (metric, time window, lab/space, unit, or a bare pronoun like "
+    "'it', 'that', 'this', 'there', 'those') replaced with what it refers to from Prior "
+    "conversation. If the Question is already self-contained, copy it VERBATIM. NEVER add scope "
+    "the user did not imply and NEVER change their intent — only make implicit references "
+    "explicit. The current Question's own scope always wins over prior turns.\n\n"
     "Routing rules:\n"
     "- DOMAIN GUARDRAIL: This assistant only handles indoor environmental quality, sensor data, "
     "building/BIM/IFC model questions, viewer-control, and heatmap-overlay requests. If the question is unrelated "
@@ -78,6 +84,20 @@ _SYSTEM_PROMPT = (
     "The current Question sets metric/topic scope; do not route to a prior-turn metric when "
     "the user asked a different scope (e.g. 'air quality' after a temperature question → IEQ/IAQ, not temperature). "
     "Prior context NEVER overrides the CRITICAL OVERRIDE rule above.\n"
+    "- CONTEXT RESOLUTION: Always output `resolved_question`. Use Prior conversation to make a "
+    "follow-up self-contained: 'what about humidity?' after 'temperature in smart_lab in the first "
+    "week of May' → 'what was the humidity in smart_lab in the first week of May?'; 'and last week?' "
+    "keeps the metric but swaps the window; 'is that ok?' / 'convert that to cm' resolves 'that' to "
+    "the thing just discussed. A bare calendar day with NO month — 'what about on the 11th?', "
+    "'and the 9th?', 'give me the 11', 'what about the 2nd' — refers to the SAME month and year "
+    "already in play, so resolve it FULLY: after 'PM2.5 for June 1-8' → 'what was the PM2.5 on "
+    "June 11?'; after 'temperature on May 3' → 'what was the temperature on May 9?'. NEVER leave the "
+    "day monthless and NEVER fall back to a day already answered in a prior turn — carry the metric "
+    "and lab from context and set `time_phrase` to the fully-qualified date (e.g. 'June 11'). "
+    "A NEW topic must NOT drag old scope: 'how is the air quality?' after a "
+    "temperature question → 'how is the air quality?' (never inject temperature). If the Question "
+    "needs nothing resolved, echo it EXACTLY. `metrics`, `lab`, and `time_phrase` must stay "
+    "consistent with `resolved_question`.\n"
     "- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to \"diagnostic\" whenever the user asks what is "
     "DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or "
     "REASON for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the "
@@ -440,6 +460,9 @@ def _fallback_plan(question: str, lab_name: Optional[str]) -> RoutePlan:
         model="fallback",
         fallback_used=True,
         analysis_mode=analysis_mode,
+        # No LLM to resolve references; the raw question is the best we have. The
+        # regex carry-over in conversation_memory remains the deterministic backup.
+        resolved_question=question,
     )
 
 
@@ -516,6 +539,12 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     raw_analysis = str(data.get("analysis_mode") or "").strip().lower()
     analysis_mode = raw_analysis if raw_analysis in _VALID_ANALYSIS_MODES else None
 
+    # Self-contained rewrite of the current question. Fall back to the raw question
+    # when the LLM omits it or returns something empty/non-string, so downstream
+    # always has a usable, non-elliptical question to execute and answer from.
+    raw_resolved = data.get("resolved_question")
+    resolved_question = raw_resolved.strip() if isinstance(raw_resolved, str) and raw_resolved.strip() else question
+
     return RoutePlan(
         intent=intent,
         confidence=confidence,
@@ -532,6 +561,7 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         download_metric=download_metric,
         download_interval=download_interval,
         analysis_mode=analysis_mode,
+        resolved_question=resolved_question,
     )
 
 
@@ -540,9 +570,10 @@ def _build_router_user_message(question: str, lab_name: Optional[str], conversat
     base = f"Question: {question}\nLab hint: {lab_name or '(none)'}"
     if not conversation_context:
         return base
-    # Keep last 4 lines (≈ 2 prior turns) to avoid ballooning the router prompt. Uses the
-    # same line-extraction as the context builder so the two never diverge.
-    snippet = "\n".join(extract_context_lines(conversation_context)[-4:])
+    # Keep the last few lines (≈ 4 prior turns) so the router has enough context to
+    # resolve follow-ups ("is that ok?", "convert that to cm") without ballooning the
+    # prompt. Uses the same line-extraction as the context builder so the two never diverge.
+    snippet = "\n".join(extract_context_lines(conversation_context)[-8:])
     if not snippet:
         return base
     return f"Prior conversation:\n{snippet}\n\n{base}"
