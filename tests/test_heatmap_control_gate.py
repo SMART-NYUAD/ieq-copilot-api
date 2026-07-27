@@ -72,8 +72,8 @@ class TestParseHeatmap(unittest.TestCase):
             payload["heatmap_metric"] = metric
         return json.dumps(payload)
 
-    def test_explicit_action_and_metric(self):
-        raw = self._build_raw("heatmap_control", action="on", metric="temperature")
+    def test_action_and_metric_derived_from_the_question(self):
+        raw = self._build_raw("heatmap_control")
         plan = _parse_llm_response(raw, "turn on the heatmap and use temperature", None)
         self.assertIsNotNone(plan)
         self.assertEqual(plan.intent, IntentType.HEATMAP_CONTROL)
@@ -81,27 +81,33 @@ class TestParseHeatmap(unittest.TestCase):
         self.assertEqual(plan.heatmap_metric, "temperature")
 
     def test_off_action(self):
-        raw = self._build_raw("heatmap_control", action="off")
+        raw = self._build_raw("heatmap_control")
         plan = _parse_llm_response(raw, "turn off the heatmap", None)
         self.assertEqual(plan.heatmap_action, "off")
         self.assertIsNone(plan.heatmap_metric)
 
     def test_pm25_metric_canonicalized(self):
-        raw = self._build_raw("heatmap_control", action="on", metric="pm2.5")
+        raw = self._build_raw("heatmap_control")
         plan = _parse_llm_response(raw, "show the pm2.5 heatmap", None)
         self.assertEqual(plan.heatmap_metric, "pm25")
 
-    def test_invalid_metric_falls_back_to_inference(self):
-        # LLM names an unsupported metric, but the question text mentions humidity.
-        raw = self._build_raw("heatmap_control", action="on", metric="co2")
+    def test_llm_supplied_heatmap_fields_are_ignored(self):
+        # The router is no longer asked for these — the question wins over stray fields.
+        raw = self._build_raw("heatmap_control", action="off", metric="co2")
         plan = _parse_llm_response(raw, "color the model by humidity", None)
+        self.assertEqual(plan.heatmap_action, "on")
         self.assertEqual(plan.heatmap_metric, "humidity")
 
-    def test_missing_fields_fall_back_to_inference(self):
-        raw = self._build_raw("heatmap_control")
-        plan = _parse_llm_response(raw, "turn on the heatmap and use the metric temperature", None)
+    def test_metric_reads_the_resolved_question(self):
+        # "color the heatmap by that" is only answerable through the router's rewrite.
+        raw = json.dumps({
+            "intent": "heatmap_control", "lab": None, "second_lab": None, "metrics": [],
+            "time_phrase": None, "confidence": 0.9,
+            "resolved_question": "color the heatmap by humidity",
+        })
+        plan = _parse_llm_response(raw, "color the heatmap by that", None)
         self.assertEqual(plan.heatmap_action, "on")
-        self.assertEqual(plan.heatmap_metric, "temperature")
+        self.assertEqual(plan.heatmap_metric, "humidity")
 
     def test_non_heatmap_intent_has_no_heatmap_fields(self):
         raw = self._build_raw("current_status_db")

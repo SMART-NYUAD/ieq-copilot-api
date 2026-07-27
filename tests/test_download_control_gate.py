@@ -103,8 +103,8 @@ class TestParseDownload(unittest.TestCase):
             payload["download_interval"] = interval
         return json.dumps(payload)
 
-    def test_explicit_format_and_metric(self):
-        raw = self._build_raw("download_data", fmt="JSON", metric="pm2.5", interval="1h")
+    def test_format_metric_and_interval_derived_from_the_question(self):
+        raw = self._build_raw("download_data")
         plan = _parse_llm_response(raw, "export pm2.5 readings as json hourly", None)
         self.assertIsNotNone(plan)
         self.assertEqual(plan.intent, IntentType.DOWNLOAD_DATA)
@@ -119,10 +119,29 @@ class TestParseDownload(unittest.TestCase):
         self.assertIsNone(plan.download_metric)
         self.assertIsNone(plan.download_interval)
 
-    def test_metric_falls_back_to_inference(self):
+    def test_metric_is_inferred_from_the_question(self):
         raw = self._build_raw("download_data")
         plan = _parse_llm_response(raw, "export the temperature readings", None)
         self.assertEqual(plan.download_metric, "temperature")
+
+    def test_llm_supplied_download_fields_are_ignored(self):
+        # The router is no longer asked for these — the question wins over stray fields.
+        raw = self._build_raw("download_data", fmt="json", metric="co2", interval="1d")
+        plan = _parse_llm_response(raw, "export the temperature readings as csv", None)
+        self.assertEqual(plan.download_format, "csv")
+        self.assertEqual(plan.download_metric, "temperature")
+        self.assertIsNone(plan.download_interval)
+
+    def test_metric_reads_the_resolved_question(self):
+        # "export that as a csv" only names a metric after the router's rewrite.
+        raw = json.dumps({
+            "intent": "download_data", "lab": None, "second_lab": None, "metrics": [],
+            "time_phrase": "last week", "confidence": 0.9,
+            "resolved_question": "export the temperature data for last week as a csv",
+        })
+        plan = _parse_llm_response(raw, "export that as a csv", None)
+        self.assertEqual(plan.download_metric, "temperature")
+        self.assertEqual(plan.download_format, "csv")
 
     def test_non_download_intent_has_no_download_fields(self):
         raw = self._build_raw("current_status_db")

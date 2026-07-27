@@ -67,24 +67,30 @@ class TestParseLlmResponse(unittest.TestCase):
             payload["viewer_type"] = viewer_type
         return json.dumps(payload)
 
-    def test_viewer_control_valid_viewer_type(self):
-        raw = self._build_raw("viewer_control", viewer_type="pano")
+    def test_viewer_type_is_derived_from_the_question(self):
+        raw = self._build_raw("viewer_control")
         plan = _parse_llm_response(raw, "show me the panorama", None)
         self.assertIsNotNone(plan)
         self.assertEqual(plan.intent, IntentType.VIEWER_CONTROL)
         self.assertEqual(plan.viewer_type, "pano")
 
-    def test_viewer_control_invalid_viewer_type_falls_back_to_inference(self):
-        raw = self._build_raw("viewer_control", viewer_type="unknown_thing")
+    def test_llm_supplied_viewer_type_is_ignored(self):
+        # The router is no longer asked for viewer_type — the closed vocabulary maps
+        # deterministically from the wording, so the question wins over a stray field.
+        raw = self._build_raw("viewer_control", viewer_type="pano")
         plan = _parse_llm_response(raw, "open the point cloud", None)
         self.assertIsNotNone(plan)
-        self.assertEqual(plan.intent, IntentType.VIEWER_CONTROL)
         self.assertEqual(plan.viewer_type, "pc")
 
-    def test_viewer_control_missing_viewer_type_falls_back_to_inference(self):
-        raw = self._build_raw("viewer_control")
-        plan = _parse_llm_response(raw, "switch to ifc", None)
-        self.assertIsNotNone(plan)
+    def test_viewer_type_reads_the_resolved_question(self):
+        # An elliptical request resolves via the router's rewrite, which is the single
+        # place context resolution lives.
+        raw = json.dumps({
+            "intent": "viewer_control", "lab": None, "second_lab": None, "metrics": [],
+            "time_phrase": None, "confidence": 0.9,
+            "resolved_question": "open the ifc model view",
+        })
+        plan = _parse_llm_response(raw, "open that one", None)
         self.assertEqual(plan.viewer_type, "ifc")
 
     def test_non_viewer_intent_has_no_viewer_type(self):
@@ -100,11 +106,17 @@ class TestParseLlmResponse(unittest.TestCase):
         self.assertEqual(plan.intent, IntentType.UNKNOWN_FALLBACK)
         self.assertEqual(plan.confidence, 0.95)
 
-    def test_all_valid_viewer_types_accepted(self):
-        for vt in ("splat", "ifc", "pc", "pano"):
-            raw = self._build_raw("viewer_control", viewer_type=vt)
-            plan = _parse_llm_response(raw, "switch viewer", None)
-            self.assertEqual(plan.viewer_type, vt)
+    def test_every_viewer_type_is_reachable_from_wording(self):
+        wording = {
+            "show me the gaussian splat": "splat",
+            "switch to the floor plan": "ifc",
+            "open the point cloud": "pc",
+            "show the panorama": "pano",
+        }
+        for question, expected in wording.items():
+            raw = self._build_raw("viewer_control")
+            plan = _parse_llm_response(raw, question, None)
+            self.assertEqual(plan.viewer_type, expected, question)
 
 
 class TestChooseExecutor(unittest.TestCase):

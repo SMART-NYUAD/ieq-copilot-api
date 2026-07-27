@@ -36,6 +36,16 @@ python -m unittest discover -s tests -p "test_branch_model.py"
 python scripts/check_tests_hermetic.py
 ```
 
+**Score the router prompt against the live LLM** (network by design — not part of `discover`):
+```bash
+python tests/router_eval.py                  # golden router cases + golden conversation
+python tests/router_eval.py --router-only    # fast loop while tuning _SYSTEM_PROMPT
+python tests/router_eval.py --group context  # one capability: intent|context|clarify|ui-control|diagnostic|injection
+```
+Run this before and after any `_SYSTEM_PROMPT` change — it is the only thing that measures the
+prompt, since the unittest suite is hermetic and stubs the router out. Cases live in
+`tests/router_eval_cases.json`; a fix for a routing bug belongs there as a case first.
+
 **Primary regression suite:**
 ```bash
 python -m unittest discover -s tests -p "test_context_resolution.py"        # follow-up resolution
@@ -94,7 +104,9 @@ Failures are handled by class, because they call for different responses. A **tr
 - `ifc_model_qa` → IFC executor (questions *about* the BIM/IFC building model)
 - `sensor_inspection` → sensor-inspection executor (questions about *individual* sensors/devices — ranking them by a metric, e.g. *"which sensor has the highest temperature?"*, and sensor health/offline status, e.g. *"which sensors are faulty/offline?"*)
 
-Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`). `heatmap_control` is a sibling UI meta-action: *"turn on the heatmap and use temperature"* emits a `meta` event with action + metric and returns no sensor values. `download_data` is another sibling: *"export the last 7 days of temperature as CSV"* resolves the time window server-side (via `extract_time_window`, mirroring the DB path so the frontend never reconstructs date ranges; **defaults to the last 24 hours** when no window is given) and emits a `meta` event carrying the discrete parameters (`download_slug`, `download_metric_type`, `download_start`/`download_end`, `download_interval`, `download_format`) for the `/spaces/{slug}/metrics/{metric_type}/download-agg-summary` endpoint — the frontend assembles the request and renders a button, not an auto-download. A metric is mandatory: if the user names none, the branch returns `download_needs_metric=true` with a follow-up question rather than parameters. The space slug defaults to `DOWNLOAD_SPACE_SLUG` and the interval to `DOWNLOAD_DEFAULT_INTERVAL`. It is distinct from `aggregation_db`: *"what was the average CO2 last week?"* is a data question (DB path), *"download last week's data"* is `download_data`. Like `viewer_control`, all three branches short-circuit before the DB/evidence layers and are LLM-routed (no regex; only a non-regex alias fallback fills a field the LLM omits).
+Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`). `heatmap_control` is a sibling UI meta-action: *"turn on the heatmap and use temperature"* emits a `meta` event with action + metric and returns no sensor values. `download_data` is another sibling: *"export the last 7 days of temperature as CSV"* resolves the time window server-side (via `extract_time_window`, mirroring the DB path so the frontend never reconstructs date ranges; **defaults to the last 24 hours** when no window is given) and emits a `meta` event carrying the discrete parameters (`download_slug`, `download_metric_type`, `download_start`/`download_end`, `download_interval`, `download_format`) for the `/spaces/{slug}/metrics/{metric_type}/download-agg-summary` endpoint — the frontend assembles the request and renders a button, not an auto-download. A metric is mandatory: if the user names none, the branch returns `download_needs_metric=true` with a follow-up question rather than parameters. The space slug defaults to `DOWNLOAD_SPACE_SLUG` and the interval to `DOWNLOAD_DEFAULT_INTERVAL`. It is distinct from `aggregation_db`: *"what was the average CO2 last week?"* is a data question (DB path), *"download last week's data"* is `download_data`. Like `viewer_control`, all three branches short-circuit before the DB/evidence layers and are LLM-routed.
+
+**The router is asked only for the intent of these three branches, not for their parameters.** Which 3D view, heatmap on/off and its metric, and the export format/metric/interval are closed vocabularies that map deterministically from wording, so `_parse_llm_response` derives them from the plan's `resolved_question` via the alias maps in `llm_router_planner.py` (`_infer_viewer_type`, `_infer_heatmap_action`/`_infer_heatmap_metric`, `_infer_download_format`/`_infer_download_metric`/`_infer_download_interval`). Reading `resolved_question` rather than the raw question is what keeps elliptical requests working — *"export that as a csv"* resolves because the router already rewrote *"that"* into the metric. This is not a retreat to regex routing: the intent is still LLM-decided, and coreference stays in the one field only the LLM can fill. Adding a new UI parameter means extending its alias map, not the system prompt.
 
 ### IFC executor
 
@@ -135,6 +147,10 @@ The scope vocabulary is closed and the scope→metrics table lives in code: the 
 
  Regex is a last resort (emergency fallback only). When improving or extending routing behavior, the right approach is to tune the system prompt in `llm_router_planner.py::_SYSTEM_PROMPT` and adjust intent definitions and examples — not to add regex patterns. The LLM handles ambiguity, typos, and natural language variation far better than keyword matching. Regex rules exist only in `_fallback_plan()` to cover the case where the Ollama endpoint is completely unreachable.
 
+**Worked example — the definite-article bug, fixed by prompting alone.** *"what is CO2?"* asks for the concept; *"what is the CO2?"* asks for this building's reading. The router got this wrong in both directions: it read acronyms (VOC, IEQ, PM2.5) as glossary entries even behind an article, and it copied the previous turn's route whenever the same metric came up again, so *"what is humidity?"* after a humidity reading returned a value instead of a definition. Prose rules did not fix it — measured on a 68-call probe (both directions, with and without prior conversation): prose rules alone 55/68, a symmetric article rule 58/68, a single categorical `value|concept` field 56/68. What worked, at 68/68, was **changing the output order**: two scratchpad fields, `metric_phrase` (quote the metric wording, article included) and `metric_has_article` (does it start with "the"?), declared *before* `intent`, plus an explicit statement that prior turns never add or remove the article. Nothing parses those fields — forcing the decision to be made and written down before the intent is the entire mechanism, which is why `_parse_llm_response` carries a comment telling you not to delete them.
+
+The transferable lesson: when the model is ignoring a rule, **making it emit the decision as a field usually beats restating the rule more forcefully** — and a stronger restatement can overshoot into the opposite error, which is what the eval catches and hand-sampling does not. Measure variants against `tests/router_eval.py`; a routing bug is fixed when the scorecard says so.
+
 ## Configuration
 
 All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and the process environment. Shell env vars win over `.env` values. Key variables:
@@ -147,7 +163,7 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `DATABASE_URL` | Postgres connection (or use `DB_*` components). Resolved lazily on first use — the process no longer fails at import when it is unset (only the guideline/knowledge-card path requires it) |
 | `SENSOR_API_BASE_URL` | Base URL of the Smart CRG sensor REST API for latest readings / agg-summaries (default: `http://192.168.50.99:7001`) |
 | `PREDICTIONS_API_BASE_URL` | Base URL of the forecast/predictions API (default: `https://api.smart-crg.com`) |
-| `OLLAMA_ROUTER_NUM_PREDICT` | Token budget for the router's JSON plan (default: `512`). Too low truncates the plan and silently drops the route to the regex fallback |
+| `OLLAMA_ROUTER_NUM_PREDICT` | Token budget for the router's JSON plan (default: `768`). Too low truncates the plan and silently drops the route to the regex fallback |
 | `MAX_QUERY_WINDOW_DAYS` | Upper bound on a resolved query window (default: `366`). Aggregation is always hourly, so this is what stops one question fanning out into tens of thousands of upstream buckets. When it trims a window the label says so, since the label reaches the answer LLM |
 | `DISPLAY_UTC_OFFSET_HOURS` | UTC offset used for **both** parsing question dates and labelling timestamps (default: `4`, Gulf Standard Time). `time_windows.target_tz()` is the single source — never hardcode an offset |
 | `RAG_API_KEYS` | Comma-separated API keys accepted on `/query`, `/query/stream`, `/sensors/latest/{space}`, `/ifc/summary` (send `X-API-Key: <key>` or `Authorization: Bearer <key>`). **Unset by default, which leaves those endpoints open** and puts every caller in one shared conversation namespace; set it before exposing the service beyond localhost. Each key maps to a distinct caller id that owns its conversations — reusing another caller's `conversation_id` returns 403 |
@@ -178,3 +194,8 @@ There is no route-preview, SQL-proof, or KPI endpoint — inspect a routing deci
 `metadata` on a normal `/query` response (`intent`, `route_confidence`, `planner_model`,
 `fallback_used`, `resolved_question`) or from the `meta` frame on the stream. Router
 degradation is logged as a warning by `_log_router_fallback` when the LLM is unreachable.
+
+For a routing *behaviour* question ("did my prompt change break follow-ups?"), use
+`python tests/router_eval.py` rather than sampling questions by hand — it reports a
+per-capability scorecard and shouts when a case fell through to the regex fallback, which
+is otherwise invisible except as `fallback_used` in the metadata.

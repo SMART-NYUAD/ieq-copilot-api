@@ -223,11 +223,14 @@ def router_num_predict() -> int:
     """Token budget for the router's JSON plan (``OLLAMA_ROUTER_NUM_PREDICT``).
 
     The plan carries the routing slots plus ``resolved_question`` and, when needed, a
-    ``clarification_question``, so a tight budget truncates the JSON and silently drops the
-    route to the regex fallback. 512 leaves headroom for a long resolved question.
+    ``clarification_question``. Those two are the only unbounded fields — a long question
+    with a long lab name can push the object past a tight budget, and a truncated plan is
+    unparseable, so the route silently drops to the regex fallback. Since that failure is
+    invisible in the response body (only ``fallback_used`` shows it), the budget is set
+    with slack rather than to the typical size.
     """
     ensure_env_loaded()
-    return _parse_int(os.getenv("OLLAMA_ROUTER_NUM_PREDICT", "512"), default=512, minimum=128)
+    return _parse_int(os.getenv("OLLAMA_ROUTER_NUM_PREDICT", "768"), default=768, minimum=128)
 
 
 def router_max_retries() -> int:

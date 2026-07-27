@@ -313,9 +313,13 @@ GOLDEN_CONVERSATION: List[Turn] = [
     Turn(
         user="Give me that in centimeters.",
         expect=Expect(
-            phase="P3", note="unit follow-up: answer in cm, not mm",
+            phase="P3", note="unit follow-up: the answer must be stated in cm",
             executor="ifc_qa",
-            answer_contains_any=["cm", "centimet"], answer_excludes=["mm"],
+            # Only the presence of cm is checked. Excluding "mm" was too strict: showing the
+            # conversion it came from ("2200 mm → 220 cm") is good grounding, not a failure,
+            # and an answer left in millimetres fails this check anyway — it would contain
+            # neither "cm" nor "centimet".
+            answer_contains_any=["cm", "centimet"],
         ),
     ),
     Turn(
