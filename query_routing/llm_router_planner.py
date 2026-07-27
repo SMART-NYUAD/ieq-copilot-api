@@ -23,6 +23,7 @@ from core_settings import (
     router_thinking,
     router_timeout_seconds,
 )
+from executors.db_support.metric_planning import VALID_METRIC_SCOPES
 from ollama_helpers import extract_chat_content
 from query_routing.intent_classifier import IntentType
 from query_routing.router_types import RoutePlan
@@ -58,6 +59,8 @@ _SYSTEM_PROMPT = (
     '["temperature", "humidity", "co2", "voc", "pm25"] — null if the user did not name one\n'
     '  "download_interval": aggregation bucket size for the export when intent is download_data '
     '(e.g. "1m", "15m", "1h", "1d") — the granularity, NOT the time range; else null\n'
+    '  "metric_scope": which family of metrics to read — one of [named, air_quality, '
+    "ieq_index, comfort, diagnostic, full]\n"
     '  "analysis_mode": "diagnostic" when the user asks WHY an index/metric is bad/good/'
     "changing or what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE for / BEHIND it "
     "(a root-cause question), else null\n"
@@ -132,6 +135,23 @@ _SYSTEM_PROMPT = (
     "missing metric on a broad air-quality/IEQ question (the system uses the IEQ pack), or "
     "anything Prior conversation already answers — resolve those in `resolved_question` "
     "instead. When `needs_clarification` is true, still fill `intent` with your best guess.\n"
+    "- METRIC SCOPE: `metric_scope` says WHICH metrics to read. It is independent of "
+    "`intent` — the intent decides how to query, the scope decides what to query for.\n"
+    "  * `named` — the user named the metric(s) they want: 'what is the CO2?', 'humidity "
+    "last week', 'temperature and humidity'. Use this whenever a specific metric is named "
+    "and the question is about that metric. Also use it for any non-data intent.\n"
+    "  * `air_quality` — pollutant air quality as a whole, no single metric named: 'how is "
+    "the air quality?', 'is the air clean?', 'are pollutant levels ok?'.\n"
+    "  * `ieq_index` — the IEQ score itself and its sub-indices (IAQ/ITC/IAC/IIL): 'what is "
+    "the IEQ?', 'is the IEQ good?', 'show the IEQ breakdown'. NOT the pollutant pack — an "
+    "IEQ ask wants the score family, not gas concentrations.\n"
+    "  * `comfort` — how the space FEELS to an occupant, across thermal, acoustic, lighting "
+    "AND air: 'is it comfortable in here?', 'is it stuffy?', 'how comfortable was smart_lab "
+    "this week?'.\n"
+    "  * `diagnostic` — root-cause questions; pair it with analysis_mode=\"diagnostic\".\n"
+    "  * `full` — the user explicitly asks for everything: 'give me a complete assessment'.\n"
+    "  When a named metric appears inside a broader question ('is the air quality ok, "
+    "especially CO2?'), prefer the broader scope — the named metric still leads the answer.\n"
     "- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to \"diagnostic\" whenever the user asks what is "
     "DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or "
     "REASON for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the "
@@ -573,6 +593,11 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     raw_analysis = str(data.get("analysis_mode") or "").strip().lower()
     analysis_mode = raw_analysis if raw_analysis in _VALID_ANALYSIS_MODES else None
 
+    # An unrecognised scope is dropped rather than guessed at: the DB path then infers one
+    # from question text, which is the same behaviour as an unreachable router.
+    raw_scope = str(data.get("metric_scope") or "").strip().lower()
+    metric_scope = raw_scope if raw_scope in VALID_METRIC_SCOPES else None
+
     # Self-contained rewrite of the current question. Fall back to the raw question
     # when the LLM omits it or returns something empty/non-string, so downstream
     # always has a usable, non-elliptical question to execute and answer from.
@@ -605,6 +630,7 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         download_metric=download_metric,
         download_interval=download_interval,
         analysis_mode=analysis_mode,
+        metric_scope=metric_scope,
         resolved_question=resolved_question,
         needs_clarification=needs_clarification,
         clarification_question=clarification_question,

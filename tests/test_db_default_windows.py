@@ -480,14 +480,14 @@ class DbDefaultWindowTests(FakeSensorApiMixin, unittest.TestCase):
         )
 
     def test_comfort_comparison_expands_metrics_beyond_humidity(self):
-        from executors.db_support.query_handlers import _requested_metrics
+        from executors.db_support.metric_planning import plan_metrics
 
-        metrics = _requested_metrics(
-            "How does humidity compare with comfort levels today?",
+        metrics = plan_metrics(
+            question="How does humidity compare with comfort levels today?",
             explicit_metrics=["humidity"],
             hinted_metrics=[],
             intent=IntentType.COMPARISON_DB,
-        )
+        ).selected
         self.assertIn("humidity", metrics)
         self.assertIn("ieq", metrics)
         self.assertIn("itc", metrics)
@@ -644,15 +644,15 @@ class DbDefaultWindowTests(FakeSensorApiMixin, unittest.TestCase):
 class IeqIndexQueryTests(FakeSensorApiMixin, unittest.TestCase):
     """An explicit IEQ-index ask reports the IEQ composite + sub-indices, not CO2."""
 
-    def test_requested_metrics_returns_ieq_family_not_pollutant_pack(self):
-        from executors.db_support.query_handlers import _requested_metrics
+    def test_plan_returns_ieq_family_not_pollutant_pack(self):
+        from executors.db_support.metric_planning import plan_metrics
 
-        metrics = _requested_metrics(
-            "Give me the IEQ data from May 1st to May 8th",
+        metrics = plan_metrics(
+            question="Give me the IEQ data from May 1st to May 8th",
             explicit_metrics=["ieq"],
             hinted_metrics=["ieq", "co2", "pm25"],
             intent=IntentType.AGGREGATION_DB,
-        )
+        ).selected
         # IEQ index leads, with its sub-indices — no CO2/PM2.5 pollutant pack.
         self.assertEqual(metrics[0], "ieq")
         for sub in ("iaq", "itc", "iac", "iil"):
@@ -661,14 +661,14 @@ class IeqIndexQueryTests(FakeSensorApiMixin, unittest.TestCase):
         self.assertNotIn("pm25", metrics)
 
     def test_air_quality_query_is_unaffected(self):
-        from executors.db_support.query_handlers import _requested_metrics
+        from executors.db_support.metric_planning import plan_metrics
 
-        metrics = _requested_metrics(
-            "How is the air quality from May 1st to May 8th?",
+        metrics = plan_metrics(
+            question="How is the air quality from May 1st to May 8th?",
             explicit_metrics=[],
             hinted_metrics=[],
             intent=IntentType.AGGREGATION_DB,
-        )
+        ).selected
         self.assertIn("co2", metrics)
         self.assertIn("ieq", metrics)
 
@@ -700,7 +700,7 @@ class DiagnosticSignalTests(FakeSensorApiMixin, unittest.TestCase):
     the keyword heuristic misses) still pulls every contributing metric."""
 
     def test_diagnostic_hint_pulls_full_pack_for_unmatched_phrasing(self):
-        from executors.db_support.query_handlers import _requested_metrics
+        from executors.db_support.metric_planning import plan_metrics
 
         # This phrasing is NOT caught by the is_diagnostic_query_text heuristic.
         question = "What is the main driver making the IEQ bad?"
@@ -709,19 +709,22 @@ class DiagnosticSignalTests(FakeSensorApiMixin, unittest.TestCase):
         self.assertFalse(is_diagnostic_query_text(question))
 
         # Without the LLM hint it collapses to the IEQ-index family only.
-        without_hint = _requested_metrics(
-            question, explicit_metrics=[], hinted_metrics=["ieq"], intent=IntentType.CURRENT_STATUS_DB
-        )
+        without_hint = plan_metrics(
+            question=question,
+            explicit_metrics=[],
+            hinted_metrics=["ieq"],
+            intent=IntentType.CURRENT_STATUS_DB,
+        ).selected
         self.assertNotIn("co2", without_hint)
 
         # With the LLM diagnostic hint it pulls the full contributing pack.
-        with_hint = _requested_metrics(
-            question,
+        with_hint = plan_metrics(
+            question=question,
             explicit_metrics=[],
             hinted_metrics=["ieq"],
             intent=IntentType.CURRENT_STATUS_DB,
             is_diagnostic=True,
-        )
+        ).selected
         for metric in ("co2", "pm25", "voc", "humidity", "temperature", "ieq"):
             self.assertIn(metric, with_hint)
 

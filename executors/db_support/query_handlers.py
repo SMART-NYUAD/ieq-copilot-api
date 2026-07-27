@@ -15,19 +15,10 @@ from executors.db_support import query_parsing as db_parsing
 from executors.db_support import time_windows as db_time_windows
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support.response_helpers import is_diagnostic_query_text
+from executors.db_support.metric_planning import MetricPlan, plan_metrics, with_ieq_sub_indices
 from executors import metric_registry
 
 _log = logging.getLogger(__name__)
-
-# Full comfort-assessment metric pack: IEQ + sub-indices, air quality, thermal, acoustic
-# (sound), and visual (light) comfort. Acoustic/visual are what make this a *comfort*
-# assessment rather than an air-quality one, so the per-branch caps below must not truncate
-# below the full pack length.
-_COMFORT_ASSESSMENT_PACK = [
-    "ieq", "itc", "iaq", "temperature", "humidity", "co2", "pm25", "voc", "sound", "light",
-]
-_COMFORT_PACK_SIZE = len(_COMFORT_ASSESSMENT_PACK)
-
 
 def _base_result(metric_alias: str, window_label: str) -> Dict[str, Any]:
     return {
@@ -92,134 +83,11 @@ def _is_historical_window_summary_query(question: str, window_label: str, window
     return window_hours >= 12.0
 
 
-def _is_full_assessment_query(question: str) -> bool:
-    q = str(question or "").lower()
-    full_assessment_tokens = (
-        "complete assessment",
-        "full assessment",
-        "full picture",
-        "everything you have",
-        "environmental assessment",
-    )
-    return any(token in q for token in full_assessment_tokens)
-
-
-def _requested_metrics(
-    question: str,
-    explicit_metrics: List[str],
-    hinted_metrics: List[str],
-    intent: IntentType,
-    is_diagnostic: Optional[bool] = None,
-) -> List[str]:
-    # ``is_diagnostic`` is the resolved root-cause signal (LLM analysis_mode with
-    # the question-text heuristic as fallback). When the caller does not supply it,
-    # fall back to the heuristic so direct callers/tests keep working.
-    if is_diagnostic is None:
-        is_diagnostic = is_diagnostic_query_text(question)
-    q = str(question or "").lower()
-    if _is_full_assessment_query(question):
-        full_pack = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
-        return full_pack
-
-    metrics = list(explicit_metrics) + [m for m in hinted_metrics if m not in explicit_metrics]
-    is_comfort_assessment_query = db_helpers.is_comfort_assessment_query_text(question)
-
-    # Explicit IEQ-index ask: report the IEQ composite plus its sub-indices
-    # (IAQ/ITC/IAC/IIL) — NOT the CO2/PM2.5/VOC pollutant pack. Pollutant
-    # "air quality", comfort, and diagnostic asks are handled by their own
-    # packs below.
-    if (
-        db_helpers.is_ieq_index_query_text(question)
-        and not db_helpers.is_air_quality_query_text(question)
-        and not is_comfort_assessment_query
-        and not is_diagnostic
-    ):
-        ieq_pack = ["ieq", "iaq", "itc", "iac", "iil"]
-        # Only carry over metrics the user explicitly named (e.g. "IEQ and CO2").
-        # Planner-hinted pollutants must not turn an IEQ-only ask into an
-        # air-quality summary.
-        return ieq_pack + [m for m in explicit_metrics if m not in ieq_pack]
-    analytical_intents = {
-        IntentType.AGGREGATION_DB,
-        IntentType.COMPARISON_DB,
-        IntentType.ANOMALY_ANALYSIS_DB,
-    }
-    if explicit_metrics and hinted_metrics and len(hinted_metrics) > len(explicit_metrics) and intent in analytical_intents:
-        metrics = list(hinted_metrics) + [m for m in explicit_metrics if m not in hinted_metrics]
-    if explicit_metrics:
-        explicit_air_metric = any(m in {"co2", "pm25", "voc"} for m in explicit_metrics)
-        trend_like_phrase = any(
-            token in q
-            for token in (
-                "trend",
-                "trended",
-                "over time",
-                "this week",
-                "last week",
-                "this month",
-                "last month",
-                "past ",
-                "last ",
-            )
-        )
-        planner_context_expansion = (
-            bool(hinted_metrics)
-            and len(hinted_metrics) > len(explicit_metrics)
-            and intent in analytical_intents
-        )
-        if not (
-            is_diagnostic
-            or (
-                intent == IntentType.COMPARISON_DB
-                and explicit_air_metric
-                and any(token in q for token in ("compare", "vs", "versus"))
-            )
-            or (
-                intent == IntentType.AGGREGATION_DB
-                and explicit_air_metric
-                and trend_like_phrase
-            )
-            or planner_context_expansion
-            or (
-                intent == IntentType.COMPARISON_DB
-                and is_comfort_assessment_query
-            )
-        ):
-            return metrics
-    if is_diagnostic:
-        required_pack = ["co2", "pm25", "voc", "humidity", "temperature", "ieq", "sound", "light"]
-        return required_pack + [m for m in metrics if m not in required_pack]
-    is_air_quality_query = db_helpers.is_air_quality_query_text(question)
-    if not is_air_quality_query:
-        q = str(question or "").lower()
-        if (
-            intent == IntentType.COMPARISON_DB
-            and any(m in {"co2", "pm25", "voc"} for m in metrics)
-            and any(token in q for token in ("compare", "vs", "versus"))
-        ):
-            is_air_quality_query = True
-        elif intent == IntentType.AGGREGATION_DB and len(explicit_metrics) == 1 and any(
-            m in {"co2", "pm25", "voc"} for m in explicit_metrics
-        ) and any(
-            token in q
-            for token in ("trend", "over time", "this week", "last week", "this month", "last month", "past ", "last ")
-        ):
-            is_air_quality_query = True
-    if not (is_air_quality_query or is_comfort_assessment_query):
-        return metrics
-    required_pack = (
-        list(_COMFORT_ASSESSMENT_PACK)
-        if is_comfort_assessment_query
-        else ["co2", "pm25", "voc", "humidity", "ieq"]
-    )
-    return required_pack + [m for m in metrics if m not in required_pack]
-
-
 def _handle_diagnostic(
     *,
     question: str,
     intent: IntentType,
-    requested_metrics: List[str],
+    plan: MetricPlan,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
@@ -230,7 +98,7 @@ def _handle_diagnostic(
         is_diagnostic = is_diagnostic_query_text(question)
     if not is_diagnostic:
         return None
-    core_metrics = ["ieq", "co2", "pm25", "voc", "humidity", "temperature", "sound", "light"]
+    core_metrics = plan.selected
     # Only fetch metrics the API supports
     fetchable = [m for m in core_metrics if api_client._api_sensor_slug(m) or api_client._score_type(m)]
 
@@ -292,11 +160,11 @@ def _handle_correlation(
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
-    requested_metrics: List[str],
+    plan: MetricPlan,
 ) -> Optional[Dict[str, Any]]:
-    if not (db_parsing.wants_correlation(question) and len(requested_metrics) >= 2):
+    if not (db_parsing.wants_correlation(question) and len(plan.metrics) >= 2):
         return None
-    metric_x, metric_y = requested_metrics[0], requested_metrics[1]
+    metric_x, metric_y = plan.metrics[0], plan.metrics[1]
     if not resolved_lab_name:
         return {
             "operation_type": "correlation",
@@ -355,27 +223,19 @@ def _handle_comparison_multi(
     *,
     question: str,
     intent: IntentType,
-    requested_metrics: List[str],
+    plan: MetricPlan,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    if not (intent == IntentType.COMPARISON_DB and len(requested_metrics) >= 2):
+    if not (intent == IntentType.COMPARISON_DB and len(plan.metrics) >= 2):
         return None
     if db_parsing.is_baseline_reference_query(question):
         return None
     if db_parsing.is_temporal_period_comparison(question):
         return None
-    if db_helpers.is_comfort_assessment_query_text(question):
-        compare_metrics = requested_metrics[:8]
-    elif db_helpers.is_air_quality_query_text(question):
-        compare_metrics = requested_metrics[:5]
-    else:
-        compare_metrics = requested_metrics[:4]
-
-    # Only include metrics that have a mapping (keeps metrics_used consistent)
-    metric_names = [m for m in compare_metrics if metric_registry.metric_column(m) is not None]
+    metric_names = plan.selected
     if not metric_names:
         return {
             "operation_type": "comparison_multi_metric",
@@ -523,31 +383,16 @@ def _handle_aggregation_multi(
     *,
     question: str,
     intent: IntentType,
-    requested_metrics: List[str],
+    plan: MetricPlan,
     compared_spaces: List[str],
     window_start: datetime,
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    if not (intent == IntentType.AGGREGATION_DB and len(requested_metrics) >= 2 and len(compared_spaces) < 2):
+    if not (intent == IntentType.AGGREGATION_DB and len(plan.metrics) >= 2 and len(compared_spaces) < 2):
         return None
-    if _is_full_assessment_query(question):
-        selected_metrics = requested_metrics[:8]
-    elif db_helpers.is_comfort_assessment_query_text(question):
-        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE]
-    elif (
-        db_helpers.is_ieq_index_query_text(question)
-        and not db_helpers.is_air_quality_query_text(question)
-    ):
-        # IEQ index + its four sub-indices.
-        selected_metrics = requested_metrics[:5]
-    elif db_helpers.is_air_quality_query_text(question):
-        selected_metrics = requested_metrics[:5]
-    else:
-        selected_metrics = requested_metrics[:4]
-
-    metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
+    metric_names = plan.selected
     if not metric_names:
         return {
             "operation_type": "aggregation_multi_metric",
@@ -582,7 +427,7 @@ def _handle_point_lookup(
     intent: IntentType,
     metric_alias: str,
     unit: str,
-    requested_metrics: List[str],
+    plan: MetricPlan,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
@@ -600,12 +445,8 @@ def _handle_point_lookup(
     )
 
     if historical_summary_query and intent == IntentType.POINT_LOOKUP_DB:
-        if len(requested_metrics) >= 2:
-            if db_helpers.is_comfort_assessment_query_text(question):
-                selected_metrics = requested_metrics[:8]
-            else:
-                selected_metrics = requested_metrics[:6]
-            metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
+        if len(plan.metrics) >= 2:
+            metric_names = plan.selected
             if not metric_names:
                 return {
                     "operation_type": "aggregation_multi_metric",
@@ -645,26 +486,21 @@ def _handle_point_lookup(
         }
 
     # An IEQ-composite ask must always fan out to its sub-indices — IEQ alone is
-    # a bare number with no breakdown to explain it. ``_requested_metrics`` is the
-    # single source of truth: it only injects the IAQ/ITC/IAC/IIL sub-indices when
-    # it classified the question as an IEQ-index query, so their presence here is a
-    # phrasing-independent signal (covers "what is the IEQ?", "is the IEQ good?",
-    # etc. that carry no snapshot noun).
-    ieq_composite_query = any(m in {"iaq", "itc", "iac", "iil"} for m in requested_metrics)
+    # a bare number with no breakdown to explain it. The plan is the single source of
+    # truth: the sub-indices are only in it when the scope resolved to the IEQ family,
+    # so their presence here is a phrasing-independent signal (covers "what is the
+    # IEQ?", "is the IEQ good?", etc. that carry no snapshot noun).
+    ieq_composite_query = any(m in {"iaq", "itc", "iac", "iil"} for m in plan.metrics)
     is_multi = (
         db_helpers.is_air_quality_query_text(question)
         or db_helpers.is_comfort_assessment_query_text(question)
         or db_helpers.is_issue_triage_query_text(question)
         or ieq_composite_query
-        or (len(requested_metrics) >= 2 and current_snapshot_query)
+        or (len(plan.metrics) >= 2 and current_snapshot_query)
     )
     if is_multi:
-        selected_metrics = requested_metrics[:_COMFORT_PACK_SIZE] if db_helpers.is_comfort_assessment_query_text(question) else requested_metrics[:5]
-        metric_names = [m for m in selected_metrics if metric_registry.metric_column(m) is not None]
-        if "ieq" in metric_names:
-            for sub in ("iaq", "itc", "iac", "iil"):
-                if sub not in metric_names:
-                    metric_names.append(sub)
+        # A snapshot of the composite needs its breakdown to be explainable.
+        metric_names = with_ieq_sub_indices(plan.selected)
         if not metric_names:
             return {
                 "operation_type": "point_lookup_multi_metric",
@@ -756,7 +592,7 @@ def _handle_anomaly_multi(
     *,
     intent: IntentType,
     explicit_metrics: List[str],
-    requested_metrics: List[str],
+    plan: MetricPlan,
     window_start: datetime,
     window_end: datetime,
     window_label: str,
@@ -774,7 +610,7 @@ def _handle_anomaly_multi(
     # When no metric was explicitly requested, always scan all core metrics so
     # general questions like "any anomaly in the room?" get a full picture.
     if explicit_metrics:
-        metrics_to_check = [m for m in requested_metrics if m in _ANOMALY_CORE_METRICS] or _ANOMALY_CORE_METRICS
+        metrics_to_check = [m for m in plan.selected if m in _ANOMALY_CORE_METRICS] or _ANOMALY_CORE_METRICS
     else:
         metrics_to_check = _ANOMALY_CORE_METRICS
 
@@ -852,7 +688,7 @@ def _handle_temporal_comparison(
     window_end: datetime,
     window_label: str,
     resolved_lab_name: Optional[str],
-    requested_metrics: List[str],
+    plan: MetricPlan,
 ) -> Optional[Dict[str, Any]]:
     """Handle within-lab temporal period comparisons (today vs last week, this week vs last month, etc.)."""
     if intent != IntentType.COMPARISON_DB:
@@ -883,9 +719,8 @@ def _handle_temporal_comparison(
         db_helpers.is_air_quality_query_text(question)
         or db_helpers.is_comfort_assessment_query_text(question)
     )
-    if is_multi and len(requested_metrics) >= 2:
-        cap = _COMFORT_PACK_SIZE if db_helpers.is_comfort_assessment_query_text(question) else 5
-        compare_metrics = [m for m in requested_metrics[:cap] if metric_registry.metric_column(m) is not None]
+    if is_multi and len(plan.metrics) >= 2:
+        compare_metrics = plan.selected
     else:
         compare_metrics = [metric_alias]
 
@@ -1221,6 +1056,9 @@ def execute_intent_query(
     # When True the diagnostic decomposition fires regardless of question phrasing;
     # is_diagnostic_query_text stays as the emergency (LLM-unreachable) fallback.
     diagnostic_hint: bool = False,
+    # LLM router's metric scope (RoutePlan.metric_scope). None falls back to inferring
+    # the scope from question text — see metric_planning.classify_metric_scope.
+    metric_scope: Optional[str] = None,
     # Legacy parameter kept for backwards compatibility — no longer used
     cur: Any = None,
 ) -> Dict[str, Any]:
@@ -1231,12 +1069,13 @@ def execute_intent_query(
 
     is_diagnostic = bool(diagnostic_hint) or is_diagnostic_query_text(question)
 
-    requested_metrics = _requested_metrics(
-        question,
-        explicit_metrics,
-        hinted_metrics,
-        intent,
+    plan = plan_metrics(
+        question=question,
+        explicit_metrics=explicit_metrics,
+        hinted_metrics=hinted_metrics,
+        intent=intent,
         is_diagnostic=is_diagnostic,
+        metric_scope=metric_scope,
     )
 
     handlers: List[Tuple[str, Any]] = [
@@ -1248,7 +1087,7 @@ def execute_intent_query(
         ("diagnostic", lambda: _handle_diagnostic(
             question=question,
             intent=intent,
-            requested_metrics=requested_metrics,
+            plan=plan,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
@@ -1261,12 +1100,12 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-            requested_metrics=requested_metrics,
+            plan=plan,
         )),
         ("comparison_multi", lambda: _handle_comparison_multi(
             question=question,
             intent=intent,
-            requested_metrics=requested_metrics,
+            plan=plan,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
@@ -1291,12 +1130,12 @@ def execute_intent_query(
             window_end=window_end,
             window_label=window_label,
             resolved_lab_name=resolved_lab_name,
-            requested_metrics=requested_metrics,
+            plan=plan,
         )),
         ("aggregation_multi", lambda: _handle_aggregation_multi(
             question=question,
             intent=intent,
-            requested_metrics=requested_metrics,
+            plan=plan,
             compared_spaces=compared_spaces,
             window_start=window_start,
             window_end=window_end,
@@ -1308,7 +1147,7 @@ def execute_intent_query(
             intent=intent,
             metric_alias=metric_alias,
             unit=unit,
-            requested_metrics=requested_metrics,
+            plan=plan,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
@@ -1317,7 +1156,7 @@ def execute_intent_query(
         ("anomaly_multi", lambda: _handle_anomaly_multi(
             intent=intent,
             explicit_metrics=explicit_metrics,
-            requested_metrics=requested_metrics,
+            plan=plan,
             window_start=window_start,
             window_end=window_end,
             window_label=window_label,
