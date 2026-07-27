@@ -131,6 +131,23 @@ class RouterParseFailureTests(unittest.TestCase):
         self.assertTrue(plan.fallback_used)
 
 
+class RouterClarificationPromptTests(unittest.TestCase):
+    """Rules the prompt must keep stating, since deleting the regex clarify gate made
+    the prompt the only thing preventing these behaviours."""
+
+    def test_prompt_treats_contrastive_place_references_as_unresolvable(self):
+        # "over there" points at a DIFFERENT space than the one under discussion, so a
+        # lab in prior conversation must not silently satisfy it.
+        prompt = planner._SYSTEM_PROMPT
+        self.assertIn("over there", prompt)
+        self.assertIn("CONTRASTIVE", prompt)
+
+    def test_prompt_keeps_unit_conversion_followups_on_the_prior_intent(self):
+        prompt = planner._SYSTEM_PROMPT
+        self.assertIn("give me that in centimeters", prompt.lower())
+        self.assertIn("RESTATES", prompt)
+
+
 class RouterClarificationParsingTests(unittest.TestCase):
     def test_clarification_is_parsed(self):
         raw = json.dumps(
