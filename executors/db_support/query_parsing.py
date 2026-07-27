@@ -443,12 +443,21 @@ def _normalize_ordinal_day_words(text: str) -> str:
 def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = None) -> Optional[datetime]:
     """Parse a single date expression ("July 1", "1st of July", "the second of July",
     "2026-07-01", "July") into a start-of-day datetime, or None when no date is recognized.
+
+    A year written inside the token wins over ``explicit_year`` (the first year seen
+    anywhere in the question). Each bound of a range must be free to carry its own year:
+    applying the question-level year to both turned "from January 1 2015 to June 1 2026"
+    into a range ending in 2015.
     """
     t = str(token or "").strip().lower().strip(".,?!")
     if not t:
         return None
     t = _normalize_ordinal_day_words(t)
     months = "|".join(_MONTH_NAME_LOOKUP.keys())
+
+    token_year_match = re.search(r"\b(20\d{2}|19\d{2})\b", t)
+    if token_year_match:
+        explicit_year = int(token_year_match.group(1))
 
     iso = re.search(r"\b(20\d{2}|19\d{2})-(\d{1,2})-(\d{1,2})\b", t)
     if iso:
@@ -587,8 +596,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
     """Resolve the question's time window, clamped to a sane maximum span.
 
     The clamp is the one guard against a single question fanning out into an unbounded
-    number of hourly buckets upstream; the label is kept as the user phrased it so the
-    answer still says what was asked for.
+    number of hourly buckets upstream.
     """
     start, end, label = _resolve_time_window(question, default_hours)
     return _clamp_window_span(start, end, label)
@@ -597,10 +605,17 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
 def _clamp_window_span(
     start: datetime, end: datetime, label: str
 ) -> Tuple[datetime, datetime, str]:
-    max_span = timedelta(days=max_query_window_days())
-    if end - start > max_span:
-        return end - max_span, end, label
-    return start, end, label
+    """Trim an over-long window, and say so in the label.
+
+    The label reaches the answer LLM and the response metadata, so it must describe the
+    data actually queried. Keeping the user's original phrasing on a trimmed window makes
+    the answer claim a range it never read — worse than the slow query the clamp prevents.
+    """
+    max_days = max_query_window_days()
+    max_span = timedelta(days=max_days)
+    if end - start <= max_span:
+        return start, end, label
+    return end - max_span, end, f"{label} (limited to the last {max_days} days)"
 
 
 def _resolve_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:

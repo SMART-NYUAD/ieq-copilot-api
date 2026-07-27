@@ -201,5 +201,119 @@ class TestIfcStream(unittest.TestCase):
         self.assertEqual(meta["executor"], "ifc_qa")
 
 
+class TestIfcStreamFallback(unittest.TestCase):
+    """An unreachable answer LLM must not turn into an empty stream.
+
+    The sync path already answered from the parsed model facts; the stream swallowed the
+    exception and emitted only ``done``, so the user saw nothing and the blank turn was
+    skipped by persistence.
+    """
+
+    def _stream_with_llm_down(self, summary_patch):
+        """Stream with a parsed model but an unreachable answer LLM."""
+        from contextlib import ExitStack
+
+        from executors import ifc_executor
+
+        async def _run():
+            return [chunk async for chunk in ifc_executor.stream_ifc_tokens("describe the building")]
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(ifc_executor, "build_ifc_context_text", return_value="MODEL CONTEXT")
+            )
+            stack.enter_context(
+                patch.object(ifc_executor.httpx, "AsyncClient", side_effect=RuntimeError("ollama down"))
+            )
+            stack.enter_context(summary_patch)
+            chunks = asyncio.new_event_loop().run_until_complete(_run())
+        return [json.loads(c.removeprefix("data: ").strip()) for c in chunks if c.strip()]
+
+    _SUMMARY = {
+        "project": "Smart Building",
+        "schema": "IFC4",
+        "total_elements": 42,
+        "element_counts": {"walls": 30, "doors": 12},
+        "storeys": [{"name": "Level 1"}],
+    }
+
+    def test_llm_outage_falls_back_to_parsed_model_facts(self):
+        from executors import ifc_executor
+
+        events = self._stream_with_llm_down(
+            patch.object(ifc_executor, "get_ifc_summary", return_value=self._SUMMARY)
+        )
+        tokens = [e for e in events if e["event"] == "token"]
+        self.assertEqual(len(tokens), 1)
+        # Grounded in the parsed model, never invented.
+        self.assertIn("42 physical elements", tokens[0]["text"])
+        self.assertIn("Level 1", tokens[0]["text"])
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_unreadable_model_still_terminates_with_an_explanation(self):
+        from executors import ifc_executor
+
+        events = self._stream_with_llm_down(
+            patch.object(ifc_executor, "get_ifc_summary", side_effect=RuntimeError("bad file"))
+        )
+        tokens = [e for e in events if e["event"] == "token"]
+        self.assertEqual(len(tokens), 1)
+        self.assertIn("not available", tokens[0]["text"])
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_missing_model_file_reports_cleanly(self):
+        from executors import ifc_executor
+
+        async def _run():
+            return [chunk async for chunk in ifc_executor.stream_ifc_tokens("describe the building")]
+
+        with patch.object(ifc_executor, "build_ifc_context_text", side_effect=FileNotFoundError):
+            chunks = asyncio.new_event_loop().run_until_complete(_run())
+
+        events = [json.loads(c.removeprefix("data: ").strip()) for c in chunks if c.strip()]
+        self.assertIn("not available", events[0]["text"])
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_successful_stream_does_not_append_a_fallback(self):
+        from executors import ifc_executor
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            async def aiter_lines(self):
+                yield json.dumps({"response": "The building has 12 doors."})
+
+        class _Stream:
+            async def __aenter__(self):
+                return _Response()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def stream(self, *a, **kw):
+                return _Stream()
+
+        async def _run():
+            return [chunk async for chunk in ifc_executor.stream_ifc_tokens("how many doors?")]
+
+        with patch.object(ifc_executor, "build_ifc_context_text", return_value="MODEL CONTEXT"), \
+             patch.object(ifc_executor.httpx, "AsyncClient", return_value=_Client()), \
+             patch.object(ifc_executor, "get_ifc_summary", return_value=self._SUMMARY):
+            chunks = asyncio.new_event_loop().run_until_complete(_run())
+
+        events = [json.loads(c.removeprefix("data: ").strip()) for c in chunks if c.strip()]
+        tokens = [e for e in events if e["event"] == "token"]
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["text"], "The building has 12 doors.")
+
+
 if __name__ == "__main__":
     unittest.main()

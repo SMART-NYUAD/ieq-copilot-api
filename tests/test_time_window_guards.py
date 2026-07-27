@@ -60,6 +60,16 @@ class MaxWindowGuardTests(unittest.TestCase):
         self.assertEqual((end - start).days, 30)
         self.assertEqual(label, "last 30 days")
 
+    def test_clamped_label_says_the_window_was_trimmed(self):
+        # The label reaches the answer LLM and the response metadata; leaving the
+        # original phrasing on a trimmed window makes the answer claim a range it
+        # never read.
+        with patch.dict(os.environ, {"MAX_QUERY_WINDOW_DAYS": "366"}):
+            _start, _end, label = query_parsing.extract_time_window(
+                "average co2 from january 1 2015 to june 1 2026"
+            )
+        self.assertIn("limited to the last 366 days", label)
+
     def test_cap_is_configurable(self):
         with patch.dict(os.environ, {"MAX_QUERY_WINDOW_DAYS": "7"}):
             start, end, _label = query_parsing.extract_time_window("average co2 last 90 days")
