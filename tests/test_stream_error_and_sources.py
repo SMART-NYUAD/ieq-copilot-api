@@ -105,6 +105,8 @@ class DbStreamSourcesTests(unittest.TestCase):
     def _collect(self, *, llm_fails: bool):
         from executors import db_query_executor as dbx
 
+        # Shaped like a prepare_db_query result: the guideline records are resolved once,
+        # during preparation, and the stream reuses them rather than re-querying.
         context = {
             "payload": {"operation_type": "aggregation"},
             "fallback_answer": "Average CO2 was 600 ppm.",
@@ -113,6 +115,7 @@ class DbStreamSourcesTests(unittest.TestCase):
             "rows": [{"avg_value": 600}],
             "metric_alias": "co2",
             "sources": [],
+            "guideline_records": _GUIDELINE_RECORDS,
         }
 
         class _FakeResponse:
@@ -152,9 +155,12 @@ class DbStreamSourcesTests(unittest.TestCase):
                 chunks.append(chunk)
             return chunks
 
-        with patch.object(dbx, "get_thresholds_for_metrics", return_value=_GUIDELINE_RECORDS), \
+        with patch.object(dbx, "get_thresholds_for_metrics") as threshold_lookup, \
              patch.object(dbx.httpx, "AsyncClient", return_value=_FakeClient()):
-            return asyncio.new_event_loop().run_until_complete(_run())
+            chunks = asyncio.new_event_loop().run_until_complete(_run())
+        # The streamed turn must not re-query the guideline store.
+        threshold_lookup.assert_not_called()
+        return chunks
 
     def test_sources_event_precedes_done(self):
         events = _events(self._collect(llm_fails=False))

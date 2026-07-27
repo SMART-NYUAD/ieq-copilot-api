@@ -658,20 +658,11 @@ async def stream_db_tokens(
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
     backend_semantic_state = context.get("backend_semantic_state")
-    source_metrics: List[str] = []
-    for src in list(context.get("sources") or []):
-        for metric in list(src.get("metrics_used") or []):
-            token = str(metric or "").strip().lower()
-            if token and token not in source_metrics:
-                source_metrics.append(token)
-    citation_metrics = _collect_citation_metrics(
-        question=query_text,
-        metric_alias=str(context.get("metric_alias") or "ieq"),
-        metrics_used=source_metrics,
-        rows=list(context.get("rows") or []),
-        context_payload=dict(context.get("payload") or {}),
-    )
-    guideline_records = await run_in_threadpool(get_thresholds_for_metrics, citation_metrics)
+    # prepare_db_query already resolved the guideline records for this query. Re-deriving
+    # them here meant a second Postgres round-trip per streamed turn, and — because the two
+    # call sites collected citation metrics differently — the stream could offer the model a
+    # different source list than the sync path did for the same question.
+    guideline_records = list(context.get("guideline_records") or [])
     numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
     context["indexed_sources"] = indexed_sources
 
