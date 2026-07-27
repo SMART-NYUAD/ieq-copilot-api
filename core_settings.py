@@ -354,17 +354,6 @@ def display_timezone() -> timezone:
     return timezone(timedelta(hours=display_utc_offset_hours()))
 
 
-def router_semantic_rewrite_enabled() -> bool:
+
     ensure_env_loaded()
     return _parse_bool(os.getenv("ROUTER_SEMANTIC_REWRITE_ENABLED", "false"), default=False)
-
-
-def router_semantic_rewrite_timeout_seconds() -> float:
-    ensure_env_loaded()
-    raw = (os.getenv("ROUTER_SEMANTIC_REWRITE_TIMEOUT_SECONDS", "4") or "4").strip()
-    try:
-        return max(0.5, min(10.0, float(raw)))
-    except ValueError:
-        return 4.0
-
-

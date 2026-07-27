@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 from core_settings import display_timezone, display_utc_offset_hours
 
@@ -54,6 +54,23 @@ def serialize_timestamp_value(value: Any) -> Any:
             return value
         return serialize_datetime_iso(parsed)
     return value
+
+
+def parse_bucket_utc(bucket: Any) -> Optional[datetime]:
+    """Parse an API bucket timestamp into an aware UTC datetime, or None.
+
+    Bucket strings and window bounds do not share an offset representation — bounds are
+    built in the display timezone, buckets come back from the API in its own. Comparing
+    them as strings therefore mis-partitions rows near a period boundary; compare the
+    parsed instants instead.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(bucket).replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def format_display_datetime(dt: datetime) -> str:

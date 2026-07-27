@@ -512,6 +512,39 @@ def fetch_multi_metric_agg_row(
     return row
 
 
+def fetch_all_spaces_point_row(metrics: List[str]) -> Dict[str, Any]:
+    """Average the *latest* reading of each metric across every known space.
+
+    The point-lookup counterpart to :func:`fetch_all_spaces_avg_row`, for a current-status
+    question that names no space. Returning one arbitrary space's readings instead would
+    present a single room's air as the whole site's.
+    """
+    slugs = [s.get("slug") for s in fetch_spaces() if s.get("slug")]
+    row: Dict[str, Any] = {"lab_space": "all_labs"}
+    if not slugs:
+        for metric in metrics:
+            row[metric] = None
+        return row
+
+    per_space = [
+        value
+        for value in _run_parallel_tasks(
+            {slug: (lambda s=slug: fetch_multi_metric_point_row(s, metrics)) for slug in slugs}
+        ).values()
+        if value
+    ]
+    buckets = [str(r.get("bucket")) for r in per_space if r.get("bucket")]
+    if buckets:
+        row["bucket"] = max(buckets)
+    # "ieq" is set by fetch_multi_metric_point_row outside the requested metric list, and
+    # the sub-indices come along with it, so average whatever keys came back.
+    value_keys = set(metrics) | {"ieq", "iaq", "itc", "iac", "iil"}
+    for key in value_keys:
+        values = [r[key] for r in per_space if isinstance(r.get(key), (int, float))]
+        row[key] = (sum(values) / len(values)) if values else None
+    return row
+
+
 def fetch_all_spaces_avg_row(
     metrics: List[str],
     window_start: datetime,

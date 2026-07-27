@@ -109,7 +109,15 @@ def _utc_now() -> str:
 
 
 def _trim_text(value: str, max_chars: int = _MAX_MESSAGE_CHARS) -> str:
-    return (value or "").strip()[:max_chars]
+    """Collapse a message to a single trimmed line.
+
+    The compact context block is line-oriented — one ``User:``/``Assistant:`` line per
+    turn — and every reader splits it on newlines. A message containing newlines would
+    therefore become several lines, the trailing ones carrying no speaker label, which is
+    both confusing to the models and the shape a prompt-injection payload wants. Collapsing
+    at this boundary keeps one turn on one line for new and existing rows alike.
+    """
+    return " ".join(str(value or "").split())[:max_chars]
 
 
 def _sanitize_assistant_text(value: str) -> str:

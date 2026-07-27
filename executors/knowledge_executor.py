@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+import logging
 import os
 from threading import Lock
 import time
@@ -30,6 +31,8 @@ from prompting.shared_prompts import build_grounded_context_sections, get_shared
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import search_guideline_records, wants_guideline_detail
 
+
+_log = logging.getLogger(__name__)
 
 _NO_LLM_KNOWLEDGE_ANSWER = (
     "I can't reach the language model right now, and I don't have a knowledge card "
@@ -119,8 +122,10 @@ def search_knowledge_cards(question: str, k: int = 4) -> List[Dict[str, Any]]:
             cur.execute("SET LOCAL ivfflat.probes = %s", (max(10, fetch_k),))
             cur.execute(ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL, (query_embedding, query_embedding, fetch_k))
             rows = [dict(row) for row in cur.fetchall()]
-    except Exception as e:
-        print(f"[ERROR] Knowledge card search failed: {e}")
+    except Exception:
+        # An unreachable card store means ungrounded answers, not an error response —
+        # log it so that degradation is visible.
+        _log.exception("knowledge card search failed for question=%r", (question or "")[:120])
         return []
 
     reranked = []
@@ -246,21 +251,6 @@ def _build_knowledge_context(
         _KNOWLEDGE_CONTEXT_CACHE[key] = (expires_at, context)
         _prune_knowledge_context_cache(now=now)
     return context
-
-
-def get_knowledge_context_stats(user_question: str, k: int = 5, space: Optional[str] = None) -> Dict[str, Any]:
-    context = _build_knowledge_context(user_question=user_question, k=k, space=space)
-    knowledge_cards = context.get("knowledge_cards") or []
-    return {
-        "cards_retrieved": int(len(knowledge_cards)),
-        "knowledge_cards_retrieved": int(len(knowledge_cards)),
-    }
-
-
-def get_guideline_records_for_question(user_question: str, k: int = 3) -> List[Dict[str, Any]]:
-    if not wants_guideline_detail(user_question):
-        return []
-    return search_guideline_records(question=user_question, k=max(1, int(k or 3)))
 
 
 def _deterministic_knowledge_answer(knowledge_cards: List[Dict[str, Any]]) -> str:
@@ -421,64 +411,3 @@ async def stream_knowledge_tokens(
 
     yield sse.sources_event_for_answer(emitted, effective_guideline_records, indexed_sources)
     yield sse.done_event()
-
-
-async def stream_answer_env_question(
-    user_question: str,
-    k: int = 5,
-    space: Optional[str] = None,
-    guideline_records: Optional[List[Dict[str, Any]]] = None,
-    indexed_sources_out: Optional[List[Dict[str, Any]]] = None,
-) -> AsyncIterator[str]:
-    effective_guideline_records = list(guideline_records or [])
-    if wants_guideline_detail(user_question):
-        searched_guidelines = search_guideline_records(question=user_question, k=3)
-        if searched_guidelines:
-            effective_guideline_records = searched_guidelines
-    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
-    if indexed_sources_out is not None:
-        indexed_sources_out.extend(indexed_sources)
-
-    context = _build_knowledge_context(
-        user_question=user_question,
-        k=k,
-        space=space,
-        guideline_records=[],
-    )
-    grounded_context = build_grounded_context_sections(
-        measured_room_facts=[],
-        backend_semantic_state=None,
-        knowledge_cards=context.get("knowledge_cards", []),
-        numbered_sources_block=numbered_sources_block,
-        allow_general_knowledge=True,
-    )
-    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
-    messages = prompt_template.format_messages(
-        question=user_question,
-        context_label="Measured room facts with knowledge grounding",
-        context_data=grounded_context,
-    )
-    prompt_text = build_prompt_text_from_messages(messages)
-
-    payload = {
-        "model": ollama_model(),
-        "prompt": prompt_text,
-        "stream": True,
-        "think": ollama_thinking(),
-        "temperature": ollama_temperature(),
-    }
-
-    async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
-        async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                response_text = extract_generate_chunk(event)
-                if response_text:
-                    yield response_text

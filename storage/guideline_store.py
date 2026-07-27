@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from storage.postgres_client import get_cursor
 from storage.embeddings import embed_texts
 
+
+_log = logging.getLogger(__name__)
 
 _GUIDELINE_EMBED_DIM = 1536
 
@@ -78,8 +81,10 @@ def get_thresholds_for_metrics(
                     (metrics,),
                 )
             return [dict(row) for row in cur.fetchall()]
-    except Exception as e:
-        print(f"[ERROR] get_thresholds_for_metrics failed: {e}")
+    except Exception:
+        # Citations degrade to none rather than failing the turn; log so the operator
+        # can see the guideline store is unreachable instead of silently uncited answers.
+        _log.exception("guideline threshold lookup failed for metrics=%s", metrics)
         return []
 
 
@@ -129,8 +134,8 @@ def search_guideline_records(
                 params,
             )
             return [dict(row) for row in cur.fetchall()]
-    except Exception as e:
-        print(f"[ERROR] search_guideline_records failed: {e}")
+    except Exception:
+        _log.exception("guideline semantic search failed for question=%r", (question or "")[:120])
         return []
 
 

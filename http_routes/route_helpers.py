@@ -58,14 +58,3 @@ def attach_conversation_metadata(
     meta["conversation_context_applied"] = conversation_context_applied
     meta["turn_index"] = turn_index
     return meta
-
-
-def route_plan_metadata(route_plan: Any, **kwargs) -> Dict[str, Any]:
-    if route_plan is None:
-        return {}
-    meta: Dict[str, Any] = {}
-    for attr in ("intent", "confidence", "lab_name", "second_lab_name", "metrics", "time_phrase", "model", "fallback_used"):
-        val = getattr(route_plan, attr, None)
-        if val is not None:
-            meta[attr] = val.value if hasattr(val, "value") else val
-    return meta

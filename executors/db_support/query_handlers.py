@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
+import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-
-_log = logging.getLogger(__name__)
 
 from query_routing.intent_classifier import IntentType
 from executors.db_support import api_client
@@ -17,6 +16,8 @@ from executors.db_support import time_windows as db_time_windows
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support.response_helpers import is_diagnostic_query_text
 from executors import metric_registry
+
+_log = logging.getLogger(__name__)
 
 # Full comfort-assessment metric pack: IEQ + sub-indices, air quality, thermal, acoustic
 # (sound), and visual (light) comfort. Acoustic/visual are what make this a *comfort*
@@ -464,19 +465,14 @@ def _handle_baseline_reference_comparison(
     # Fetch the full range (baseline + current) as a single time series
     all_rows = api_client.fetch_timeseries_rows(resolved_lab_name, metric_alias, baseline_start, window_end)
 
-    def _ts(dt: datetime) -> str:
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=__import__("datetime").timezone.utc)
-        return dt.isoformat()
+    boundary_utc = db_time_windows.parse_bucket_utc(window_start)
 
-    current_vals = [
-        r["value"] for r in all_rows
-        if r.get("value") is not None and str(r.get("bucket", "")) >= _ts(window_start)
-    ]
-    baseline_vals = [
-        r["value"] for r in all_rows
-        if r.get("value") is not None and str(r.get("bucket", "")) < _ts(window_start)
-    ]
+    def _is_current(row: Dict[str, Any]) -> bool:
+        bucket_utc = db_time_windows.parse_bucket_utc(row.get("bucket"))
+        return bucket_utc is not None and boundary_utc is not None and bucket_utc >= boundary_utc
+
+    current_vals = [r["value"] for r in all_rows if r.get("value") is not None and _is_current(r)]
+    baseline_vals = [r["value"] for r in all_rows if r.get("value") is not None and not _is_current(r)]
 
     if not current_vals or not baseline_vals:
         return {
@@ -492,7 +488,6 @@ def _handle_baseline_reference_comparison(
 
     current_value = sum(current_vals) / len(current_vals)
     baseline_value = sum(baseline_vals) / len(baseline_vals)
-    import statistics
     baseline_stddev = statistics.pstdev(baseline_vals) if len(baseline_vals) > 1 else None
     delta = current_value - baseline_value
     pct = (delta / baseline_value * 100.0) if baseline_value != 0 else None
@@ -682,16 +677,12 @@ def _handle_point_lookup(
         window_note = ""
         if resolved_lab_name:
             row = api_client.fetch_multi_metric_point_row(resolved_lab_name, metric_names)
-            rows = [row] if any(row.get(m) is not None for m in metric_names) else []
         else:
-            # No specific lab — use all-spaces average from /spaces/ endpoint
-            spaces_data = api_client.fetch_spaces()
-            if spaces_data:
-                # Build an aggregate row from first available space or aggregate
-                row = api_client.fetch_multi_metric_point_row(spaces_data[0]["slug"], metric_names)
-                rows = [row] if any(row.get(m) is not None for m in metric_names) else []
-            else:
-                rows = []
+            # No space named — average the latest reading across every space. Answering
+            # from whichever space happens to be first would present one room's air as
+            # the whole site's, while the response reports no resolved space at all.
+            row = api_client.fetch_all_spaces_point_row(metric_names)
+        rows = [row] if any(row.get(m) is not None for m in metric_names) else []
 
         fallback_answer = db_helpers.build_multi_metric_aggregation_answer(
             metric_aliases=metric_names,
@@ -898,18 +889,11 @@ def _handle_temporal_comparison(
     else:
         compare_metrics = [metric_alias]
 
-    from datetime import timezone as _utc
-
-    def _parse_bucket_utc(bucket: Any) -> Optional[datetime]:
-        try:
-            return datetime.fromisoformat(str(bucket).replace("Z", "+00:00")).astimezone(_utc.utc)
-        except (ValueError, TypeError, AttributeError):
-            return None
-
-    current_start_utc = current_start.astimezone(_utc.utc)
-    current_end_utc = current_end.astimezone(_utc.utc)
-    ref_start_utc = ref_start.astimezone(_utc.utc)
-    ref_end_utc = ref_end.astimezone(_utc.utc)
+    _parse_bucket_utc = db_time_windows.parse_bucket_utc
+    current_start_utc = _parse_bucket_utc(current_start)
+    current_end_utc = _parse_bucket_utc(current_end)
+    ref_start_utc = _parse_bucket_utc(ref_start)
+    ref_end_utc = _parse_bucket_utc(ref_end)
 
     full_start = min(current_start, ref_start)
     full_end = max(current_end, ref_end)
