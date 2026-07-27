@@ -39,19 +39,21 @@ class GranularityRuleTests(unittest.TestCase):
         start = end - timedelta(hours=hours)
         return granularity_hours_for_window(start, end)
 
-    def test_less_than_a_week_is_hourly(self):
+    def test_short_span_is_hourly(self):
         self.assertEqual(self._gran(1), 1)
         self.assertEqual(self._gran(24), 1)
         self.assertEqual(self._gran(6 * 24), 1)
 
-    def test_a_week_up_to_a_month_is_six_hours(self):
-        self.assertEqual(self._gran(7 * 24), 6)
-        self.assertEqual(self._gran(20 * 24), 6)
+    def test_a_week_up_to_a_month_is_still_hourly(self):
+        # Aggregation is always 1h — wide ranges are no longer coarsened to 6h.
+        self.assertEqual(self._gran(7 * 24), 1)
+        self.assertEqual(self._gran(20 * 24), 1)
 
-    def test_a_month_or_more_is_twelve_hours(self):
-        self.assertEqual(self._gran(28 * 24), 12)
-        self.assertEqual(self._gran(31 * 24), 12)
-        self.assertEqual(self._gran(120 * 24), 12)
+    def test_a_month_or_more_is_still_hourly(self):
+        # Aggregation is always 1h — wide ranges are no longer coarsened to 12h.
+        self.assertEqual(self._gran(28 * 24), 1)
+        self.assertEqual(self._gran(31 * 24), 1)
+        self.assertEqual(self._gran(120 * 24), 1)
 
     def test_widen_window_extends_short_spans_only(self):
         end = datetime(2026, 6, 1, tzinfo=timezone.utc)

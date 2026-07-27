@@ -96,6 +96,7 @@ class TurnResult:
     intent: Optional[str]
     confidence: Optional[float]
     fallback_used: bool
+    resolved_question: Optional[str]
     resolved_lab: Optional[str]
     window_label: Optional[str]
     window_start: Optional[str]
@@ -232,6 +233,7 @@ def run_conversation(turns: List[Turn], *, k: int = 5) -> List[TurnResult]:
                 intent=md.get("intent"),
                 confidence=md.get("route_confidence"),
                 fallback_used=bool(md.get("fallback_used")),
+                resolved_question=md.get("resolved_question"),
                 resolved_lab=md.get("resolved_lab_name"),
                 window_label=tw.get("label"),
                 window_start=tw.get("start"),

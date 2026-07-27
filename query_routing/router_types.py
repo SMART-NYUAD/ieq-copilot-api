@@ -36,3 +36,4 @@ class RoutePlan:
     download_metric: Optional[str] = None  # canonical metric (temperature|humidity|co2|voc|pm25) — REQUIRED to fulfil a download
     download_interval: Optional[str] = None  # aggregation interval (e.g. "1m", "1h", "1d") when intent is download_data
     analysis_mode: Optional[str] = None    # "diagnostic" when the user asks WHY an index/metric is bad / what is driving it, else None
+    resolved_question: Optional[str] = None  # current question rewritten self-contained from prior turns (LLM context resolution); None => use the raw question
