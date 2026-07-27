@@ -188,6 +188,9 @@ def _build_planner_hints(
         # decomposes the named index into all contributing sub-scores/metrics
         # rather than returning the single named value.
         "analysis_mode": route.analysis_mode,
+        # LLM-chosen metric family (see metric_planning). None => the DB executor infers
+        # the scope from question text.
+        "metric_scope": route.metric_scope,
     }
     if apply_regex_carryover and carried_time_phrase:
         hints["carried_time_phrase"] = carried_time_phrase

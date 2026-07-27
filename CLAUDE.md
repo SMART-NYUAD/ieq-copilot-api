@@ -112,9 +112,16 @@ Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open th
 
 Sensor data comes from the Smart CRG REST API via `executors/db_support/api_client.py` (`SENSOR_API_BASE_URL`), not from SQL — Postgres is used only for knowledge cards and guideline records. Forecasts are fetched from the predictions API (`PREDICTIONS_API_BASE_URL`, `_handle_forecast` in `query_handlers.py`), which serves ~6 hours ahead; no forecasting model runs in this process. The LLM only explains the returned predictions, never invents future values.
 
+### Metric planning
+
+*Which* metrics a question needs is decided once, in `executors/db_support/metric_planning.py`, and handed to the handlers as a `MetricPlan` (priority-ordered `metrics` + a `limit`; `plan.selected` is what to fetch). The router picks the family via `RoutePlan.metric_scope` ∈ `named` / `air_quality` / `ieq_index` / `comfort` / `diagnostic` / `full`; `classify_metric_scope` reproduces the choice from question text when the router LLM was unreachable — the same LLM-primary/keyword-fallback arrangement as `analysis_mode`.
+
+The scope vocabulary is closed and the scope→metrics table lives in code: the router names a family, never a metric, so it cannot invent one and the mapping stays testable. `analysis_mode="diagnostic"` outranks a narrower scope, because a root-cause answer needs every contributing metric.
+
 ### Key invariants
 
 - Endpoint handlers stay thin — all business logic lives in orchestration/executor modules.
+- **A metric pack is never truncated below its own length.** The limit travels with the pack in `metric_planning`, and handlers only ever do `plan.selected` — they must not re-slice. This was previously a comment asking thirteen call sites to behave, and two of them didn't: a comfort comparison capped at 8 against a 10-metric pack silently dropped `sound` and `light`, the two metrics that make it a comfort assessment.
 - **There is exactly one intent ladder.** `query_orchestrator.plan_branch` maps a `RoutePlan` to one `Branch`; `render_sync` and `render_stream` both consume that object and neither may branch on intent itself. Adding an executor means writing one branch factory — if you find yourself editing two ladders, the drift that lost the stream its citations is starting again.
 - A `Branch` is either *instant* (`answer` set: a fixed confirmation or question, no model call) or *generated* (`run_sync`/`open_stream`). Blocking pre-work goes in `prepare` so the stream renderer can offload it and both renderers share its result.
 - A streamed answer must carry the same citations as the sync one. The sync response returns `citation_sources` + `footnotes` in its body; the stream emits them in a terminal `sources` frame (`executors/sse.py::sources_event_for_answer`) resolved from the accumulated tokens. Any new streaming executor that grounds its answer in guideline records must emit that frame before `done`.

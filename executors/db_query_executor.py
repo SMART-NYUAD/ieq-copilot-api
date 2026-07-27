@@ -318,6 +318,9 @@ def prepare_db_query(
     diagnostic_hint = (
         str((planner_hints or {}).get("analysis_mode") or "").strip().lower() == "diagnostic"
     )
+    # The router's metric family, when it supplied one. metric_planning falls back to
+    # inferring it from the question when this is absent.
+    metric_scope = (planner_hints or {}).get("metric_scope") or None
     branch_result = db_handlers.execute_intent_query(
         question=query_text,
         intent=intent,
@@ -332,6 +335,7 @@ def prepare_db_query(
         explicit_metrics=explicit_metrics,
         hinted_metrics=hinted_metrics,
         diagnostic_hint=diagnostic_hint,
+        metric_scope=metric_scope,
     )
 
     operation_type = str(branch_result["operation_type"])

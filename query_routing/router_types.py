@@ -41,3 +41,6 @@ class RoutePlan:
     # question to ask back. Honored only when the request allows clarification.
     needs_clarification: bool = False
     clarification_question: Optional[str] = None
+    # Which family of metrics the question needs (metric_planning.VALID_METRIC_SCOPES).
+    # None => the DB path infers it from question text (emergency/keyword path).
+    metric_scope: Optional[str] = None

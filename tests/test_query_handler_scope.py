@@ -24,8 +24,18 @@ if SERVER_DIR not in sys.path:
 
 from fake_sensor_api import SPACES, FakeSensorApiMixin
 from executors.db_support import api_client, query_handlers
+from executors.db_support.metric_planning import plan_metrics
 from executors.db_support.time_windows import parse_bucket_utc
 from query_routing.intent_classifier import IntentType
+
+
+def _air_quality_plan():
+    return plan_metrics(
+        question="how is the air quality?",
+        explicit_metrics=[],
+        hinted_metrics=[],
+        intent=IntentType.CURRENT_STATUS_DB,
+    )
 
 
 class UnscopedPointLookupTests(FakeSensorApiMixin, unittest.TestCase):
@@ -35,7 +45,7 @@ class UnscopedPointLookupTests(FakeSensorApiMixin, unittest.TestCase):
             intent=IntentType.CURRENT_STATUS_DB,
             metric_alias="co2",
             unit="ppm",
-            requested_metrics=["co2", "pm25", "voc", "humidity", "ieq"],
+            plan=_air_quality_plan(),
             window_start=datetime(2026, 6, 1, tzinfo=timezone.utc),
             window_end=datetime(2026, 6, 1, 1, tzinfo=timezone.utc),
             window_label="last 1 hours",
@@ -56,7 +66,7 @@ class UnscopedPointLookupTests(FakeSensorApiMixin, unittest.TestCase):
             intent=IntentType.CURRENT_STATUS_DB,
             metric_alias="co2",
             unit="ppm",
-            requested_metrics=["co2", "pm25", "voc", "humidity", "ieq"],
+            plan=_air_quality_plan(),
             window_start=datetime(2026, 6, 1, tzinfo=timezone.utc),
             window_end=datetime(2026, 6, 1, 1, tzinfo=timezone.utc),
             window_label="last 1 hours",
