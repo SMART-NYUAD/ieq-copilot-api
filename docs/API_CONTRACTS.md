@@ -1,5 +1,9 @@
 # API Contracts
 
+> **⚠️ Partially outdated.** Sections describing `GET /health/router` and other router
+> telemetry routes refer to endpoints that no longer exist. `CLAUDE.md` and `README.md` carry
+> the current endpoint list and authentication rules.
+
 This document defines stable API behavior for clients integrating with the RAG API server.
 
 ## Contract Philosophy

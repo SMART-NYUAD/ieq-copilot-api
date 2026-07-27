@@ -33,11 +33,15 @@ python -m unittest discover -s tests -p "test_llm_router_planner.py"
 
 **Primary regression suite:**
 ```bash
-python -m unittest discover -s tests -p "test_general_qa_routing.py"
-python -m unittest discover -s tests -p "test_stream_route_metadata.py"
-python -m unittest discover -s tests -p "test_query_routes_preview.py"
-python -m unittest discover -s tests -p "test_llm_router_planner.py"
+python -m unittest discover -s tests -p "test_context_resolution.py"        # follow-up resolution
+python -m unittest discover -s tests -p "test_stream_metadata_parity.py"    # sync/stream metadata
+python -m unittest discover -s tests -p "test_stream_error_and_sources.py"  # stream error + citations
+python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows + clarify gate
+python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
 ```
+
+`discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
+check the reported count when changing these.
 
 ## Architecture
 
@@ -93,14 +97,18 @@ Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open th
 
 ### DB executor
 
-`executors/db_query_executor.py` always runs SQL first, then passes structured rows to the LLM for narrative rendering. If the LLM fails, a deterministic text fallback is returned. `metadata.llm_used` indicates whether LLM rendering succeeded. Forecasts use Meta Prophet; the LLM only explains, never invents future values.
+`executors/db_query_executor.py` always fetches the data first, then passes structured rows to the LLM for narrative rendering. If the LLM fails, a deterministic text fallback is returned. `metadata.llm_used` indicates whether LLM rendering succeeded.
+
+Sensor data comes from the Smart CRG REST API via `executors/db_support/api_client.py` (`SENSOR_API_BASE_URL`), not from SQL — Postgres is used only for knowledge cards and guideline records. Forecasts are fetched from the predictions API (`PREDICTIONS_API_BASE_URL`, `_handle_forecast` in `query_handlers.py`), which serves ~6 hours ahead; no forecasting model runs in this process. The LLM only explains the returned predictions, never invents future values.
 
 ### Key invariants
 
 - Endpoint handlers stay thin — all business logic lives in orchestration/executor modules.
-- All evidence normalization goes through `evidence/evidence_layer.py`.
 - Stream (`/query/stream`) and sync (`/query`) metadata share the same builders in `query_routing/metadata_builders.py` — keep them in sync.
+- A streamed answer must carry the same citations as the sync one. The sync response returns `citation_sources` + `footnotes` in its body; the stream emits them in a terminal `sources` frame (`executors/sse.py::sources_event_for_answer`) resolved from the accumulated tokens. Any new streaming executor that grounds its answer in guideline records must emit that frame before `done`.
+- Every streaming path terminates with `done`, even on failure — an executor that loses its LLM emits its deterministic fallback text first, and route-level failures go through `runtime_errors.stream_error_payload` (which emits `error` + `done`). A client must never be left waiting on a silent stream.
 - `ConversationContext` is immutable (`frozen=True`) and built once per turn.
+- Conversations are owned by the authenticated caller (`storage/conversation_store.py`). Anything that reads or writes turns passes the caller id through; reusing another caller's `conversation_id` raises `ConversationAccessError` → HTTP 403.
 
 ## Routing Preference
 
@@ -119,6 +127,7 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `SENSOR_API_BASE_URL` | Base URL of the Smart CRG sensor REST API for latest readings / agg-summaries (default: `http://192.168.50.99:7001`) |
 | `PREDICTIONS_API_BASE_URL` | Base URL of the forecast/predictions API (default: `https://api.smart-crg.com`) |
 | `DISPLAY_UTC_OFFSET_HOURS` | UTC offset used when serializing/labelling timestamps for the user (default: `4`, Gulf Standard Time) |
+| `RAG_API_KEYS` | Comma-separated API keys accepted on `/query`, `/query/stream`, `/sensors/latest/{space}`, `/ifc/summary` (send `X-API-Key: <key>` or `Authorization: Bearer <key>`). **Unset by default, which leaves those endpoints open** and puts every caller in one shared conversation namespace; set it before exposing the service beyond localhost. Each key maps to a distinct caller id that owns its conversations — reusing another caller's `conversation_id` returns 403 |
 | `RAG_API_CORS_ALLOW_ORIGINS` / `RAG_API_CORS_ALLOW_CREDENTIALS` | CORS origins/credentials. Credentials are auto-disabled when origins are wildcarded (`*`), since browsers reject that combination — set explicit origins to use credentialed CORS |
 | `ROUTER_CLARIFY_THRESHOLD` | Confidence below which queries trigger clarification |
 | `IFC_MODEL_PATH` | Path to the IFC building model for `ifc_model_qa` (default: `./smart.ifc`) |
@@ -128,10 +137,22 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 
 Two distinct Ollama models are configured separately: one for routing (`OLLAMA_ROUTER_*`) and one for answer generation (`OLLAMA_*`). Keep these separate — the router runs at temperature 0.0 with constrained output; the answer model has different latency/quality tradeoffs.
 
+## Endpoints
+
+These are all the routes the app serves:
+
+- `POST /query` — routed query, single JSON response
+- `POST /query/stream` — routed query as SSE (`status`, `meta`, `meta_update`, `token`, `sources`, `done`, `error`)
+- `GET /` — service info
+- `GET /health` — liveness check (unauthenticated, for probes)
+- `GET /sensors/latest/{space}` — latest reading snapshot for a space
+- `GET /ifc/summary` — parsed structured summary of the IFC building model (units, storeys, element counts, materials)
+
+Everything except `/` and `/health` requires an API key when `RAG_API_KEYS` is set.
+
 ## Debugging
 
-- `GET /health/router` — router/SLO status
-- `POST /query/route` — classify a question without executing (shows `route_type`, `route_confidence`, `planner_model`, etc.)
-- `POST /query/db-proof` — SQL preview + row sample for DB-path queries
-- `GET /observability/kpis` — fallback rates, latency, error trends
-- `GET /ifc/summary` — parsed structured summary of the IFC building model (units, storeys, element counts, materials)
+There is no route-preview, SQL-proof, or KPI endpoint — inspect a routing decision from
+`metadata` on a normal `/query` response (`intent`, `route_confidence`, `planner_model`,
+`fallback_used`, `resolved_question`) or from the `meta` frame on the stream. Router
+degradation is logged as a warning by `_log_router_fallback` when the LLM is unreachable.

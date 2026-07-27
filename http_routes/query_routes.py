@@ -3,18 +3,20 @@
 import json
 from typing import Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from http_schemas import QueryRequest, QueryResponse
 from query_routing.query_orchestrator import execute_query, stream_query
+from http_routes.auth import require_api_key
 from http_routes.route_helpers import (
     SSE_HEADERS,
     attach_conversation_metadata,
     build_query_context,
     persist_turn,
 )
+from storage.conversation_store import ConversationAccessError
 from runtime_errors import log_exception, stream_error_payload
 
 
@@ -33,14 +35,24 @@ def _normalize_allow_clarify(flag) -> bool:
     return bool(flag if flag is not None else True)
 
 
+def _query_context_or_403(question: str, lab_name, conversation_id, caller_id: str):
+    """Build the turn context, mapping a foreign conversation_id to HTTP 403."""
+    try:
+        return build_query_context(question, lab_name, conversation_id, owner=caller_id)
+    except ConversationAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @router.post("/query", response_model=QueryResponse)
-async def query_cards(request: QueryRequest):
+async def query_cards(request: QueryRequest, caller_id: str = Depends(require_api_key)):
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+    ctx = _query_context_or_403(
+        question, _normalize_lab(request.lab_name), request.conversation_id, caller_id
+    )
     try:
         k = _normalize_k(request.k)
-        ctx = build_query_context(question, _normalize_lab(request.lab_name), request.conversation_id)
 
         result = await run_in_threadpool(
             execute_query,
@@ -53,6 +65,7 @@ async def query_cards(request: QueryRequest):
             conversation_id=ctx.conversation_id,
             question=question,
             answer=str(result.get("answer") or ""),
+            owner=caller_id,
         )
         metadata = attach_conversation_metadata(
             dict(result.get("metadata") or {}),
@@ -77,13 +90,15 @@ async def query_cards(request: QueryRequest):
 
 
 @router.post("/query/stream")
-async def query_cards_stream(request: QueryRequest):
+async def query_cards_stream(request: QueryRequest, caller_id: str = Depends(require_api_key)):
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
     k = _normalize_k(request.k)
-    ctx = build_query_context(question, _normalize_lab(request.lab_name), request.conversation_id)
+    ctx = _query_context_or_403(
+        question, _normalize_lab(request.lab_name), request.conversation_id, caller_id
+    )
 
     async def _generate():
         accumulated: list[str] = []
@@ -99,8 +114,8 @@ async def query_cards_stream(request: QueryRequest):
                     pass
                 yield chunk
         except Exception as exc:
-            log_exception(exc, scope="query.stream")
-            yield stream_error_payload(exc)
+            # stream_error_payload logs the exception and returns the error+done frames.
+            yield stream_error_payload(exc, scope="query.stream")
         finally:
             # Persist whatever was produced — including on client disconnect (GeneratorExit)
             # — so the turn is not lost from conversation context. Skip empties so a failed
@@ -112,6 +127,7 @@ async def query_cards_stream(request: QueryRequest):
                         conversation_id=ctx.conversation_id,
                         question=question,
                         answer=answer,
+                        owner=caller_id,
                     )
                 except Exception as exc:
                     log_exception(exc, scope="query.stream.persist")

@@ -124,6 +124,17 @@ def load_settings() -> AppSettings:
     )
 
 
+def api_keys() -> List[str]:
+    """Keys accepted on the protected endpoints, from ``RAG_API_KEYS`` (comma-separated).
+
+    Empty by default, which leaves the API unauthenticated so local development and
+    existing deployments keep working unchanged; :func:`load_settings` warns at startup
+    when that is the case. Setting any key turns enforcement on for every protected route.
+    """
+    ensure_env_loaded()
+    return _parse_csv_list(os.getenv("RAG_API_KEYS", ""), default=[])
+
+
 def router_base_url() -> str:
     ensure_env_loaded()
     return (

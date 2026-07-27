@@ -17,6 +17,7 @@ import json
 from typing import Any, AsyncIterator, Dict, List
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 
 from core_settings import (
     ifc_model_path,
@@ -176,7 +177,9 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
     """Stream an IFC-model answer as SSE token events."""
     path = ifc_model_path()
     try:
-        context_text = build_ifc_context_text(path)
+        # Parsing the IFC file is a multi-second CPU-bound read on first call; running
+        # it inline would block the event loop and stall every concurrent request.
+        context_text = await run_in_threadpool(build_ifc_context_text, path)
     except FileNotFoundError:
         msg = (
             "The building (IFC) model is not available on the server, so I can't "

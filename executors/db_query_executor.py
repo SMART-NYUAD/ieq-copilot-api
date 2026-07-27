@@ -19,7 +19,7 @@ from ollama_helpers import (
     generate_ollama_text,
 )
 from query_routing.intent_classifier import IntentType
-from executors import metric_registry
+from executors import metric_registry, sse
 from executors.knowledge_executor import search_knowledge_cards
 from executors.db_support import query_handlers as db_handlers
 from executors.db_support import query_parsing as db_parsing
@@ -764,14 +764,6 @@ def run_db_query(
     }
 
 
-def _sse_token_event(text: str) -> str:
-    return f"data: {json.dumps({'event': 'token', 'text': text})}\n\n"
-
-
-def _sse_done_event() -> str:
-    return f"data: {json.dumps({'event': 'done'})}\n\n"
-
-
 async def stream_db_tokens(
     question: str,
     intent: IntentType,
@@ -797,8 +789,8 @@ async def stream_db_tokens(
         context = query_context
     if context.get("invariant_violation"):
         fallback = str(context.get("fallback_answer") or "")
-        yield f"data: {json.dumps({'event': 'token', 'text': fallback})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        yield sse.token_event(fallback)
+        yield sse.done_event()
         return
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
@@ -842,7 +834,11 @@ async def stream_db_tokens(
         "temperature": ollama_temperature(),
     }
 
-    emitted_anything = False
+    # Accumulate the streamed answer so the citations it actually used can be
+    # resolved once generation finishes — the sync path does this on the complete
+    # text, and the stream has no complete text until the last token arrives.
+    emitted: List[str] = []
+    llm_failed = False
     try:
         async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
             async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=ollama_payload) as response:
@@ -857,16 +853,15 @@ async def stream_db_tokens(
 
                     response_text = extract_generate_chunk(event)
                     if response_text:
-                        emitted_anything = True
-                        yield _sse_token_event(response_text)
+                        emitted.append(response_text)
+                        yield sse.token_event(response_text)
     except Exception:
-        yield _sse_token_event(str(fallback_answer or ""))
-        yield _sse_done_event()
-        return
+        llm_failed = True
 
-    if not emitted_anything:
-        yield _sse_token_event(str(fallback_answer or ""))
+    if llm_failed or not emitted:
+        yield sse.token_event(str(fallback_answer or ""))
 
-    yield _sse_done_event()
+    yield sse.sources_event_for_answer(emitted, guideline_records, indexed_sources)
+    yield sse.done_event()
 
 

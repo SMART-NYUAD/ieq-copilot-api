@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from storage.conversation_store import build_compact_context
+from storage.conversation_store import ANONYMOUS_OWNER, build_compact_context
 from storage.conversation_memory import apply_routing_memory, compute_question_signals, extract_routing_memory
 
 _ROUTING_SNIPPET_LINES = 8   # lines fed to the router LLM (≈ 4 prior turns for follow-up resolution)
@@ -54,15 +54,17 @@ def build_conversation_context(
     question: str,
     lab_name: Optional[str],
     conversation_id: Optional[str],
+    owner: str = ANONYMOUS_OWNER,
 ) -> ConversationContext:
     """Build the canonical context for one turn.
 
     Loads prior turns from the store, applies memory carry-over, and
     pre-computes every view needed downstream so no layer does its own
-    extraction.
+    extraction. ``owner`` is the authenticated caller id; loading history for a
+    conversation owned by someone else raises ``ConversationAccessError``.
     """
     original_question = str(question or "").strip()
-    cid, raw_block = build_compact_context(conversation_id)
+    cid, raw_block = build_compact_context(conversation_id, owner=owner)
 
     content_lines = extract_context_lines(raw_block)
     routing_snippet = "\n".join(content_lines[-_ROUTING_SNIPPET_LINES:])
