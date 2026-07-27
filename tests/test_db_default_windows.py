@@ -12,8 +12,8 @@ REPO_DIR = os.path.abspath(os.path.join(SERVER_DIR, ".."))
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
+from fake_sensor_api import FakeSensorApiMixin
 from query_routing.intent_classifier import IntentType
-from executors.db_query_executor import prepare_db_query
 from executors.db_support.response_helpers import build_db_payload as _build_db_payload
 from executors.db_support.query_parsing import default_window_hours_for_intent as _default_window_hours_for_intent
 from executors.db_support.query_handlers import execute_intent_query
@@ -22,8 +22,6 @@ from executors.db_support.query_parsing import (
     extract_time_window,
     has_explicit_time_hint,
     pick_metric,
-    strip_conversation_context,
-    validate_db_execution_invariants,
 )
 from executors.db_support.time_windows import (
     granularity_hours_for_window,
@@ -138,7 +136,7 @@ class TimeRangeParsingTests(unittest.TestCase):
         self.assertEqual((end.month, end.day), (6, 3))
 
 
-class DbDefaultWindowTests(unittest.TestCase):
+class DbDefaultWindowTests(FakeSensorApiMixin, unittest.TestCase):
     def test_point_lookup_defaults_to_last_hour(self):
         self.assertEqual(_default_window_hours_for_intent(IntentType.POINT_LOOKUP_DB), 1)
         self.assertEqual(_default_window_hours_for_intent(IntentType.CURRENT_STATUS_DB), 1)
@@ -212,245 +210,6 @@ class DbDefaultWindowTests(unittest.TestCase):
     def test_pick_metric_prefers_first_mention_in_question(self):
         metric_alias, _ = pick_metric("What is the temperature and CO2 in smart_lab?")
         self.assertEqual(metric_alias, "temperature")
-
-    def test_invariants_block_deictic_room_reference_without_explicit_lab(self):
-        # "in the room" with no explicit lab in the question and no request_lab_name
-        # should trigger lab_scope_not_justified, even if resolved from conversation context.
-        result = validate_db_execution_invariants(
-            question="Is there any anomaly in the room?",
-            intent=IntentType.ANOMALY_ANALYSIS_DB,
-            selected_metric="ieq",
-            resolved_lab_name="smart_lab",  # carried over from context, NOT from this question
-            request_lab_name=None,
-            explicit_metrics=[],
-            hinted_metrics=[],
-            planner_hints={},
-        )
-        self.assertFalse(result["allowed"])
-        self.assertIn("lab_scope_not_justified", result["violations"])
-
-    def test_invariants_allow_deictic_when_request_lab_name_provided(self):
-        # When the API caller explicitly sends lab_name, deictic reference is fine.
-        result = validate_db_execution_invariants(
-            question="Is there any anomaly in the room?",
-            intent=IntentType.ANOMALY_ANALYSIS_DB,
-            selected_metric="ieq",
-            resolved_lab_name="smart_lab",
-            request_lab_name="smart_lab",  # explicit API parameter
-            explicit_metrics=[],
-            hinted_metrics=[],
-            planner_hints={},
-        )
-        self.assertTrue(result["allowed"])
-
-    def test_invariants_allow_within_space_comparison(self):
-        # Within-space metric comparisons no longer require a second space.
-        result = validate_db_execution_invariants(
-            question="Compare humidity in smart_lab this morning",
-            intent=IntentType.COMPARISON_DB,
-            selected_metric="ieq",
-            resolved_lab_name="smart_lab",
-            request_lab_name="smart_lab",
-            explicit_metrics=[],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": False,
-                    "has_lab_reference": True,
-                    "is_baseline_reference_query": False,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
-        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
-
-    def test_invariants_allow_single_lab_baseline_reference_comparison(self):
-        result = validate_db_execution_invariants(
-            question="Compare humidity in concrete_lab against its baseline for this morning",
-            intent=IntentType.COMPARISON_DB,
-            selected_metric="humidity",
-            resolved_lab_name="concrete_lab",
-            request_lab_name=None,
-            explicit_metrics=["humidity"],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": True,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": True,
-                    "is_baseline_reference_query": True,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
-
-    def test_invariants_allow_single_lab_metric_vs_metric_comparison(self):
-        result = validate_db_execution_invariants(
-            question="Is PM2.5 or CO2 the bigger issue in smart_lab this month?",
-            intent=IntentType.COMPARISON_DB,
-            selected_metric="pm25",
-            resolved_lab_name="smart_lab",
-            request_lab_name=None,
-            explicit_metrics=["pm25", "co2"],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": True,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": True,
-                    "is_baseline_reference_query": False,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
-        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
-
-    def test_invariants_allow_two_explicit_labs_without_planner_signals(self):
-        result = validate_db_execution_invariants(
-            question=(
-                "Compare smart_lab and concrete_lab for CO2, PM2.5, VOC, "
-                "temperature, and humidity for the last 7 days."
-            ),
-            intent=IntentType.COMPARISON_DB,
-            selected_metric="co2",
-            resolved_lab_name="smart_lab",
-            request_lab_name=None,
-            explicit_metrics=["co2", "pm25", "voc", "temperature", "humidity"],
-            hinted_metrics=[],
-            planner_hints={"query_signals": {}},
-        )
-        self.assertTrue(result["allowed"])
-        self.assertNotIn("lab_scope_not_justified", result["violations"])
-        self.assertNotIn("comparison_second_space_not_justified", result["violations"])
-
-    def test_invariants_block_current_status_without_lab_scope(self):
-        result = validate_db_execution_invariants(
-            question="Would you say it's good the air quality there?",
-            intent=IntentType.CURRENT_STATUS_DB,
-            selected_metric="ieq",
-            resolved_lab_name=None,
-            request_lab_name=None,
-            explicit_metrics=[],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": False,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": False,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertFalse(result["allowed"])
-        self.assertIn("lab_scope_not_justified", result["violations"])
-
-    def test_invariants_block_aggregation_without_lab_scope_even_with_time_window(self):
-        result = validate_db_execution_invariants(
-            question="What changed in indoor air quality over the last 6 hours?",
-            intent=IntentType.AGGREGATION_DB,
-            selected_metric="ieq",
-            resolved_lab_name=None,
-            request_lab_name=None,
-            explicit_metrics=[],
-            hinted_metrics=["ieq", "co2", "pm25"],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertFalse(result["allowed"])
-        self.assertIn("lab_scope_not_justified", result["violations"])
-
-    def test_invariants_allow_aggregation_when_global_scope_explicit(self):
-        result = validate_db_execution_invariants(
-            question="What changed in indoor air quality across all labs over the last 6 hours?",
-            intent=IntentType.AGGREGATION_DB,
-            selected_metric="ieq",
-            resolved_lab_name=None,
-            request_lab_name=None,
-            explicit_metrics=[],
-            hinted_metrics=["ieq", "co2", "pm25"],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
-
-    def test_prepare_db_query_returns_lab_first_clarification_when_lab_missing(self):
-        result = prepare_db_query(
-            question="Would you say it's good the air quality there?",
-            intent=IntentType.CURRENT_STATUS_DB,
-            lab_name=None,
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": False,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": False,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertEqual(result.get("timescale"), "clarify")
-        self.assertIn("need the lab first", str(result.get("fallback_answer") or "").lower())
-
-    def test_prepare_db_query_returns_clarification_for_missing_lab_on_air_quality_window(self):
-        result = prepare_db_query(
-            question="What changed in indoor air quality over the last 6 hours?",
-            intent=IntentType.AGGREGATION_DB,
-            lab_name=None,
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": False,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertEqual(result.get("timescale"), "clarify")
-        self.assertIn("need the lab first", str(result.get("fallback_answer") or "").lower())
-
-    def test_invariants_allow_prepositional_scope_for_non_lab_suffix_names(self):
-        result = validate_db_execution_invariants(
-            question="Which metric is driving poor IEQ in shores_office this week?",
-            intent=IntentType.AGGREGATION_DB,
-            selected_metric="ieq",
-            resolved_lab_name="shores_office",
-            request_lab_name=None,
-            explicit_metrics=["ieq"],
-            hinted_metrics=[],
-            planner_hints={
-                "query_signals": {
-                    "asks_for_db_facts": True,
-                    "has_db_scope_phrase": True,
-                    "has_metric_reference": True,
-                    "has_time_window_hint": True,
-                    "has_lab_reference": False,
-                }
-            },
-        )
-        self.assertTrue(result["allowed"])
 
     def test_comparison_co2_query_expands_to_multi_metric_air_quality_pack(self):
         class _Cursor:
@@ -882,7 +641,7 @@ class DbDefaultWindowTests(unittest.TestCase):
         self.assertEqual((result.get("rows") or [{}])[0].get("lab_space"), "smart_lab")
 
 
-class IeqIndexQueryTests(unittest.TestCase):
+class IeqIndexQueryTests(FakeSensorApiMixin, unittest.TestCase):
     """An explicit IEQ-index ask reports the IEQ composite + sub-indices, not CO2."""
 
     def test_requested_metrics_returns_ieq_family_not_pollutant_pack(self):
@@ -935,7 +694,7 @@ class IeqIndexQueryTests(unittest.TestCase):
         self.assertIn("Do NOT lead with CO2", directive)
 
 
-class DiagnosticSignalTests(unittest.TestCase):
+class DiagnosticSignalTests(FakeSensorApiMixin, unittest.TestCase):
     """The LLM router's analysis_mode=diagnostic drives root-cause decomposition,
     independent of question phrasing — so 'main driver making the IEQ bad' (which
     the keyword heuristic misses) still pulls every contributing metric."""
@@ -1012,7 +771,7 @@ class DiagnosticSignalTests(unittest.TestCase):
         self.assertEqual(directive, DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC)
 
 
-class IeqCompositeFanoutTests(unittest.TestCase):
+class IeqCompositeFanoutTests(FakeSensorApiMixin, unittest.TestCase):
     """A plain IEQ question (no snapshot noun, not diagnostic) must still fan out to
     the IEQ composite's sub-indices rather than collapsing to a single IEQ value."""
 

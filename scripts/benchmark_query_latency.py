@@ -87,10 +87,6 @@ def _run_breakdown(
         )
         timings["db_prepare_ms"] = (time.perf_counter() - t3) * 1000.0
 
-        if db_ctx.get("invariant_violation"):
-            meta["invariant_violation"] = True
-            return timings, meta
-
         t4 = time.perf_counter()
         _render_db_answer_with_llm(
             question=question,

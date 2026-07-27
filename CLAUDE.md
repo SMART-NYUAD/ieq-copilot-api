@@ -28,7 +28,12 @@ python -m unittest discover -s tests -p "test_*.py"
 
 **Run a single test file:**
 ```bash
-python -m unittest discover -s tests -p "test_llm_router_planner.py"
+python -m unittest discover -s tests -p "test_branch_model.py"
+```
+
+**Check the suite stays hermetic** (no test may reach the network):
+```bash
+python scripts/check_tests_hermetic.py
 ```
 
 **Primary regression suite:**
@@ -36,7 +41,9 @@ python -m unittest discover -s tests -p "test_llm_router_planner.py"
 python -m unittest discover -s tests -p "test_context_resolution.py"        # follow-up resolution
 python -m unittest discover -s tests -p "test_stream_metadata_parity.py"    # sync/stream metadata
 python -m unittest discover -s tests -p "test_stream_error_and_sources.py"  # stream error + citations
-python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows + clarify gate
+python -m unittest discover -s tests -p "test_branch_model.py"              # branch ladder + renderer parity
+python -m unittest discover -s tests -p "test_router_failure_paths.py"      # router transport/parse failures
+python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows
 python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
 ```
 
@@ -45,13 +52,12 @@ check the reported count when changing these.
 
 ## Architecture
 
-Five layers execute in order per request:
+Four layers execute in order per request:
 
-1. **API layer** (`http_routes/`) — validates shape, normalizes fields, builds `ConversationContext`
-2. **Routing layer** (`query_routing/llm_router_planner.py`) — LLM produces a JSON route plan; policy validation enforces deterministic executor selection
-3. **Execution layer** (`query_routing/query_orchestrator.py`, `executors/`) — runs exactly one branch: `clarify_gate`, `knowledge_qa`, or `db_query`
-4. **Evidence layer** (`evidence/evidence_layer.py`) — normalizes and repairs provenance envelopes before response mapping
-5. **Response layer** (`http_routes/`) — emits contract-stable sync JSON or SSE stream
+1. **API layer** (`http_routes/`) — authenticates the caller, validates shape, builds `ConversationContext`
+2. **Routing layer** (`query_routing/llm_router_planner.py`) — one LLM call produces a JSON `RoutePlan` (intent, slots, resolved question, clarification decision)
+3. **Execution layer** (`query_routing/query_orchestrator.py`, `executors/`) — `plan_branch` maps the plan to exactly one `Branch`; a renderer runs it
+4. **Response layer** (`render_sync` / `render_stream`) — emits contract-stable sync JSON or SSE frames from that same branch
 
 ### Request flow
 
@@ -59,10 +65,13 @@ Five layers execute in order per request:
 POST /query or /query/stream
   → http_routes/query_routes.py          (input validation + ConversationContext)
   → query_routing/llm_router_planner.py  (LLM call → RoutePlan)
-  → query_routing/query_orchestrator.py  (executor selection + branch execution)
+  → query_routing/query_orchestrator.py  (plan_branch → one Branch)
       ├── executors/knowledge_executor.py    (definition/general questions)
-      └── executors/db_query_executor.py     (all data questions: lookup/aggregation/comparison/anomaly/forecast)
-  → evidence/evidence_layer.py           (normalize provenance)
+      ├── executors/db_query_executor.py     (all data questions: lookup/aggregation/comparison/anomaly/forecast)
+      ├── executors/ifc_executor.py          (building-model questions)
+      ├── executors/sensor_inspection_executor.py  (per-device questions)
+      └── (instant branches: viewer / heatmap / download / clarify / guardrail)
+  → render_sync(branch) or render_stream(branch)
   → response assembly + turn persistence
 ```
 
@@ -72,7 +81,9 @@ POST /query or /query/stream
 
 ### Routing
 
-The router (`llm_router_planner.py`) sends a structured JSON prompt to an Ollama LLM and parses the response into a `RoutePlan`. The LLM returns exactly one intent from a fixed taxonomy. Regex fallback (`_fallback_plan`) is **emergency-only** — used only when the LLM is unreachable, and it covers only unambiguous structural keywords. The intent taxonomy:
+The router (`llm_router_planner.py`) sends a structured JSON prompt to an Ollama LLM (with `format: "json"`, temperature 0) and parses the response into a `RoutePlan`. The LLM returns exactly one intent from a fixed taxonomy, plus the resolved question and the clarification decision.
+
+Failures are handled by class, because they call for different responses. A **transport** failure (Ollama unreachable) is retried up to `OLLAMA_ROUTER_MAX_RETRIES`. A **parse** failure (`_RouterParseError`: unusable content, unknown intent, truncated JSON) is *not* retried — the request is deterministic, so a retry reproduces it — and is logged with the offending content. Both end in the regex fallback (`_fallback_plan`), which is **emergency-only** and covers only unambiguous structural keywords. The intent taxonomy:
 
 - `definition_explanation` → knowledge executor
 - `unknown_fallback` → knowledge executor
@@ -104,7 +115,8 @@ Sensor data comes from the Smart CRG REST API via `executors/db_support/api_clie
 ### Key invariants
 
 - Endpoint handlers stay thin — all business logic lives in orchestration/executor modules.
-- Stream (`/query/stream`) and sync (`/query`) metadata share the same builders in `query_routing/metadata_builders.py` — keep them in sync.
+- **There is exactly one intent ladder.** `query_orchestrator.plan_branch` maps a `RoutePlan` to one `Branch`; `render_sync` and `render_stream` both consume that object and neither may branch on intent itself. Adding an executor means writing one branch factory — if you find yourself editing two ladders, the drift that lost the stream its citations is starting again.
+- A `Branch` is either *instant* (`answer` set: a fixed confirmation or question, no model call) or *generated* (`run_sync`/`open_stream`). Blocking pre-work goes in `prepare` so the stream renderer can offload it and both renderers share its result.
 - A streamed answer must carry the same citations as the sync one. The sync response returns `citation_sources` + `footnotes` in its body; the stream emits them in a terminal `sources` frame (`executors/sse.py::sources_event_for_answer`) resolved from the accumulated tokens. Any new streaming executor that grounds its answer in guideline records must emit that frame before `done`.
 - Every streaming path terminates with `done`, even on failure — an executor that loses its LLM emits its deterministic fallback text first, and route-level failures go through `runtime_errors.stream_error_payload` (which emits `error` + `done`). A client must never be left waiting on a silent stream.
 - `ConversationContext` is immutable (`frozen=True`) and built once per turn.
@@ -112,7 +124,9 @@ Sensor data comes from the Smart CRG REST API via `executors/db_support/api_clie
 
 ## Routing Preference
 
-**Prefer LLM-based routing over regex.** Regex is a last resort (emergency fallback only). When improving or extending routing behavior, the right approach is to tune the system prompt in `llm_router_planner.py::_SYSTEM_PROMPT` and adjust intent definitions and examples — not to add regex patterns. The LLM handles ambiguity, typos, and natural language variation far better than keyword matching. Regex rules exist only in `_fallback_plan()` to cover the case where the Ollama endpoint is completely unreachable.
+**Prefer LLM-based routing over regex.** The clarify decision follows the same rule: the router sets `needs_clarification` + `clarification_question` (honored only when the request passes `allow_clarify`), rather than a keyword gate in the DB executor deciding when scope is "underspecified".
+
+ Regex is a last resort (emergency fallback only). When improving or extending routing behavior, the right approach is to tune the system prompt in `llm_router_planner.py::_SYSTEM_PROMPT` and adjust intent definitions and examples — not to add regex patterns. The LLM handles ambiguity, typos, and natural language variation far better than keyword matching. Regex rules exist only in `_fallback_plan()` to cover the case where the Ollama endpoint is completely unreachable.
 
 ## Configuration
 
@@ -126,10 +140,11 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `DATABASE_URL` | Postgres connection (or use `DB_*` components). Resolved lazily on first use — the process no longer fails at import when it is unset (only the guideline/knowledge-card path requires it) |
 | `SENSOR_API_BASE_URL` | Base URL of the Smart CRG sensor REST API for latest readings / agg-summaries (default: `http://192.168.50.99:7001`) |
 | `PREDICTIONS_API_BASE_URL` | Base URL of the forecast/predictions API (default: `https://api.smart-crg.com`) |
-| `DISPLAY_UTC_OFFSET_HOURS` | UTC offset used when serializing/labelling timestamps for the user (default: `4`, Gulf Standard Time) |
+| `OLLAMA_ROUTER_NUM_PREDICT` | Token budget for the router's JSON plan (default: `512`). Too low truncates the plan and silently drops the route to the regex fallback |
+| `MAX_QUERY_WINDOW_DAYS` | Upper bound on a resolved query window (default: `366`). Aggregation is always hourly, so this is what stops one question fanning out into tens of thousands of upstream buckets. When it trims a window the label says so, since the label reaches the answer LLM |
+| `DISPLAY_UTC_OFFSET_HOURS` | UTC offset used for **both** parsing question dates and labelling timestamps (default: `4`, Gulf Standard Time). `time_windows.target_tz()` is the single source — never hardcode an offset |
 | `RAG_API_KEYS` | Comma-separated API keys accepted on `/query`, `/query/stream`, `/sensors/latest/{space}`, `/ifc/summary` (send `X-API-Key: <key>` or `Authorization: Bearer <key>`). **Unset by default, which leaves those endpoints open** and puts every caller in one shared conversation namespace; set it before exposing the service beyond localhost. Each key maps to a distinct caller id that owns its conversations — reusing another caller's `conversation_id` returns 403 |
 | `RAG_API_CORS_ALLOW_ORIGINS` / `RAG_API_CORS_ALLOW_CREDENTIALS` | CORS origins/credentials. Credentials are auto-disabled when origins are wildcarded (`*`), since browsers reject that combination — set explicit origins to use credentialed CORS |
-| `ROUTER_CLARIFY_THRESHOLD` | Confidence below which queries trigger clarification |
 | `IFC_MODEL_PATH` | Path to the IFC building model for `ifc_model_qa` (default: `./smart.ifc`) |
 | `DOWNLOAD_SPACE_SLUG` | Default `{slug}` for the `download_data` endpoint path when no space is named (default: `smart_lab`) |
 | `DOWNLOAD_DEFAULT_INTERVAL` | Default aggregation interval for `download_data` when none is named (default: `1h`, emitted to the frontend as `1hr`) |

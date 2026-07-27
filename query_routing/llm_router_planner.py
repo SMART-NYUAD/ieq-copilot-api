@@ -17,6 +17,7 @@ from core_settings import (
     router_base_url,
     router_max_retries,
     router_model,
+    router_num_predict,
     router_retry_jitter_ms,
     router_temperature,
     router_thinking,
@@ -60,6 +61,11 @@ _SYSTEM_PROMPT = (
     '  "analysis_mode": "diagnostic" when the user asks WHY an index/metric is bad/good/'
     "changing or what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE for / BEHIND it "
     "(a root-cause question), else null\n"
+    '  "needs_clarification": true ONLY when the question cannot be executed because a '
+    "required detail is missing AND cannot be inferred from Prior conversation or a sensible "
+    "default; else false\n"
+    '  "clarification_question": the single short question to ask the user when '
+    "needs_clarification is true, else null\n"
     '  "resolved_question": the current Question rewritten as a FULLY SELF-CONTAINED question — '
     "every elliptical reference (metric, time window, lab/space, unit, or a bare pronoun like "
     "'it', 'that', 'this', 'there', 'those') replaced with what it refers to from Prior "
@@ -98,6 +104,18 @@ _SYSTEM_PROMPT = (
     "temperature question → 'how is the air quality?' (never inject temperature). If the Question "
     "needs nothing resolved, echo it EXACTLY. `metrics`, `lab`, and `time_phrase` must stay "
     "consistent with `resolved_question`.\n"
+    "- CLARIFICATION: Set `needs_clarification` to true ONLY when answering would require "
+    "GUESSING which thing the user means, and write the one short question that unblocks it in "
+    "`clarification_question`. The bar is high — prefer answering with a sensible default. "
+    "Clarify when: the question points at a space deictically with no resolvable name and none "
+    "in Prior conversation ('how is it over there?', 'what about that room?'); the question names "
+    "two incompatible scopes; or it is so vague that no metric or topic can be identified "
+    "('how is it?', 'is it fine?') with nothing in Prior conversation to resolve it. "
+    "Do NOT clarify for: a missing time window (the system defaults to a sensible recent "
+    "window), a missing space when the user implies all of them or only one is in play, a "
+    "missing metric on a broad air-quality/IEQ question (the system uses the IEQ pack), or "
+    "anything Prior conversation already answers — resolve those in `resolved_question` "
+    "instead. When `needs_clarification` is true, still fill `intent` with your best guess.\n"
     "- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to \"diagnostic\" whenever the user asks what is "
     "DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or "
     "REASON for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the "
@@ -545,6 +563,16 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     raw_resolved = data.get("resolved_question")
     resolved_question = raw_resolved.strip() if isinstance(raw_resolved, str) and raw_resolved.strip() else question
 
+    # A clarification is only actionable if the model supplied the question to ask, so an
+    # unaccompanied flag is treated as "no clarification" rather than a dead end.
+    raw_clarification = data.get("clarification_question")
+    clarification_question = (
+        raw_clarification.strip()
+        if isinstance(raw_clarification, str) and raw_clarification.strip()
+        else None
+    )
+    needs_clarification = bool(data.get("needs_clarification")) and clarification_question is not None
+
     return RoutePlan(
         intent=intent,
         confidence=confidence,
@@ -562,6 +590,8 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
         download_interval=download_interval,
         analysis_mode=analysis_mode,
         resolved_question=resolved_question,
+        needs_clarification=needs_clarification,
+        clarification_question=clarification_question,
     )
 
 
@@ -584,6 +614,12 @@ def _router_chat_request(question: str, lab_name: Optional[str], conversation_co
 
     Shared by the sync (`requests`) and async (`httpx`) transports so the prompt,
     options, and endpoint stay identical between them.
+
+    ``format: "json"`` constrains Ollama to emit a syntactically valid JSON object, which
+    removes the whole class of "model wrapped the plan in prose" parse failures. The token
+    budget is generous because the plan now carries ``resolved_question`` and
+    ``clarification_question`` alongside the slots — a truncated response is unparseable
+    and silently degrades the route to the regex fallback.
     """
     user_message = _build_router_user_message(question, lab_name, conversation_context)
     body = {
@@ -594,22 +630,56 @@ def _router_chat_request(question: str, lab_name: Optional[str], conversation_co
         ],
         "stream": False,
         "think": router_thinking(),
-        "options": {"temperature": router_temperature(), "num_predict": 256},
+        "format": "json",
+        "options": {"temperature": router_temperature(), "num_predict": router_num_predict()},
     }
     return f"{router_base_url()}/api/chat", body
 
 
-def _plan_from_response_json(payload: dict, question: str, lab_name: Optional[str]) -> Optional[RoutePlan]:
+class _RouterParseError(Exception):
+    """The router responded, but its content was not a usable plan.
+
+    Distinguished from a transport error because the two demand different operator
+    actions: a transport failure means Ollama is unreachable, while a parse failure means
+    the model or the prompt is wrong — the endpoint is healthy and retrying the identical
+    deterministic request will fail identically.
+    """
+
+    def __init__(self, reason: str, raw: str = ""):
+        super().__init__(reason)
+        self.reason = reason
+        self.raw = raw
+
+
+def _plan_from_response_json(payload: dict, question: str, lab_name: Optional[str]) -> RoutePlan:
+    """Parse a router HTTP response into a plan, raising :class:`_RouterParseError`."""
     raw = extract_chat_content((payload or {}).get("message", {}))
-    return _parse_llm_response(raw, question, lab_name)
+    if not raw.strip():
+        raise _RouterParseError("empty router content", raw)
+    plan = _parse_llm_response(raw, question, lab_name)
+    if plan is None:
+        raise _RouterParseError("unparseable router response", raw)
+    return plan
 
 
 def _log_router_fallback(question: str, attempts: int, last_error: object) -> None:
-    """Surface router degradation. The fallback is emergency-only (regex), so an operator
-    needs to know the LLM router was unreachable rather than silently degrading."""
+    """Surface router degradation, naming the failure class.
+
+    The fallback is emergency-only (regex), so an operator needs to know *why* the LLM
+    route was abandoned. A parse failure is logged with the offending content because the
+    model output is the thing to fix; a transport failure is logged with the exception.
+    """
+    if isinstance(last_error, _RouterParseError):
+        _log.warning(
+            "Router LLM returned an unusable plan after %d attempt(s) (%s); using regex "
+            "fallback for question: %r. Raw content: %r",
+            attempts, last_error.reason, (question or "")[:120], (last_error.raw or "")[:400],
+        )
+        return
     _log.warning(
-        "Router LLM unavailable after %d attempt(s) (%s); using regex fallback for question: %r",
-        attempts, last_error, (question or "")[:120],
+        "Router LLM unreachable after %d attempt(s) (%s: %s); using regex fallback for "
+        "question: %r",
+        attempts, type(last_error).__name__, last_error, (question or "")[:120],
     )
 
 
@@ -626,10 +696,12 @@ def plan_route(question: str, lab_name: Optional[str] = None, conversation_conte
         try:
             resp = requests.post(url, json=body, timeout=timeout)
             resp.raise_for_status()
-            plan = _plan_from_response_json(resp.json(), question, lab_name)
-            if plan is not None:
-                return plan
-            last_error = "unparseable router response"
+            return _plan_from_response_json(resp.json(), question, lab_name)
+        except _RouterParseError as exc:
+            # The endpoint is healthy; the request is deterministic (temperature 0), so a
+            # retry would produce the same unusable content. Fail over immediately.
+            _log_router_fallback(question, attempt + 1, exc)
+            return _fallback_plan(question, lab_name)
         except Exception as exc:
             last_error = exc
 
@@ -652,10 +724,11 @@ async def plan_route_async(question: str, lab_name: Optional[str] = None, conver
             try:
                 resp = await client.post(url, json=body)
                 resp.raise_for_status()
-                plan = _plan_from_response_json(resp.json(), question, lab_name)
-                if plan is not None:
-                    return plan
-                last_error = "unparseable router response"
+                return _plan_from_response_json(resp.json(), question, lab_name)
+            except _RouterParseError as exc:
+                # See plan_route: a parse failure is not worth retrying.
+                _log_router_fallback(question, attempt + 1, exc)
+                return _fallback_plan(question, lab_name)
             except Exception as exc:
                 last_error = exc
 

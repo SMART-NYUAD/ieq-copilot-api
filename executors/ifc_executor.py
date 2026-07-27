@@ -27,10 +27,16 @@ from core_settings import (
     ollama_thinking,
     ollama_timeout_seconds,
 )
+from executors import sse
 from ollama_helpers import extract_generate_chunk, extract_generate_text
 from ifc_model.ifc_store import build_ifc_context_text, get_ifc_summary
 from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
 
+
+_MODEL_UNAVAILABLE_ANSWER = (
+    "The building (IFC) model is not available on the server, so I can't "
+    "answer questions about it right now."
+)
 
 IFC_SYSTEM_PROMPT = (
     "You are a BIM (Building Information Modeling) assistant answering questions about a "
@@ -116,8 +122,7 @@ def answer_ifc_question_with_metadata(user_question: str) -> Dict[str, Any]:
         summary = get_ifc_summary(path)
     except FileNotFoundError:
         return {
-            "answer": "The building (IFC) model is not available on the server, so I can't "
-            "answer questions about it right now.",
+            "answer": _MODEL_UNAVAILABLE_ANSWER,
             "footnotes": [],
             "indexed_sources": [],
             "model_available": False,
@@ -181,12 +186,8 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
         # it inline would block the event loop and stall every concurrent request.
         context_text = await run_in_threadpool(build_ifc_context_text, path)
     except FileNotFoundError:
-        msg = (
-            "The building (IFC) model is not available on the server, so I can't "
-            "answer questions about it right now."
-        )
-        yield f"data: {json.dumps({'event': 'token', 'text': msg})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
+        yield sse.token_event(_MODEL_UNAVAILABLE_ANSWER)
+        yield sse.done_event()
         return
 
     prompt = _build_prompt(user_question, context_text)
@@ -197,6 +198,7 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
         "think": ollama_thinking(),
         "temperature": ollama_temperature(),
     }
+    produced = False
     try:
         async with httpx.AsyncClient(timeout=ollama_timeout_seconds()) as client:
             async with client.stream("POST", f"{ollama_base_url()}/api/generate", json=payload) as response:
@@ -210,8 +212,20 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
                         continue
                     text = extract_generate_chunk(event)
                     if text:
-                        yield f"data: {json.dumps({'event': 'token', 'text': text})}\n\n"
+                        produced = True
+                        yield sse.token_event(text)
     except Exception:
         pass
 
-    yield f"data: {json.dumps({'event': 'done'})}\n\n"
+    if not produced:
+        # LLM unreachable — answer from the parsed model facts instead of streaming
+        # nothing, matching answer_ifc_question_with_metadata. The summary is cached by
+        # file mtime, so this costs no second parse.
+        try:
+            summary = await run_in_threadpool(get_ifc_summary, path)
+            fallback = _deterministic_fallback(summary, user_question)
+        except Exception:
+            fallback = _MODEL_UNAVAILABLE_ANSWER
+        yield sse.token_event(fallback)
+
+    yield sse.done_event()

@@ -4,16 +4,33 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Any, Optional, Tuple
+from typing import Any, Tuple
+
+from core_settings import display_timezone, display_utc_offset_hours
 
 
-TARGET_TZ = timezone(timedelta(hours=4))
-TARGET_TZ_LABEL = "GMT+4"
+def target_tz() -> timezone:
+    """The timezone every user-facing timestamp is expressed in.
+
+    Delegates to :func:`core_settings.display_timezone` (``DISPLAY_UTC_OFFSET_HOURS``) so
+    parsing, window bounds, and display labels all move together. This used to be a
+    module-level constant hardcoded to +4 while the serializers read the setting, which
+    meant changing the offset shifted some timestamps and not others.
+    """
+    return display_timezone()
+
+
+def target_tz_label() -> str:
+    """Human-readable name of the display timezone, e.g. ``GMT+4``."""
+    offset = display_utc_offset_hours()
+    if offset == 0:
+        return "UTC"
+    return f"GMT{offset:+d}"
 
 
 def to_target_timezone(dt: datetime) -> datetime:
     normalized = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    return normalized.astimezone(TARGET_TZ)
+    return normalized.astimezone(target_tz())
 
 
 def serialize_datetime_iso(dt: datetime) -> str:
@@ -40,7 +57,7 @@ def serialize_timestamp_value(value: Any) -> Any:
 
 
 def format_display_datetime(dt: datetime) -> str:
-    rendered = dt.astimezone(TARGET_TZ).strftime(f"%b %d, %Y, %I:%M %p {TARGET_TZ_LABEL}")
+    rendered = dt.astimezone(target_tz()).strftime(f"%b %d, %Y, %I:%M %p {target_tz_label()}")
     rendered = re.sub(r"^([A-Za-z]{3}) 0(\d),", r"\1 \2,", rendered)
     rendered = re.sub(r", 0(\d):", r", \1:", rendered)
     return rendered

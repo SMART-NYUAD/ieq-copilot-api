@@ -1,16 +1,28 @@
 # API Contracts
 
-> **⚠️ Partially outdated.** Sections describing `GET /health/router` and other router
-> telemetry routes refer to endpoints that no longer exist. `CLAUDE.md` and `README.md` carry
-> the current endpoint list and authentication rules.
+Stable request/response behavior for clients integrating with the RAG API server.
+`CLAUDE.md` describes the internal architecture; this document is the external contract.
 
-This document defines stable API behavior for clients integrating with the RAG API server.
-
-## Contract Philosophy
+## Contract philosophy
 
 - Keep a stable core response shape.
 - Add optional fields incrementally for new capabilities.
 - Preserve backward compatibility unless a breaking change is explicitly versioned.
+- The sync body and the stream frames carry the same information — anything present in one
+  is reachable from the other.
+
+## Authentication
+
+When `RAG_API_KEYS` is set, every endpoint below requires `X-API-Key: <key>` or
+`Authorization: Bearer <key>`. When it is unset, the endpoints are open and all callers
+share a single conversation namespace (development only).
+
+| Status | Meaning |
+|---|---|
+| `400` | empty question |
+| `401` | missing or invalid API key |
+| `403` | `conversation_id` belongs to a different caller |
+| `500` | internal execution error |
 
 ## `POST /query`
 
@@ -18,7 +30,7 @@ This document defines stable API behavior for clients integrating with the RAG A
 
 ```json
 {
-  "question": "What is current CO2 in smart_lab?",
+  "question": "What is the current CO2 in smart_lab?",
   "k": 5,
   "lab_name": "smart_lab",
   "allow_clarify": true,
@@ -26,7 +38,14 @@ This document defines stable API behavior for clients integrating with the RAG A
 }
 ```
 
-### Response (core shape)
+- `k` — retrieval depth for the knowledge path (default 5, clamped to 1–8).
+- `lab_name` — optional space hint; the question itself may also name one.
+- `allow_clarify` — when `false`, a question the router would ask about is answered on a
+  best-effort basis instead (default `true`).
+- `conversation_id` — echo the value from a previous response to continue that
+  conversation. Omit it to start a new one; a fresh id is returned.
+
+### Response
 
 ```json
 {
@@ -37,130 +56,71 @@ This document defines stable API behavior for clients integrating with the RAG A
   "conversation_id": "string_or_null",
   "turn_index": 1,
   "metadata": {},
-  "visualization_type": "none|line|bar|scatter",
-  "chart": {},
   "footnotes": [],
   "citation_sources": []
 }
 ```
 
-### Metadata (typical fields)
+- `citation_sources` — every guideline source offered to the model, each with a stable
+  `index`.
+- `footnotes` — the subset the answer actually cited, in order of appearance. Inline `[N]`
+  markers in `answer` refer to these `index` values.
 
-- routing: `route_source`, `route_type`, `intent_category`, `route_confidence`, `route_reason`
-- planner: `planner_model`, `planner_fallback_used`, `planner_fallback_reason`
-- execution: `executor`, `execution_intent`, `intent_rerouted_to_db`
-- context: `query_signals`, `query_scope_class`, `k_requested`, `lab_name`, `resolved_lab_name`
-- analysis: `time_window`, `forecast_*`, `correlation`
-- evidence: normalized `evidence` object
-- conversation: `conversation_id`, `conversation_context_applied`, `turn_index`
+### `metadata`
+
+| Field | Meaning |
+|---|---|
+| `executor` | branch that answered: `db_query`, `knowledge_qa`, `ifc_qa`, `sensor_inspection`, `viewer_control`, `heatmap_control`, `download_data`, `clarify_gate`, `guardrail` |
+| `intent` | router intent (see `CLAUDE.md` for the taxonomy) |
+| `route_confidence`, `planner_model`, `fallback_used` | routing provenance; `fallback_used` means the router LLM was unreachable and a regex plan was used |
+| `resolved_question` | present only when prior turns were used to rewrite the question |
+| `ui` | frontend contract; see below |
+| `llm_used` | `false` when the answer came from a deterministic fallback |
+| `lab_name`, `resolved_lab_name`, `time_window` | resolved scope (DB path) |
+| `conversation_id`, `conversation_context_applied`, `turn_index` | conversation state |
+
+### `metadata.ui`
+
+Data branches carry `mode` (`status`, `analytical`, `conversational`, `clarify`), `panel`,
+`primary_metric`, `metrics`, and `transition`.
+
+Control branches carry their own action fields instead:
+
+- `viewer_control`: `viewer_type` ∈ `splat` | `ifc` | `pc` | `pano`
+- `heatmap_control`: `heatmap_action` ∈ `on` | `off`, `heatmap_metric`
+- `download_data`: `download_needs_metric`, and when `false`, `download_slug`,
+  `download_metric_type`, `download_start`, `download_end`, `download_interval`,
+  `download_format`
 
 ## `POST /query/stream` (SSE)
 
-### Event types
+Same request body. Frames arrive in this order:
 
-- `meta`: execution + routing metadata
-- `token`: streamed answer chunks
-- `citations`: final list of sources actually cited in answer
-- `conversation`: optional persisted turn metadata
-- `done`: completion marker
-- `error`: error payload
+| Event | Payload | Notes |
+|---|---|---|
+| `status` | `stage`, `message` | progress only; safe to ignore |
+| `meta` | same fields as `metadata`, plus `timescale`, `cards_retrieved`, `recent_card`, `visualization_type`, `chart` | `citation_sources`/`footnotes` are empty here — see `sources` |
+| `meta_update` | `timescale`, `time_window`, `resolved_lab_name`, `metrics_used`, `ui` | DB path only: supersedes the placeholder `meta` once the query resolved |
+| `token` | `text` | append in order to build the answer |
+| `sources` | `citation_sources`, `footnotes` | emitted after the last token, before `done` |
+| `done` | — | terminal frame |
+| `error` | `detail`, `code`, `scope` | emitted on failure, always followed by `done` |
 
-`meta` contract note:
+The stream cannot know which `[N]` markers the answer used until generation finishes, which
+is why citations arrive at the end rather than in `meta`.
 
-- Stream `meta` is produced by shared builders in `metadata_builders.py` and
-  evidence-normalized through `evidence/evidence_layer.py`, matching non-stream
-  contract semantics.
-- `meta.citation_sources` is emitted before the first `token` event so clients can
-  render `[N]` citations in real time.
+A stream always terminates with `done`. If the answer model is unreachable, the executor
+emits a deterministic grounded answer rather than an empty stream.
 
-### Citation Sources in Streaming
+## `GET /sensors/latest/{space}`
 
-When the query involves IEQ thresholds or standards, the `meta`
-event includes a `citation_sources` array:
+Latest reading snapshot for one space.
 
-```json
-{
-  "citation_sources": [
-    {
-      "index": 1,
-      "source_label": "RESET Air Standard v2.1",
-      "section_ref": "Section 4: Performance Thresholds",
-      "citation_tier": "regulatory",
-      "source_url": "https://reset.build/standard/air"
-    }
-  ]
-}
-```
+## `GET /ifc/summary`
 
-Tokens may include inline citation markers like `[1]`, `[2]`
-that correspond to the `index` values in `citation_sources`.
+Parsed structured summary of the IFC building model (units, storeys, element counts,
+materials).
 
-The `citations` event (emitted after all tokens) contains only
-the sources that were actually cited in the answer.
+## `GET /health`
 
-Frontend rendering: replace `[N]` with a superscript that links to
-or highlights the corresponding source.
-
-### `error` payload
-
-```json
-{
-  "detail": "string",
-  "code": "invalid_input|routing_error|execution_error|stream_error|internal_error",
-  "scope": "string"
-}
-```
-
-## `POST /v1/chat/completions` (OpenAI-compatible)
-
-### Non-stream
-
-- Returns OpenAI-like `chat.completion`.
-- Includes:
-  - `x_router` for route metadata
-  - `x_citation_sources` for numbered citation mapping
-  - `x_visualization_type`
-  - `x_chart`
-
-### Stream
-
-- Returns OpenAI-like `chat.completion.chunk` events.
-- Ends with `data: [DONE]`.
-- Errors include OpenAI-style `error` object with stable `code` where available.
-- First chunk `x_router` uses the same shared stream metadata/evidence
-  normalization path as native `POST /query/stream`.
-
-## `GET /health/router` (router safety telemetry)
-
-Returns active router mode, runtime observability metrics, and SLO gate status.
-
-Key groups:
-
-- `router_mode`: active strategy (`policy_engine_only`)
-- `metrics`: planner/critic counters and sync/stream parity rates
-- `thresholds`: target/max thresholds used for router safety gating
-- `slo`: computed booleans (`*_target_ok`, `*_max_ok`, `rollout_blocked`)
-
-## Evidence Contract
-
-Evidence is normalized through `evidence/evidence_layer.py` and validated against schema contracts.
-
-Core evidence fields:
-
-- `evidence_version`
-- `evidence_kind`
-- `intent`
-- `strategy`
-- `metric_aliases`
-- `resolved_scope`
-- `resolved_time_window`
-- `provenance_sources`
-- `confidence_notes`
-- `recommendation_allowed`
-
-## Backward Compatibility Rules
-
-- Do not remove existing top-level response fields without versioning.
-- Optional metadata additions are allowed.
-- Keep semantic meaning of existing fields stable across releases.
-
+`{"status": "healthy"}`. Unauthenticated, for liveness probes.

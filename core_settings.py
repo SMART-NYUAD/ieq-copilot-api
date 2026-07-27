@@ -219,6 +219,17 @@ def ollama_thinking() -> bool:
     return _parse_bool(os.getenv("OLLAMA_THINKING", "false"), default=False)
 
 
+def router_num_predict() -> int:
+    """Token budget for the router's JSON plan (``OLLAMA_ROUTER_NUM_PREDICT``).
+
+    The plan carries the routing slots plus ``resolved_question`` and, when needed, a
+    ``clarification_question``, so a tight budget truncates the JSON and silently drops the
+    route to the regex fallback. 512 leaves headroom for a long resolved question.
+    """
+    ensure_env_loaded()
+    return _parse_int(os.getenv("OLLAMA_ROUTER_NUM_PREDICT", "512"), default=512, minimum=128)
+
+
 def router_max_retries() -> int:
     ensure_env_loaded()
     raw = (os.getenv("OLLAMA_ROUTER_MAX_RETRIES", "2") or "2").strip()
@@ -315,6 +326,17 @@ def predictions_api_base_url() -> str:
     ensure_env_loaded()
     raw = (os.getenv("PREDICTIONS_API_BASE_URL", "") or "").strip()
     return (raw or "https://api.smart-crg.com").rstrip("/")
+
+
+def max_query_window_days() -> int:
+    """Upper bound on a resolved query window (``MAX_QUERY_WINDOW_DAYS``, default 366).
+
+    Aggregation is always hourly, so an unbounded window turns one question into tens of
+    thousands of upstream buckets ("average CO2 over the last 10 years"). Clamping the
+    start keeps the request finite; the default still admits a full year.
+    """
+    ensure_env_loaded()
+    return _parse_int(os.getenv("MAX_QUERY_WINDOW_DAYS", "366"), default=366, minimum=1)
 
 
 def display_utc_offset_hours() -> int:

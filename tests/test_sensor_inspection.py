@@ -16,7 +16,7 @@ if SERVER_DIR not in sys.path:
 from query_routing.intent_classifier import IntentType
 from query_routing.router_types import RoutePlan, RouteExecutor
 from query_routing.llm_router_planner import _parse_llm_response, _fallback_plan
-from query_routing.query_orchestrator import _choose_executor, _execute_sensor_inspection
+from query_routing.query_orchestrator import _choose_executor, _sensor_branch, render_sync
 from executors import sensor_inspection_executor as sie
 
 
@@ -163,7 +163,7 @@ class TestExecuteSensorInspection(unittest.TestCase):
         with patch.object(sie.api_client, "fetch_heatmap_metrics", return_value=_fixture_devices()), \
              patch.object(sie, "sensor_stale_hours", return_value=24), \
              patch("executors.sensor_inspection_executor.httpx.Client", side_effect=RuntimeError("ollama down")):
-            result = _execute_sensor_inspection("which sensor has the highest temperature?", None, _make_route())
+            result = render_sync(_sensor_branch(_make_route(), "which sensor has the highest temperature?", None))
         self.assertEqual(result["metadata"]["executor"], "sensor_inspection")
         self.assertEqual(result["timescale"], "sensors")
         self.assertFalse(result["metadata"]["llm_used"])
@@ -173,7 +173,7 @@ class TestExecuteSensorInspection(unittest.TestCase):
 
     def test_executor_graceful_when_no_devices(self):
         with patch.object(sie.api_client, "fetch_heatmap_metrics", return_value=[]):
-            result = _execute_sensor_inspection("are any sensors offline?", None, _make_route())
+            result = render_sync(_sensor_branch(_make_route(), "are any sensors offline?", None))
         self.assertFalse(result["metadata"]["llm_used"])
         self.assertTrue(result["answer"])
 

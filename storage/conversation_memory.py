@@ -120,17 +120,27 @@ _MONTH_NAMES = (
     "january|february|march|april|may|june|july|august|september|october|"
     "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
 )
+# A trailing year belongs to the date phrase. Dropping it made a carried phrase resolve
+# against the current year on the next turn ("pm25 on may 3 2025" → "may 3" → May 2025
+# becomes May 2026), which silently answers about a different year than the user asked about.
+_YEAR_SUFFIX = r"(?:,?\s+(?:19|20)\d{2})?"
+
 _EXPLICIT_DATE_PATTERNS = (
     # "first/second/.../last week of May" — must precede the bare-month pattern so a
     # follow-up carries the whole phrase (not just "May", which would widen the
     # window to the entire month). extract_time_window resolves this phrase directly.
     re.compile(
-        r"\b(?:first|second|third|fourth|fifth|last)\s+week\s+of\s+(?:" + _MONTH_NAMES + r")\b"
+        r"\b(?:first|second|third|fourth|fifth|last)\s+week\s+of\s+(?:"
+        + _MONTH_NAMES + r")" + _YEAR_SUFFIX + r"\b"
     ),
     re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b"),
-    re.compile(r"\b\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:" + _MONTH_NAMES + r")\b"),
-    re.compile(r"\b(?:" + _MONTH_NAMES + r")\s+\d{1,2}(?:st|nd|rd|th)?\b"),
-    re.compile(r"\b(?:" + _MONTH_NAMES + r")\b"),
+    re.compile(
+        r"\b\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:" + _MONTH_NAMES + r")" + _YEAR_SUFFIX + r"\b"
+    ),
+    re.compile(
+        r"\b(?:" + _MONTH_NAMES + r")\s+\d{1,2}(?:st|nd|rd|th)?" + _YEAR_SUFFIX + r"\b"
+    ),
+    re.compile(r"\b(?:" + _MONTH_NAMES + r")" + _YEAR_SUFFIX + r"\b"),
 )
 
 
@@ -215,7 +225,7 @@ def _is_definitional_question(question: str) -> bool:
 def compute_question_signals(question: str) -> Dict[str, Any]:
     """Return whether the current question already names a lab, metric, or time window."""
     try:
-        from executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
+        from executors.db_support.query_parsing import extract_space_from_question
     except ImportError:
         return {}
     q = str(question or "")

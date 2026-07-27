@@ -1,7 +1,6 @@
 """Routed query endpoints (sync + stream)."""
 
 import json
-from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -103,7 +102,12 @@ async def query_cards_stream(request: QueryRequest, caller_id: str = Depends(req
     async def _generate():
         accumulated: list[str] = []
         try:
-            async for chunk in stream_query(ctx, k=k, endpoint_key="query_stream"):
+            async for chunk in stream_query(
+                ctx,
+                k=k,
+                allow_clarify=_normalize_allow_clarify(request.allow_clarify),
+                endpoint_key="query_stream",
+            ):
                 try:
                     raw = chunk.removeprefix("data: ").strip()
                     if raw:

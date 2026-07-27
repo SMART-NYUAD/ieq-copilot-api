@@ -26,9 +26,10 @@ The service uses a layered architecture:
 1. **API layer** receives requests (`/query`, `/query/stream`), authenticates the caller,
    and builds the per-turn `ConversationContext`.
 2. **Routing layer** turns the question into a `RoutePlan` via a single LLM call.
-3. **Execution layer** runs exactly one branch (DB, knowledge, IFC, sensor inspection, or a
-   viewer/heatmap/download UI control).
-4. **Response layer** returns a contract-stable payload (sync JSON or SSE events).
+3. **Execution layer** maps the plan to exactly one branch (DB, knowledge, IFC, sensor
+   inspection, or a viewer/heatmap/download/clarify UI action) — one ladder, in `plan_branch`.
+4. **Response layer** renders that same branch as either a JSON body (`render_sync`) or SSE
+   frames (`render_stream`), so the two can never report different things.
 
 Main modules by layer:
 
@@ -42,7 +43,7 @@ Main modules by layer:
 - `query_routing/`: intent routing + orchestration
   - `intent_classifier.py` (intent taxonomy)
   - `llm_router_planner.py` (LLM route plan + emergency regex fallback)
-  - `query_orchestrator.py` (branch execution and payload assembly)
+  - `query_orchestrator.py` (`plan_branch` + the two renderers)
   - `metadata_builders.py` (UI contract shared by sync and stream)
 - `executors/`: execution engines
   - `db_query_executor.py` + `db_support/` (sensor data retrieval + LLM answer rendering)
@@ -105,7 +106,8 @@ docker compose logs -f rag-api
 1. Client calls `POST /query` (or `POST /query/stream`) with an API key.
 2. `build_conversation_context` loads the caller's prior turns and builds the per-turn context.
 3. `llm_router_planner.py` plans the intent in one LLM call, resolving follow-up references.
-4. Orchestrator executes exactly one branch (DB, knowledge, IFC, sensor, or UI control).
+4. `plan_branch` selects exactly one branch (DB, knowledge, IFC, sensor, UI control, or a
+   clarifying question when the router says answering would mean guessing).
 5. For DB intents, retrieved rows are converted to a grounded LLM answer (with a deterministic
    fallback if the answer model is unreachable).
 6. Unified response is returned with route metadata and citations; the stream sends citations
@@ -115,10 +117,8 @@ For architecture and routing behavior details, see `CLAUDE.md`.
 
 ## Documentation Map
 
-- `CLAUDE.md`: current architecture, intent taxonomy, configuration, and endpoint list (authoritative)
-- `docs/API_CONTRACTS.md`: request/response contracts (partially outdated — see its banner)
-- `docs/router_architecture.md`, `docs/architecture_deep_dive.md`, `docs/BLUEPRINT_GUIDE.md`:
-  earlier design notes, kept for history; they describe modules and routes that no longer exist
+- `CLAUDE.md`: architecture, intent taxonomy, configuration, and endpoint list (authoritative)
+- `docs/API_CONTRACTS.md`: request/response contracts for API clients
 
 ## Intent Types
 

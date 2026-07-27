@@ -6,6 +6,7 @@ from executors.db_support.response_helpers import (
     build_backend_semantic_state,
     build_time_series_analysis,
     enrich_backend_semantic_state,
+    detect_anomaly_points,
     normalize_series_rows,
 )
 
@@ -87,3 +88,19 @@ class TimeSeriesAnalysisTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnomalyDetectionTests(unittest.TestCase):
+    def test_backend_anomaly_detector_flags_spike(self):
+        rows = [
+            {"lab_space": "smart_lab", "bucket": f"2026-03-10T{hour:02d}:00:00+00:00", "value": 20.0}
+            for hour in range(7)
+        ] + [
+            {"lab_space": "smart_lab", "bucket": "2026-03-10T07:00:00+00:00", "value": 120.0}
+        ] + [
+            {"lab_space": "smart_lab", "bucket": f"2026-03-10T{hour:02d}:00:00+00:00", "value": 21.0}
+            for hour in range(8, 12)
+        ]
+        anomalies = detect_anomaly_points(rows, z_threshold=2.0)
+        self.assertGreaterEqual(len(anomalies), 1)
+        self.assertTrue(any(float(item.get("value") or 0.0) >= 120.0 for item in anomalies))

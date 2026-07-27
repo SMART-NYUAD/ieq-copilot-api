@@ -21,7 +21,8 @@ from query_routing.llm_router_planner import (
 )
 from query_routing.query_orchestrator import (
     _choose_executor,
-    _execute_heatmap_control,
+    _heatmap_branch,
+    render_sync,
 )
 
 
@@ -116,7 +117,7 @@ class TestChooseExecutor(unittest.TestCase):
 
 class TestExecuteHeatmapControl(unittest.TestCase):
     def test_on_without_metric(self):
-        result = _execute_heatmap_control(_make_route("on", None))
+        result = render_sync(_heatmap_branch(_make_route("on", None)))
         self.assertEqual(result["metadata"]["executor"], "heatmap_control")
         self.assertEqual(result["metadata"]["ui"], {"heatmap_action": "on", "heatmap_metric": None})
         self.assertEqual(result["timescale"], "instant")
@@ -124,12 +125,12 @@ class TestExecuteHeatmapControl(unittest.TestCase):
         self.assertIn("heatmap", result["answer"].lower())
 
     def test_on_with_metric_label(self):
-        result = _execute_heatmap_control(_make_route("on", "pm25"))
+        result = render_sync(_heatmap_branch(_make_route("on", "pm25")))
         self.assertEqual(result["metadata"]["ui"]["heatmap_metric"], "pm25")
         self.assertIn("PM2.5", result["answer"])
 
     def test_off(self):
-        result = _execute_heatmap_control(_make_route("off", None))
+        result = render_sync(_heatmap_branch(_make_route("off", None)))
         self.assertEqual(result["metadata"]["ui"]["heatmap_action"], "off")
         self.assertIn("off", result["answer"].lower())
 
@@ -137,7 +138,7 @@ class TestExecuteHeatmapControl(unittest.TestCase):
         route = RoutePlan(intent=IntentType.HEATMAP_CONTROL, confidence=0.9,
                           lab_name=None, time_phrase=None, model="test",
                           heatmap_action=None, heatmap_metric=None)
-        result = _execute_heatmap_control(route)
+        result = render_sync(_heatmap_branch(route))
         self.assertEqual(result["metadata"]["ui"]["heatmap_action"], "on")
 
 

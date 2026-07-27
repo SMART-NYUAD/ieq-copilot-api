@@ -742,7 +742,6 @@ def _handle_point_lookup(
     if not rows:
         rows = [trend_rows[-1]] if trend_rows else []
 
-    series_name = resolved_lab_name or (rows[0].get("lab_space") if rows else "selected_scope")
     fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, rows[0] if rows else {}, active_window_label)
     if window_note:
         fallback_answer = f"{fallback_answer}{window_note}"

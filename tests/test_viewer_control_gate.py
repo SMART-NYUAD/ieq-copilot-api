@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 TEST_DIR = os.path.dirname(__file__)
 SERVER_DIR = os.path.abspath(os.path.join(TEST_DIR, ".."))
@@ -17,9 +17,9 @@ from query_routing.router_types import RoutePlan, RouteExecutor
 from query_routing.llm_router_planner import _infer_viewer_type, _parse_llm_response
 from query_routing.query_orchestrator import (
     _choose_executor,
-    _execute_unknown_fallback,
-    _execute_viewer_control,
-    _VIEWER_CONFIRMATIONS,
+    _unknown_branch,
+    _viewer_branch,
+    render_sync,
 )
 
 
@@ -130,7 +130,7 @@ class TestChooseExecutor(unittest.TestCase):
 
 class TestExecuteViewerControl(unittest.TestCase):
     def test_result_structure_for_splat(self):
-        result = _execute_viewer_control(_make_route("splat"))
+        result = render_sync(_viewer_branch(_make_route("splat")))
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "splat")
         self.assertEqual(result["metadata"]["executor"], "viewer_control")
         self.assertEqual(result["timescale"], "instant")
@@ -139,30 +139,30 @@ class TestExecuteViewerControl(unittest.TestCase):
         self.assertFalse(result["metadata"]["llm_used"])
 
     def test_result_structure_for_ifc(self):
-        result = _execute_viewer_control(_make_route("ifc"))
+        result = render_sync(_viewer_branch(_make_route("ifc")))
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "ifc")
         self.assertIn("IFC", result["answer"])
 
     def test_result_structure_for_pc(self):
-        result = _execute_viewer_control(_make_route("pc"))
+        result = render_sync(_viewer_branch(_make_route("pc")))
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "pc")
         self.assertIn("Point Cloud", result["answer"])
 
     def test_result_structure_for_pano(self):
-        result = _execute_viewer_control(_make_route("pano"))
+        result = render_sync(_viewer_branch(_make_route("pano")))
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "pano")
         self.assertIn("Panorama", result["answer"])
 
     def test_missing_viewer_type_defaults_to_splat(self):
         route = RoutePlan(intent=IntentType.VIEWER_CONTROL, confidence=0.9,
                           lab_name=None, time_phrase=None, model="test", viewer_type=None)
-        result = _execute_viewer_control(route)
+        result = render_sync(_viewer_branch(route))
         self.assertEqual(result["metadata"]["ui"]["viewer_type"], "splat")
 
     def test_unknown_fallback_response_is_concise_guardrail(self):
         route = RoutePlan(intent=IntentType.UNKNOWN_FALLBACK, confidence=0.95,
                           lab_name=None, time_phrase=None, model="test")
-        result = _execute_unknown_fallback(route)
+        result = render_sync(_unknown_branch(route))
         self.assertEqual(result["metadata"]["executor"], "guardrail")
         self.assertFalse(result["metadata"]["llm_used"])
         self.assertLessEqual(len(result["answer"].split()), 25)
