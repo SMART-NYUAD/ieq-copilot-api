@@ -215,7 +215,7 @@ def _is_definitional_question(question: str) -> bool:
 def compute_question_signals(question: str) -> Dict[str, Any]:
     """Return whether the current question already names a lab, metric, or time window."""
     try:
-        from executors.db_support.query_parsing import extract_space_from_question, extract_metric_aliases
+        from executors.db_support.query_parsing import extract_space_from_question
     except ImportError:
         return {}
     q = str(question or "")

@@ -11,6 +11,7 @@ import calendar
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from core_settings import max_query_window_days
 from query_routing.intent_classifier import IntentType
 from executors.db_support import time_windows as db_time_windows
 from executors.metric_registry import METRIC_COLUMN_MAP, CANONICAL_METRIC_COLUMN_MAP
@@ -45,38 +46,6 @@ _TEMPORAL_REFERENCE_PATTERNS = (
     r"\blast\s+\d+\s+days?\b",
     r"\blast\s+\d+\s+hours?\b",
 )
-_DEICTIC_SCOPE_HINTS = (
-    " over there",
-    " in there",
-    " right there",
-    " that room",
-    " this room",
-    " same room",
-    " same lab",
-    " same space",
-    " in the room",
-    " in this room",
-    " the room",
-    " the lab",
-    " in the lab",
-    " in here",
-)
-_GLOBAL_SCOPE_HINTS = (
-    "all labs",
-    "all lab spaces",
-    "across all labs",
-    "across labs",
-    "all spaces",
-    "across all spaces",
-    "across spaces",
-    "all rooms",
-    "across all rooms",
-    "every lab",
-    "every space",
-    "all_labs",
-)
-
-_CONVERSATION_CONTEXT_MARKER = "\n\nprevious conversation context"
 _TIME_HINT_RE = re.compile(
     r"\b("
     r"today|yesterday|tomorrow|this week|last week|this month|last month|"
@@ -276,7 +245,7 @@ def extract_temporal_comparison_windows(
     or None if both periods cannot be resolved.
     """
     q = str(question or "").strip().lower()
-    now = datetime.now(db_time_windows.TARGET_TZ)
+    now = datetime.now(db_time_windows.target_tz())
 
     current_start: Optional[datetime] = None
     current_end: Optional[datetime] = None
@@ -340,21 +309,6 @@ def extract_temporal_comparison_windows(
     return (current_start, current_end, current_label, ref_start, ref_end, ref_label)
 
 
-def is_generic_air_quality_scope_query(question: str) -> bool:
-    """Detect broad IEQ/air-quality asks where metric/time defaults are acceptable."""
-    q = str(question or "").strip().lower()
-    if not q:
-        return False
-    air_quality_hints = (
-        "air quality",
-        "indoor air quality",
-        "ieq",
-        "environment quality",
-        "indoor environment",
-    )
-    return any(hint in q for hint in air_quality_hints)
-
-
 def normalize_metric_alias(metric: str) -> Optional[str]:
     m = str(metric or "").strip().lower().replace(" ", "_")
     if m == "air":
@@ -378,141 +332,6 @@ def planner_metrics(planner_hints: Optional[Dict[str, Any]]) -> List[str]:
         if normalized and normalized not in out:
             out.append(normalized)
     return out
-
-
-def validate_db_execution_invariants(
-    *,
-    question: str,
-    intent: IntentType,
-    selected_metric: str,
-    resolved_lab_name: Optional[str],
-    request_lab_name: Optional[str],
-    explicit_metrics: List[str],
-    hinted_metrics: List[str],
-    planner_hints: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Verify DB execution inputs are justified by current question/planner output."""
-    q = str(question or "").strip().lower()
-    selected = normalize_metric_alias(selected_metric) or selected_metric
-    generic_air_quality_query = is_generic_air_quality_scope_query(q)
-
-    has_time_hint = _TIME_HINT_RE.search(q) is not None
-    has_currentness_hint = any(token in q for token in ("current", "now", "latest", "right now", "at this moment"))
-    extracted_lab_scope = extract_space_from_question(q)
-    has_explicit_lab_scope = bool(extracted_lab_scope)
-    has_db_scope = False
-    has_metric_hint = selected in explicit_metrics
-    has_deictic_scope_hint = any(token in f" {q} " for token in _DEICTIC_SCOPE_HINTS)
-    is_baseline_query = is_baseline_reference_query(q)
-    compared_spaces = extract_compared_spaces(q)
-    has_explicit_second_space = len(compared_spaces) >= 2
-    if has_explicit_second_space:
-        has_explicit_lab_scope = True
-    has_lab_hint = bool(request_lab_name) or has_explicit_lab_scope
-    metric_explicit_in_planner = selected in hinted_metrics
-    analytical_intent = intent in {
-        IntentType.AGGREGATION_DB,
-        IntentType.COMPARISON_DB,
-        IntentType.ANOMALY_ANALYSIS_DB,
-        IntentType.FORECAST_DB,
-    }
-
-    metric_justified = has_metric_hint or metric_explicit_in_planner
-    if not metric_justified and selected in {"ieq", "co2", "pm25", "voc", "humidity"}:
-        # Permit core IEQ defaults when user asks generic air-quality status.
-        metric_justified = generic_air_quality_query or any(token in q for token in ("comfortable", "comfort"))
-    if not metric_justified and analytical_intent and has_db_scope:
-        # For comparison/anomaly/forecast style intents, fallback metric defaults are valid.
-        metric_justified = True
-    if not metric_justified and analytical_intent and has_lab_hint:
-        # When the user names a lab for an analytical query, the default metric is valid.
-        metric_justified = True
-
-    time_justified = has_time_hint or has_currentness_hint or intent in {
-        IntentType.CURRENT_STATUS_DB,
-        IntentType.POINT_LOOKUP_DB,
-        IntentType.FORECAST_DB,  # always "next 6 hours" — no user time phrase needed
-    }
-    if not time_justified and analytical_intent and has_db_scope:
-        # Aggregation-like intents can safely use deterministic default windows.
-        time_justified = True
-    if not time_justified and analytical_intent and has_lab_hint:
-        # When the user explicitly names a lab for an analytical intent, the default
-        # window is always well-defined — don't gate on a missing time phrase.
-        time_justified = True
-    resolved_lab_token = str(resolved_lab_name or "").strip().lower()
-    has_prepositional_lab_scope = False
-    if resolved_lab_token:
-        scope_patterns = (
-            rf"\bin\s+{re.escape(resolved_lab_token)}\b",
-            rf"\bfor\s+{re.escape(resolved_lab_token)}\b",
-            rf"\bat\s+{re.escape(resolved_lab_token)}\b",
-            rf"\bin\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
-            rf"\bfor\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
-            rf"\bat\s+{re.escape(resolved_lab_token.replace('_', ' '))}\b",
-        )
-        has_prepositional_lab_scope = any(re.search(pattern, q) is not None for pattern in scope_patterns)
-    has_global_scope_hint = any(token in q for token in _GLOBAL_SCOPE_HINTS)
-    lab_justified = (
-        bool(resolved_lab_name)
-        or bool(has_lab_hint)
-        or bool(request_lab_name)
-        or has_prepositional_lab_scope
-        or has_explicit_second_space
-        or has_global_scope_hint
-    )
-    if has_deictic_scope_hint and not has_explicit_lab_scope and not request_lab_name:
-        # Vague room references ("in the room", "here", etc.) without an explicit lab
-        # name in the question should not silently use a lab inferred from conversation
-        # context — ask for clarification instead. This applies to all DB intents.
-        lab_justified = False
-    if (
-        not has_global_scope_hint
-        and resolved_lab_name is None
-        and not has_lab_hint
-        and not request_lab_name
-    ):
-        # For measured DB queries, require explicit lab scope unless user asks
-        # for an explicit global scope (e.g. "across all labs").
-        lab_justified = False
-    if (
-        intent in {IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB}
-        and resolved_lab_name is None
-        and not has_lab_hint
-        and not request_lab_name
-    ):
-        # For current/point asks, avoid silently selecting an arbitrary latest lab.
-        lab_justified = False
-    if not has_db_scope and generic_air_quality_query:
-        has_db_scope = True
-    db_scope_justified = has_db_scope or has_time_hint or has_lab_hint or has_metric_hint or generic_air_quality_query
-
-    violations: List[str] = []
-    if not metric_justified:
-        violations.append("metric_not_justified")
-    if not time_justified:
-        violations.append("time_window_not_justified")
-    if not lab_justified:
-        violations.append("lab_scope_not_justified")
-    if not db_scope_justified:
-        violations.append("db_scope_not_justified")
-    allowed = len(violations) == 0
-    return {
-        "allowed": allowed,
-        "violations": violations,
-        "justification": {
-            "selected_metric": selected,
-            "resolved_lab_name": resolved_lab_name,
-            "request_lab_name": request_lab_name,
-            "has_time_hint": has_time_hint,
-            "has_lab_hint": has_lab_hint,
-            "has_metric_hint": has_metric_hint,
-            "metric_explicit_in_planner": metric_explicit_in_planner,
-            "has_db_scope": has_db_scope,
-            "is_baseline_reference_query": is_baseline_query,
-            "has_explicit_second_space": has_explicit_second_space,
-        },
-    }
 
 
 def planner_card_controls(planner_hints: Optional[Dict[str, Any]]) -> Tuple[bool, List[str], int]:
@@ -556,15 +375,6 @@ def _resolve_year_for_month(month: int, explicit_year: Optional[int], now: datet
     return now.year if month <= now.month else now.year - 1
 
 
-def strip_conversation_context(question: str) -> str:
-    """Strip appended conversation transcript from effective question text."""
-    text = str(question or "")
-    marker_idx = text.lower().find(_CONVERSATION_CONTEXT_MARKER.lower())
-    if marker_idx >= 0:
-        text = text[:marker_idx]
-    return text.strip()
-
-
 def _latest_user_question(question: str) -> str:
     """Return the current turn question text only."""
     return str(question or "").strip()
@@ -578,7 +388,7 @@ def _cap_window_end_at_now(start: datetime, end: datetime, now: datetime) -> dat
 
 
 def _month_start(year: int, month: int) -> datetime:
-    return datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+    return datetime(year, month, 1, tzinfo=db_time_windows.target_tz())
 
 
 def _shift_month(year: int, month: int, delta_months: int) -> Tuple[int, int]:
@@ -643,7 +453,7 @@ def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = 
     iso = re.search(r"\b(20\d{2}|19\d{2})-(\d{1,2})-(\d{1,2})\b", t)
     if iso:
         try:
-            return datetime(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)), tzinfo=db_time_windows.TARGET_TZ)
+            return datetime(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)), tzinfo=db_time_windows.target_tz())
         except ValueError:
             return None
 
@@ -653,7 +463,7 @@ def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = 
         month = _MONTH_NAME_LOOKUP[day_month.group(2)]
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            return datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+            return datetime(year, month, day, tzinfo=db_time_windows.target_tz())
         except ValueError:
             return None
 
@@ -663,7 +473,7 @@ def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = 
         day = int(month_day.group(2))
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            return datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+            return datetime(year, month, day, tzinfo=db_time_windows.target_tz())
         except ValueError:
             return None
 
@@ -671,14 +481,14 @@ def _parse_date_token(token: str, now: datetime, explicit_year: Optional[int] = 
     if bare_month:
         month = _MONTH_NAME_LOOKUP[bare_month.group(1)]
         year = _resolve_year_for_month(month, explicit_year, now)
-        return datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+        return datetime(year, month, 1, tzinfo=db_time_windows.target_tz())
     return None
 
 
 def _next_month_start(year: int, month: int) -> datetime:
     if month == 12:
-        return datetime(year + 1, 1, 1, tzinfo=db_time_windows.TARGET_TZ)
-    return datetime(year, month + 1, 1, tzinfo=db_time_windows.TARGET_TZ)
+        return datetime(year + 1, 1, 1, tzinfo=db_time_windows.target_tz())
+    return datetime(year, month + 1, 1, tzinfo=db_time_windows.target_tz())
 
 
 # Range connectors that do NOT require a "from"/"between" lead. Word connectors need
@@ -711,8 +521,8 @@ def _same_month_range(
     month = _MONTH_NAME_LOOKUP[month_token]
     year = _resolve_year_for_month(month, explicit_year, now)
     try:
-        start_dt = datetime(year, month, int(day_start), tzinfo=db_time_windows.TARGET_TZ)
-        end_dt = datetime(year, month, int(day_end), tzinfo=db_time_windows.TARGET_TZ)
+        start_dt = datetime(year, month, int(day_start), tzinfo=db_time_windows.target_tz())
+        end_dt = datetime(year, month, int(day_end), tzinfo=db_time_windows.target_tz())
     except ValueError:
         return None
     return _range_window(start_dt, end_dt, now)
@@ -774,8 +584,28 @@ def _parse_date_range(
 
 
 def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
+    """Resolve the question's time window, clamped to a sane maximum span.
+
+    The clamp is the one guard against a single question fanning out into an unbounded
+    number of hourly buckets upstream; the label is kept as the user phrased it so the
+    answer still says what was asked for.
+    """
+    start, end, label = _resolve_time_window(question, default_hours)
+    return _clamp_window_span(start, end, label)
+
+
+def _clamp_window_span(
+    start: datetime, end: datetime, label: str
+) -> Tuple[datetime, datetime, str]:
+    max_span = timedelta(days=max_query_window_days())
+    if end - start > max_span:
+        return end - max_span, end, label
+    return start, end, label
+
+
+def _resolve_time_window(question: str, default_hours: int = 24) -> Tuple[datetime, datetime, str]:
     q = _latest_user_question(question).lower()
-    now = datetime.now(db_time_windows.TARGET_TZ)
+    now = datetime.now(db_time_windows.target_tz())
     month_names = [m.lower() for m in calendar.month_name if m]
     month_abbr = [m.lower() for m in calendar.month_abbr if m]
     month_lookup = {name: idx + 1 for idx, name in enumerate(month_names)}
@@ -813,7 +643,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         ordinal = week_of_month.group(1)
         month = _MONTH_NAME_LOOKUP[week_of_month.group(2)]
         year = _resolve_year_for_month(month, explicit_year, now)
-        month_start = datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
+        month_start = datetime(year, month, 1, tzinfo=db_time_windows.target_tz())
         month_end = _next_month_start(year, month)
         if ordinal == "last":
             start = month_end - timedelta(days=7)
@@ -836,7 +666,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month = month_lookup[day_month_match.group(2)]
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.target_tz())
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -849,7 +679,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         day = int(month_day_match.group(2))
         year = _resolve_year_for_month(month, explicit_year, now)
         try:
-            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.target_tz())
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -861,7 +691,7 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month = int(iso_match.group(2))
         day = int(iso_match.group(3))
         try:
-            start = datetime(year, month, day, tzinfo=db_time_windows.TARGET_TZ)
+            start = datetime(year, month, day, tzinfo=db_time_windows.target_tz())
             end = _cap_window_end_at_now(start, start + timedelta(days=1), now)
             return start, end, start.strftime("%B %d, %Y")
         except ValueError:
@@ -873,9 +703,9 @@ def extract_time_window(question: str, default_hours: int = 24) -> Tuple[datetim
         month_token = month_match.group(1)
         month = month_lookup[month_token]
         year = _resolve_year_for_month(month, explicit_year, now)
-        start = datetime(year, month, 1, tzinfo=db_time_windows.TARGET_TZ)
-        month_end = datetime(year + 1, 1, 1, tzinfo=db_time_windows.TARGET_TZ) if month == 12 else datetime(
-            year, month + 1, 1, tzinfo=db_time_windows.TARGET_TZ
+        start = datetime(year, month, 1, tzinfo=db_time_windows.target_tz())
+        month_end = datetime(year + 1, 1, 1, tzinfo=db_time_windows.target_tz()) if month == 12 else datetime(
+            year, month + 1, 1, tzinfo=db_time_windows.target_tz()
         )
         end = _cap_window_end_at_now(start, month_end, now)
         return start, end, start.strftime("%B %Y")

@@ -15,7 +15,7 @@ if SERVER_DIR not in sys.path:
 from query_routing.intent_classifier import IntentType
 from query_routing.router_types import RoutePlan, RouteExecutor
 from query_routing.llm_router_planner import _parse_llm_response
-from query_routing.query_orchestrator import _choose_executor, _execute_ifc
+from query_routing.query_orchestrator import _choose_executor, _ifc_branch, render_sync
 from ifc_model.ifc_store import get_ifc_facts, get_ifc_summary, build_ifc_context_text
 
 IFC_PATH = os.path.join(SERVER_DIR, "smart.ifc")
@@ -139,7 +139,7 @@ class TestIfcExecutor(unittest.TestCase):
             mock_resp = mock_ctx.post.return_value
             mock_resp.json.return_value = {"response": "There are 6 columns."}
             mock_resp.raise_for_status.return_value = None
-            result = _execute_ifc("how many columns are there?", _make_ifc_route())
+            result = render_sync(_ifc_branch(_make_ifc_route(), "how many columns are there?"))
 
         self.assertEqual(result["metadata"]["executor"], "ifc_qa")
         self.assertEqual(result["timescale"], "model")
@@ -150,7 +150,7 @@ class TestIfcExecutor(unittest.TestCase):
     @unittest.skipUnless(_HAS_MODEL, "smart.ifc not present")
     def test_deterministic_fallback_used_when_llm_fails(self):
         with patch("httpx.Client", side_effect=RuntimeError("ollama down")):
-            result = _execute_ifc("describe the building", _make_ifc_route())
+            result = render_sync(_ifc_branch(_make_ifc_route(), "describe the building"))
         # Fallback never fabricates: it reports real counts from the model.
         self.assertIn("element", result["answer"].lower())
         self.assertFalse(result["metadata"]["llm_used"])

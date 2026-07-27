@@ -37,3 +37,7 @@ class RoutePlan:
     download_interval: Optional[str] = None  # aggregation interval (e.g. "1m", "1h", "1d") when intent is download_data
     analysis_mode: Optional[str] = None    # "diagnostic" when the user asks WHY an index/metric is bad / what is driving it, else None
     resolved_question: Optional[str] = None  # current question rewritten self-contained from prior turns (LLM context resolution); None => use the raw question
+    # The router decides when a question cannot be answered without guessing, and supplies the
+    # question to ask back. Honored only when the request allows clarification.
+    needs_clarification: bool = False
+    clarification_question: Optional[str] = None

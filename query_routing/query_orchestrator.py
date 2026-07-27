@@ -1,10 +1,23 @@
-"""Top-level query orchestration: route → execute → return."""
+"""Top-level query orchestration: route → plan one branch → render it.
+
+The intent-to-branch decision happens exactly once, in :func:`plan_branch`. Both
+response shapes are then produced by rendering the same :class:`Branch`:
+
+    execute_query  → render_sync   → one JSON body
+    stream_query   → render_stream → a sequence of SSE frames
+
+Keeping a single ladder is deliberate. When the sync and stream paths each carried
+their own copy, they drifted — the stream silently stopped reporting citations while
+the sync response kept returning them. A new executor is now added by writing one
+branch factory; there is no second place that can forget it.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, AsyncIterator, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -49,6 +62,74 @@ _UNKNOWN_FALLBACK_ANSWER = (
     "I can help with indoor environmental quality, sensor readings, building-model questions, "
     "viewer controls, or the heatmap overlay. Please ask about one of those topics."
 )
+
+_CONVERSATIONAL_UI = {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"}
+
+
+# ---------------------------------------------------------------------------
+# Branch model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Branch:
+    """One resolved execution branch — what to run, and how to describe it.
+
+    A branch is either *instant* (``answer`` is set: a fixed confirmation or question,
+    no model call) or *generated* (``run_sync`` / ``open_stream`` produce the answer).
+    Any blocking pre-work goes in ``prepare`` so the stream renderer can move it off the
+    event loop and both renderers share its result.
+    """
+
+    name: str                                   # metadata.executor
+    route: RoutePlan
+    ui: Dict[str, Any]
+    timescale: str
+    lab_name: Optional[str] = None
+    llm_used: bool = False
+
+    # Instant branch.
+    answer: Optional[str] = None
+
+    # Generated branch.
+    prepare: Optional[Callable[[], Any]] = None
+    run_sync: Optional[Callable[[Any], Dict[str, Any]]] = None
+    open_stream: Optional[Callable[[Any], AsyncIterator[str]]] = None
+    status_before_prepare: Optional[Tuple[str, str]] = None
+    status_before_render: Optional[Tuple[str, str]] = None
+    # Stream-only: reconcile the placeholder meta once ``prepare`` has run.
+    stream_meta_update: Optional[Callable[[Any], Dict[str, Any]]] = None
+
+    extra_meta: Dict[str, Any] = field(default_factory=dict)
+
+
+def _core_result(
+    answer: str,
+    *,
+    footnotes: Optional[list] = None,
+    citation_sources: Optional[list] = None,
+    data: Any = None,
+    cards_retrieved: int = 0,
+    llm_used: bool = False,
+    timescale: Optional[str] = None,
+    ui: Optional[Dict[str, Any]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Canonical shape returned by every ``run_sync``.
+
+    ``timescale`` and ``ui`` override the branch defaults when execution resolved
+    something better than the pre-execution guess (the DB path narrows both).
+    """
+    return {
+        "answer": str(answer or ""),
+        "footnotes": list(footnotes or []),
+        "citation_sources": list(citation_sources or []),
+        "data": data,
+        "cards_retrieved": int(cards_retrieved or 0),
+        "llm_used": bool(llm_used),
+        "timescale": timescale,
+        "ui": ui,
+        "meta": dict(meta or {}),
+    }
 
 
 def _heatmap_confirmation(action: str, metric: Optional[str]) -> str:
@@ -113,272 +194,62 @@ def _build_planner_hints(
     return hints
 
 
-def _fetch_live_sensor_data(
-    question: str, lab_name: Optional[str], route: RoutePlan
-) -> Optional[Dict[str, Any]]:
-    """Pre-fetch current sensor readings to ground knowledge-path answers with real data.
-    Returns the DB payload dict when rows exist, None otherwise."""
-    try:
-        db_ctx = prepare_db_query(
-            question=question,
-            intent=IntentType.CURRENT_STATUS_DB,
-            lab_name=lab_name,
-            planner_hints={
-                "metrics_priority": list(route.metrics),
-                "needs_cards": False,
-                "card_topics": [],
-                "max_cards": 0,
-                "second_lab_name": None,
-            },
-        )
-        if db_ctx.get("rows"):
-            return db_ctx.get("payload")
-    except Exception:
-        pass
-    return None
+# ---------------------------------------------------------------------------
+# Branch factories — one per executor
+# ---------------------------------------------------------------------------
 
+def _clarify_branch(route: RoutePlan) -> Branch:
+    """Ask the router's clarifying question instead of guessing.
 
-def _execute_knowledge(
-    question: str,
-    k: int,
-    lab_name: Optional[str],
-    route: RoutePlan,
-) -> Dict[str, Any]:
-    live_sensor_data = _fetch_live_sensor_data(question, lab_name, route)
-    result = answer_env_question_with_metadata(
-        user_question=question,
-        k=max(1, min(k, 8)),
-        space=lab_name,
-        live_sensor_data=live_sensor_data,
+    The decision is the router's (``RoutePlan.needs_clarification``); this branch only
+    renders it, so the "when to ask" logic lives with the rest of the language understanding.
+    """
+    return Branch(
+        name="clarify_gate",
+        route=route,
+        ui=derive_ui_contract(
+            execution_intent=route.intent,
+            metrics=list(route.metrics),
+            has_floor_comparison=False,
+            clarification_required=True,
+            use_knowledge_executor=False,
+        ),
+        timescale="clarify",
+        answer=str(route.clarification_question or ""),
     )
-    return {
-        "answer": str(result.get("answer") or ""),
-        "footnotes": list(result.get("footnotes") or []),
-        "citation_sources": list(result.get("indexed_sources") or []),
-        "timescale": "knowledge",
-        "cards_retrieved": int(result.get("cards_retrieved") or 0),
-        "recent_card": False,
-        "metadata": {
-            "executor": "knowledge_qa",
-            "intent": route.intent.value,
-            "lab_name": lab_name,
-            "llm_used": bool(result.get("llm_used", False)),
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
-        },
-        "data": None,
-    }
 
 
-def _execute_unknown_fallback(route: RoutePlan) -> Dict[str, Any]:
-    return {
-        "answer": _UNKNOWN_FALLBACK_ANSWER,
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "guardrail",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": {
-            "executor": "guardrail",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
-        },
-        "data": None,
-    }
-
-
-def _execute_db(
-    question: str,
-    k: int,
-    lab_name: Optional[str],
-    route: RoutePlan,
-    llm_history: str = "",
-    carried_time_phrase: Optional[str] = None,
-    carried_metric: Optional[str] = None,
-) -> Dict[str, Any]:
-    planner_hints = _build_planner_hints(
-        route, carried_time_phrase=carried_time_phrase, carried_metric=carried_metric
-    )
-    db_result = run_db_query(
-        question=question,
-        intent=route.intent,
-        lab_name=lab_name,
-        planner_hints=planner_hints,
-        conversation_context=llm_history,
-    )
-    metrics = list(db_result.get("metrics_used") or planner_hints.get("metrics_priority") or [])
-    ui = derive_ui_contract(
-        execution_intent=route.intent,
-        metrics=metrics,
-        has_floor_comparison=False,
-        clarification_required=(db_result.get("timescale") == "clarify"),
-        use_knowledge_executor=False,
-    )
-    return {
-        "answer": str(db_result.get("answer") or ""),
-        "footnotes": list(db_result.get("footnotes") or []),
-        "citation_sources": list(db_result.get("indexed_sources") or []),
-        "timescale": db_result.get("timescale", "1hour"),
-        "cards_retrieved": int(db_result.get("cards_retrieved") or 0),
-        "recent_card": False,
-        "metadata": {
-            "executor": "db_query",
-            "intent": route.intent.value,
-            "lab_name": lab_name,
-            "resolved_lab_name": db_result.get("resolved_lab_name"),
-            "time_window": db_result.get("time_window"),
-            "llm_used": db_result.get("llm_used", False),
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": ui,
-        },
-        "data": db_result.get("data"),
-    }
-
-
-async def _build_stream_meta(
-    route: RoutePlan,
-    effective_lab: Optional[str],
-    use_knowledge_executor: bool,
-) -> Dict[str, Any]:
-    metrics = list(route.metrics)
-    ui = derive_ui_contract(
-        execution_intent=route.intent,
-        metrics=metrics,
-        has_floor_comparison=False,
-        clarification_required=False,
-        use_knowledge_executor=use_knowledge_executor,
-    )
-    executor = "knowledge_qa" if use_knowledge_executor else "db_query"
-    timescale = "knowledge" if use_knowledge_executor else "pending"
-    return {
-        "executor": executor,
-        "intent": route.intent.value,
-        "lab_name": effective_lab,
-        "llm_used": True,
-        "route_confidence": route.confidence,
-        "planner_model": route.model,
-        "fallback_used": route.fallback_used,
-        "ui": ui,
-        "timescale": timescale,
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "visualization_type": "none",
-        "chart": None,
-        "citation_sources": [],
-        "footnotes": [],
-    }
-
-
-def _execute_ifc(question: str, route: RoutePlan) -> Dict[str, Any]:
-    result = answer_ifc_question_with_metadata(user_question=question)
-    # The IFC model has no per-claim numbered citations, so citation_sources stays
-    # empty; provenance (the model file) is surfaced in metadata instead.
-    return {
-        "answer": str(result.get("answer") or ""),
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "model",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": {
-            "executor": "ifc_qa",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": bool(result.get("llm_used", False)),
-            "model_available": bool(result.get("model_available", True)),
-            "model_source": list(result.get("indexed_sources") or []),
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "ifc", "metrics": [], "transition": "fade"},
-        },
-        "data": None,
-    }
-
-
-def _execute_sensor_inspection(question: str, lab_name: Optional[str], route: RoutePlan) -> Dict[str, Any]:
-    result = answer_sensor_question_with_metadata(user_question=question, space=lab_name)
-    # Sensor snapshot has no per-claim numbered citations, so citation_sources stays
-    # empty; provenance (the heatmap/metrics snapshot) is surfaced in metadata instead —
-    # mirrors _execute_ifc's model_source handling.
-    return {
-        "answer": str(result.get("answer") or ""),
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "sensors",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": {
-            "executor": "sensor_inspection",
-            "intent": route.intent.value,
-            "lab_name": lab_name,
-            "llm_used": bool(result.get("llm_used", False)),
-            "model_source": list(result.get("indexed_sources") or []),
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
-        },
-        "data": None,
-    }
-
-
-def _execute_viewer_control(route: RoutePlan) -> Dict[str, Any]:
+def _viewer_branch(route: RoutePlan) -> Branch:
     viewer_type = route.viewer_type or "splat"
-    confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
-    return {
-        "answer": confirmation,
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "instant",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": {
-            "executor": "viewer_control",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"viewer_type": viewer_type},
-        },
-        "data": None,
-    }
+    return Branch(
+        name="viewer_control",
+        route=route,
+        ui={"viewer_type": viewer_type},
+        timescale="instant",
+        answer=_VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view..."),
+    )
 
 
-def _execute_heatmap_control(route: RoutePlan) -> Dict[str, Any]:
+def _heatmap_branch(route: RoutePlan) -> Branch:
     action = route.heatmap_action or "on"
     metric = route.heatmap_metric
-    confirmation = _heatmap_confirmation(action, metric)
-    return {
-        "answer": confirmation,
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "instant",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": {
-            "executor": "heatmap_control",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": False,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"heatmap_action": action, "heatmap_metric": metric},
-        },
-        "data": None,
-    }
+    return Branch(
+        name="heatmap_control",
+        route=route,
+        ui={"heatmap_action": action, "heatmap_metric": metric},
+        timescale="instant",
+        answer=_heatmap_confirmation(action, metric),
+    )
+
+
+def _unknown_branch(route: RoutePlan) -> Branch:
+    return Branch(
+        name="guardrail",
+        route=route,
+        ui=dict(_CONVERSATIONAL_UI),
+        timescale="guardrail",
+        answer=_UNKNOWN_FALLBACK_ANSWER,
+    )
 
 
 # A download request with no explicit window defaults to the last 24 hours.
@@ -419,8 +290,7 @@ def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
 
     We hand the frontend the discrete parameters (not a pre-built URL) so it can call the
     endpoint itself. The time window is resolved server-side (mirroring the DB path, defaulting
-    to the last 24 hours) so the frontend never reconstructs date ranges. Callers must ensure a
-    metric is present before calling this — see :func:`_execute_download_control`.
+    to the last 24 hours) so the frontend never reconstructs date ranges.
     """
     start, end, window_label = extract_time_window(question, default_hours=_DOWNLOAD_DEFAULT_HOURS)
     fmt = route.download_format or "csv"
@@ -437,62 +307,235 @@ def _build_download(route: RoutePlan, question: str) -> Dict[str, Any]:
     }
 
 
-def _download_meta(route: RoutePlan, ui: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "executor": "download_data",
-        "intent": route.intent.value,
-        "lab_name": None,
-        "llm_used": False,
-        "route_confidence": route.confidence,
-        "planner_model": route.model,
-        "fallback_used": route.fallback_used,
-        "ui": ui,
-    }
-
-
-def _execute_download_control(route: RoutePlan, question: str) -> Dict[str, Any]:
+def _download_branch(route: RoutePlan, question: str) -> Branch:
     # A metric is required to build a download. When it is missing, ask a follow-up question
     # instead of handing back parameters — the frontend re-prompts the user for the metric.
     if not route.download_metric:
-        question_text = (
-            f"Which metric would you like to download? You can choose {_DOWNLOAD_METRIC_LABELS}."
+        return Branch(
+            name="download_data",
+            route=route,
+            ui={"download_needs_metric": True},
+            timescale="instant",
+            answer=(
+                f"Which metric would you like to download? You can choose {_DOWNLOAD_METRIC_LABELS}."
+            ),
         )
-        return {
-            "answer": question_text,
-            "footnotes": [],
-            "citation_sources": [],
-            "timescale": "instant",
-            "cards_retrieved": 0,
-            "recent_card": False,
-            "metadata": _download_meta(route, {"download_needs_metric": True}),
-            "data": None,
-        }
 
     dl = _build_download(route, question)
-    confirmation = (
-        f"Here's your {dl['format'].upper()} download of {dl['metric_type']} for {dl['window_label']} — "
-        "use the button to save the readings."
+    return Branch(
+        name="download_data",
+        route=route,
+        ui={
+            "download_needs_metric": False,
+            "download_slug": dl["slug"],
+            "download_metric_type": dl["metric_type"],
+            "download_start": dl["start"],
+            "download_end": dl["end"],
+            "download_interval": dl["interval"],
+            "download_format": dl["format"],
+        },
+        timescale="instant",
+        answer=(
+            f"Here's your {dl['format'].upper()} download of {dl['metric_type']} for "
+            f"{dl['window_label']} — use the button to save the readings."
+        ),
     )
-    ui = {
-        "download_needs_metric": False,
-        "download_slug": dl["slug"],
-        "download_metric_type": dl["metric_type"],
-        "download_start": dl["start"],
-        "download_end": dl["end"],
-        "download_interval": dl["interval"],
-        "download_format": dl["format"],
-    }
-    return {
-        "answer": confirmation,
-        "footnotes": [],
-        "citation_sources": [],
-        "timescale": "instant",
-        "cards_retrieved": 0,
-        "recent_card": False,
-        "metadata": _download_meta(route, ui),
-        "data": None,
-    }
 
+
+def _ifc_branch(route: RoutePlan, question: str) -> Branch:
+    def _run(_prepared: Any) -> Dict[str, Any]:
+        result = answer_ifc_question_with_metadata(user_question=question)
+        # The IFC model has no per-claim numbered citations, so citation_sources stays
+        # empty; provenance (the model file) is surfaced in metadata instead.
+        return _core_result(
+            result.get("answer") or "",
+            llm_used=bool(result.get("llm_used", False)),
+            meta={
+                "model_available": bool(result.get("model_available", True)),
+                "model_source": list(result.get("indexed_sources") or []),
+            },
+        )
+
+    return Branch(
+        name="ifc_qa",
+        route=route,
+        ui={"mode": "conversational", "panel": "ifc", "metrics": [], "transition": "fade"},
+        timescale="model",
+        llm_used=True,
+        run_sync=_run,
+        open_stream=lambda _prepared: stream_ifc_tokens(user_question=question),
+        status_before_render=("reading_model", "Reading building model…"),
+    )
+
+
+def _sensor_branch(route: RoutePlan, question: str, lab_name: Optional[str]) -> Branch:
+    def _run(_prepared: Any) -> Dict[str, Any]:
+        result = answer_sensor_question_with_metadata(user_question=question, space=lab_name)
+        # Narrative-only, like the IFC branch: provenance goes to metadata, not citations.
+        return _core_result(
+            result.get("answer") or "",
+            llm_used=bool(result.get("llm_used", False)),
+            meta={"model_source": list(result.get("indexed_sources") or [])},
+        )
+
+    return Branch(
+        name="sensor_inspection",
+        route=route,
+        ui={"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
+        timescale="sensors",
+        lab_name=lab_name,
+        llm_used=True,
+        run_sync=_run,
+        open_stream=lambda _prepared: stream_sensor_tokens(user_question=question, space=lab_name),
+        status_before_render=("reading_sensors", "Reading sensor status…"),
+    )
+
+
+def _fetch_live_sensor_data(
+    question: str, lab_name: Optional[str], route: RoutePlan
+) -> Optional[Dict[str, Any]]:
+    """Pre-fetch current sensor readings to ground knowledge-path answers with real data.
+    Returns the DB payload dict when rows exist, None otherwise."""
+    try:
+        db_ctx = prepare_db_query(
+            question=question,
+            intent=IntentType.CURRENT_STATUS_DB,
+            lab_name=lab_name,
+            planner_hints={
+                "metrics_priority": list(route.metrics),
+                "needs_cards": False,
+                "card_topics": [],
+                "max_cards": 0,
+                "second_lab_name": None,
+            },
+        )
+        if db_ctx.get("rows"):
+            return db_ctx.get("payload")
+    except Exception:
+        pass
+    return None
+
+
+def _knowledge_branch(route: RoutePlan, question: str, lab_name: Optional[str], k: int) -> Branch:
+    effective_k = max(1, min(k, 8))
+
+    def _run(live_sensor_data: Any) -> Dict[str, Any]:
+        result = answer_env_question_with_metadata(
+            user_question=question,
+            k=effective_k,
+            space=lab_name,
+            live_sensor_data=live_sensor_data,
+        )
+        return _core_result(
+            result.get("answer") or "",
+            footnotes=list(result.get("footnotes") or []),
+            citation_sources=list(result.get("indexed_sources") or []),
+            cards_retrieved=int(result.get("cards_retrieved") or 0),
+            llm_used=bool(result.get("llm_used", False)),
+        )
+
+    return Branch(
+        name="knowledge_qa",
+        route=route,
+        ui=dict(_CONVERSATIONAL_UI),
+        timescale="knowledge",
+        lab_name=lab_name,
+        llm_used=True,
+        # Both renderers ground the answer in the same live reading snapshot.
+        prepare=lambda: _fetch_live_sensor_data(question, lab_name, route),
+        run_sync=_run,
+        open_stream=lambda live_sensor_data: stream_knowledge_tokens(
+            user_question=question,
+            k=effective_k,
+            space=lab_name,
+            live_sensor_data=live_sensor_data,
+        ),
+        status_before_prepare=("searching_knowledge", "Searching knowledge base…"),
+    )
+
+
+def _db_branch(
+    route: RoutePlan,
+    question: str,
+    lab_name: Optional[str],
+    llm_history: str,
+    planner_hints: Dict[str, Any],
+) -> Branch:
+    def _resolved_ui(metrics: list) -> Dict[str, Any]:
+        return derive_ui_contract(
+            execution_intent=route.intent,
+            metrics=metrics or list(route.metrics),
+            has_floor_comparison=False,
+            clarification_required=False,
+            use_knowledge_executor=False,
+        )
+
+    def _run(_prepared: Any) -> Dict[str, Any]:
+        db_result = run_db_query(
+            question=question,
+            intent=route.intent,
+            lab_name=lab_name,
+            planner_hints=planner_hints,
+            conversation_context=llm_history,
+        )
+        metrics = list(db_result.get("metrics_used") or planner_hints.get("metrics_priority") or [])
+        return _core_result(
+            db_result.get("answer") or "",
+            footnotes=list(db_result.get("footnotes") or []),
+            citation_sources=list(db_result.get("indexed_sources") or []),
+            data=db_result.get("data"),
+            cards_retrieved=int(db_result.get("cards_retrieved") or 0),
+            llm_used=bool(db_result.get("llm_used", False)),
+            timescale=db_result.get("timescale") or "1hour",
+            ui=_resolved_ui(metrics),
+            meta={
+                "resolved_lab_name": db_result.get("resolved_lab_name"),
+                "time_window": db_result.get("time_window"),
+            },
+        )
+
+    def _meta_update(query_context: Dict[str, Any]) -> Dict[str, Any]:
+        # Reconcile the placeholder meta (emitted before the query ran, with timescale
+        # "pending" and a route-metric-derived UI) with the resolved values. This keeps the
+        # streamed metadata in parity with the sync response, which derives its UI and
+        # timescale from the same resolved facts.
+        metrics_used = list((query_context or {}).get("metrics_used") or [])
+        return {
+            "timescale": (query_context or {}).get("timescale"),
+            "time_window": (query_context or {}).get("time_window"),
+            "resolved_lab_name": (query_context or {}).get("resolved_lab_name"),
+            "metrics_used": metrics_used,
+            "ui": _resolved_ui(metrics_used),
+        }
+
+    return Branch(
+        name="db_query",
+        route=route,
+        ui=_resolved_ui([]),
+        # The stream advertises "pending" until the query resolves the real granularity;
+        # the sync renderer takes the resolved value from the result instead.
+        timescale="pending",
+        lab_name=lab_name,
+        llm_used=True,
+        prepare=lambda: prepare_db_query(question, route.intent, lab_name, planner_hints),
+        run_sync=_run,
+        open_stream=lambda query_context: stream_db_tokens(
+            question=question,
+            intent=route.intent,
+            lab_name=lab_name,
+            planner_hints=planner_hints,
+            query_context=query_context,
+            conversation_context=llm_history,
+        ),
+        status_before_prepare=("querying_db", "Fetching sensor data…"),
+        status_before_render=("building_response", "Building response…"),
+        stream_meta_update=_meta_update,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The single ladder
+# ---------------------------------------------------------------------------
 
 def _resolved_question(ctx: ConversationContext, route: RoutePlan) -> str:
     """The self-contained question the executors and answer LLM should act on.
@@ -504,125 +547,161 @@ def _resolved_question(ctx: ConversationContext, route: RoutePlan) -> str:
     return resolved or ctx.effective_question
 
 
-def execute_query(ctx: ConversationContext, k: int, allow_clarify: bool = True, endpoint_key: str = "query_sync") -> Dict[str, Any]:
-    """Execute a query given a fully-resolved ConversationContext."""
-    route = plan_route(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
-    executor = _choose_executor(route)
+def plan_branch(
+    ctx: ConversationContext,
+    route: RoutePlan,
+    k: int = 5,
+    allow_clarify: bool = True,
+) -> Branch:
+    """Map a route plan to the one branch that will answer it.
+
+    This is the only intent ladder in the system — both renderers consume its result.
+    """
     question = _resolved_question(ctx, route)
 
+    # The router asks for clarification only when answering would mean guessing. A caller
+    # that opted out (allow_clarify=False) gets the best-effort answer instead.
+    if allow_clarify and route.needs_clarification:
+        return _clarify_branch(route)
+
+    executor = _choose_executor(route)
     if executor == RouteExecutor.VIEWER_CONTROL:
-        result = _execute_viewer_control(route)
-    elif executor == RouteExecutor.HEATMAP_CONTROL:
-        result = _execute_heatmap_control(route)
-    elif executor == RouteExecutor.DOWNLOAD_DATA:
-        result = _execute_download_control(route, question)
-    elif executor == RouteExecutor.IFC_QA:
-        result = _execute_ifc(question, route)
-    elif executor == RouteExecutor.SENSOR_INSPECTION:
-        result = _execute_sensor_inspection(question, ctx.effective_lab, route)
-    elif route.intent == IntentType.UNKNOWN_FALLBACK:
-        result = _execute_unknown_fallback(route)
-    elif executor == RouteExecutor.KNOWLEDGE_QA:
-        result = _execute_knowledge(question, k, ctx.effective_lab, route)
-    else:
-        result = _execute_db(question, k, ctx.effective_lab, route, ctx.llm_history,
-                             carried_time_phrase=ctx.carried_time_phrase,
-                             carried_metric=ctx.carried_metric)
-
-    # Surface the resolved question for observability when it differs from what the
-    # user literally typed (i.e. context was actually resolved).
-    md = result.get("metadata")
-    if isinstance(md, dict) and question.strip() != ctx.original_question.strip():
-        md["resolved_question"] = question
-    return result
-
-
-def _status_event(stage: str, message: str) -> str:
-    return f"data: {json.dumps({'event': 'status', 'stage': stage, 'message': message})}\n\n"
+        return _viewer_branch(route)
+    if executor == RouteExecutor.HEATMAP_CONTROL:
+        return _heatmap_branch(route)
+    if executor == RouteExecutor.DOWNLOAD_DATA:
+        return _download_branch(route, question)
+    if executor == RouteExecutor.IFC_QA:
+        return _ifc_branch(route, question)
+    if executor == RouteExecutor.SENSOR_INSPECTION:
+        return _sensor_branch(route, question, ctx.effective_lab)
+    if route.intent == IntentType.UNKNOWN_FALLBACK:
+        return _unknown_branch(route)
+    if executor == RouteExecutor.KNOWLEDGE_QA:
+        return _knowledge_branch(route, question, ctx.effective_lab, k)
+    return _db_branch(
+        route,
+        question,
+        ctx.effective_lab,
+        ctx.llm_history,
+        _build_planner_hints(
+            route,
+            carried_time_phrase=ctx.carried_time_phrase,
+            carried_metric=ctx.carried_metric,
+        ),
+    )
 
 
-def _control_stream_meta(
-    executor: str,
-    route: RoutePlan,
-    ui: Dict[str, Any],
+def _branch_metadata(
+    branch: Branch,
     *,
-    lab_name: Optional[str] = None,
-    llm_used: bool = False,
-    timescale: str = "instant",
+    ui: Optional[Dict[str, Any]] = None,
+    llm_used: Optional[bool] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Flat SSE ``meta`` payload for the short-circuit control branches
-    (viewer / heatmap / download / sensor / guardrail).
+    """Metadata common to both renderers, so neither can drift from the other."""
+    meta: Dict[str, Any] = {
+        "executor": branch.name,
+        "intent": branch.route.intent.value,
+        "lab_name": branch.lab_name,
+        "llm_used": branch.llm_used if llm_used is None else bool(llm_used),
+        "route_confidence": branch.route.confidence,
+        "planner_model": branch.route.model,
+        "fallback_used": branch.route.fallback_used,
+        "ui": ui if ui is not None else branch.ui,
+    }
+    meta.update(branch.extra_meta)
+    meta.update(extra or {})
+    return meta
 
-    These branches bypass the DB/evidence layers, so they each emit the same fixed
-    field set with no chart/citations. Centralizing it here keeps the branches from
-    drifting apart. Callers spread the result after ``{'event': 'meta'}``.
-    """
+
+# ---------------------------------------------------------------------------
+# Renderer 1: sync JSON
+# ---------------------------------------------------------------------------
+
+def render_sync(branch: Branch) -> Dict[str, Any]:
+    """Run a branch and return the ``/query`` response body."""
+    if branch.answer is not None:
+        return {
+            "answer": branch.answer,
+            "footnotes": [],
+            "citation_sources": [],
+            "timescale": branch.timescale,
+            "cards_retrieved": 0,
+            "recent_card": False,
+            "metadata": _branch_metadata(branch),
+            "data": None,
+        }
+
+    prepared = branch.prepare() if branch.prepare else None
+    result = branch.run_sync(prepared)
     return {
-        "executor": executor,
-        "intent": route.intent.value,
-        "lab_name": lab_name,
-        "llm_used": llm_used,
-        "route_confidence": route.confidence,
-        "planner_model": route.model,
-        "fallback_used": route.fallback_used,
-        "ui": ui,
-        "timescale": timescale,
-        "cards_retrieved": 0,
+        "answer": result["answer"],
+        "footnotes": result["footnotes"],
+        "citation_sources": result["citation_sources"],
+        "timescale": result["timescale"] or branch.timescale,
+        "cards_retrieved": result["cards_retrieved"],
         "recent_card": False,
-        "visualization_type": "none",
-        "chart": None,
-        "citation_sources": [],
-        "footnotes": [],
+        "metadata": _branch_metadata(
+            branch,
+            ui=result["ui"],
+            llm_used=result["llm_used"],
+            extra=result["meta"],
+        ),
+        "data": result["data"],
     }
 
 
-async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "query_stream") -> AsyncIterator[str]:
-    """Stream a query given a fully-resolved ConversationContext."""
-    yield _status_event("routing", "Classifying question…")
-    route = await plan_route_async(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
-    executor = _choose_executor(route)
+def execute_query(
+    ctx: ConversationContext,
+    k: int,
+    allow_clarify: bool = True,
+    endpoint_key: str = "query_sync",
+) -> Dict[str, Any]:
+    """Execute a query given a fully-resolved ConversationContext."""
+    route = plan_route(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
+    branch = plan_branch(ctx, route, k=k, allow_clarify=allow_clarify)
+    result = render_sync(branch)
+    _attach_resolved_question(result.get("metadata"), ctx, route)
+    return result
+
+
+def _attach_resolved_question(
+    metadata: Optional[Dict[str, Any]],
+    ctx: ConversationContext,
+    route: RoutePlan,
+) -> None:
+    """Surface the resolved question for observability when context was actually applied."""
+    if not isinstance(metadata, dict):
+        return
     question = _resolved_question(ctx, route)
+    if question.strip() != ctx.original_question.strip():
+        metadata["resolved_question"] = question
 
-    if executor == RouteExecutor.VIEWER_CONTROL:
-        viewer_type = route.viewer_type or "splat"
-        confirmation = _VIEWER_CONFIRMATIONS.get(viewer_type, f"Opening the {viewer_type} view...")
-        meta = _control_stream_meta("viewer_control", route, {"viewer_type": viewer_type})
-        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
-        yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
-        return
 
-    if executor == RouteExecutor.HEATMAP_CONTROL:
-        action = route.heatmap_action or "on"
-        metric = route.heatmap_metric
-        confirmation = _heatmap_confirmation(action, metric)
-        meta = _control_stream_meta(
-            "heatmap_control", route, {"heatmap_action": action, "heatmap_metric": metric}
-        )
-        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
-        yield f"data: {json.dumps({'event': 'token', 'text': confirmation})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
-        return
+# ---------------------------------------------------------------------------
+# Renderer 2: SSE stream
+# ---------------------------------------------------------------------------
 
-    if executor == RouteExecutor.DOWNLOAD_DATA:
-        result = _execute_download_control(route, question)
-        meta = _control_stream_meta("download_data", route, result["metadata"]["ui"])
-        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
-        yield f"data: {json.dumps({'event': 'token', 'text': result['answer']})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
-        return
+def _sse(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
 
-    if executor == RouteExecutor.IFC_QA:
-        ifc_meta = {
-            "executor": "ifc_qa",
-            "intent": route.intent.value,
-            "lab_name": None,
-            "llm_used": True,
-            "route_confidence": route.confidence,
-            "planner_model": route.model,
-            "fallback_used": route.fallback_used,
-            "ui": {"mode": "conversational", "panel": "ifc", "metrics": [], "transition": "fade"},
-            "timescale": "model",
+
+def _status_event(stage: str, message: str) -> str:
+    return _sse({"event": "status", "stage": stage, "message": message})
+
+
+def _stream_meta_frame(branch: Branch, extra: Optional[Dict[str, Any]] = None) -> str:
+    """The ``meta`` frame: branch metadata plus the flat fields the stream contract adds.
+
+    ``citation_sources``/``footnotes`` are empty here by construction — the stream cannot
+    know which sources the answer cites until it has been generated, so executors send
+    them in the terminal ``sources`` frame instead.
+    """
+    meta = _branch_metadata(branch, extra=extra)
+    meta.update(
+        {
+            "timescale": branch.timescale,
             "cards_retrieved": 0,
             "recent_card": False,
             "visualization_type": "none",
@@ -630,110 +709,48 @@ async def stream_query(ctx: ConversationContext, k: int, endpoint_key: str = "qu
             "citation_sources": [],
             "footnotes": [],
         }
-        yield f"data: {json.dumps({'event': 'meta', **ifc_meta})}\n\n"
-        yield _status_event("reading_model", "Reading building model…")
-        async for chunk in stream_ifc_tokens(user_question=question):
-            yield chunk
-        return
-
-    if executor == RouteExecutor.SENSOR_INSPECTION:
-        sensor_meta = _control_stream_meta(
-            "sensor_inspection",
-            route,
-            {"mode": "conversational", "panel": "sensors", "metrics": [], "transition": "fade"},
-            lab_name=ctx.effective_lab,
-            llm_used=True,
-            timescale="sensors",
-        )
-        yield f"data: {json.dumps({'event': 'meta', **sensor_meta})}\n\n"
-        yield _status_event("reading_sensors", "Reading sensor status…")
-        async for chunk in stream_sensor_tokens(user_question=question, space=ctx.effective_lab):
-            yield chunk
-        return
-
-    if route.intent == IntentType.UNKNOWN_FALLBACK:
-        meta = _control_stream_meta(
-            "guardrail",
-            route,
-            {"mode": "conversational", "panel": "overview", "metrics": [], "transition": "fade"},
-            timescale="guardrail",
-        )
-        yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
-        yield f"data: {json.dumps({'event': 'token', 'text': _UNKNOWN_FALLBACK_ANSWER})}\n\n"
-        yield f"data: {json.dumps({'event': 'done'})}\n\n"
-        return
-
-    use_knowledge_executor = executor == RouteExecutor.KNOWLEDGE_QA
-
-    meta = await _build_stream_meta(route, ctx.effective_lab, use_knowledge_executor)
-    if question.strip() != ctx.original_question.strip():
-        meta["resolved_question"] = question
-    yield f"data: {json.dumps({'event': 'meta', **meta})}\n\n"
-
-    if use_knowledge_executor:
-        yield _status_event("searching_knowledge", "Searching knowledge base…")
-        live_sensor_data = await run_in_threadpool(
-            _fetch_live_sensor_data, question, ctx.effective_lab, route
-        )
-        async for chunk in stream_knowledge_tokens(
-            user_question=question,
-            k=max(1, min(k, 8)),
-            space=ctx.effective_lab,
-            live_sensor_data=live_sensor_data,
-        ):
-            yield chunk
-        return
-
-    planner_hints = _build_planner_hints(
-        route, carried_time_phrase=ctx.carried_time_phrase, carried_metric=ctx.carried_metric
     )
+    return _sse({"event": "meta", **meta})
 
-    yield _status_event("querying_db", "Fetching sensor data…")
-    query_context = await run_in_threadpool(
-        prepare_db_query,
-        question,
-        route.intent,
-        ctx.effective_lab,
-        planner_hints,
-    )
 
-    # Reconcile the placeholder meta (emitted before the DB ran, with timescale
-    # "pending" and a route-metric-derived UI) with the resolved values now that the
-    # query has executed. This keeps the streamed metadata in parity with the sync
-    # /query response, which derives its UI/timescale from the same resolved facts.
-    metrics_used = list(query_context.get("metrics_used") or [])
-    resolved_timescale = query_context.get("timescale")
-    resolved_ui = derive_ui_contract(
-        execution_intent=route.intent,
-        metrics=metrics_used or list(route.metrics),
-        has_floor_comparison=False,
-        clarification_required=(resolved_timescale == "clarify"),
-        use_knowledge_executor=False,
-    )
-    meta_update: Dict[str, Any] = {
-        "event": "meta_update",
-        "timescale": resolved_timescale,
-        "time_window": query_context.get("time_window"),
-        "resolved_lab_name": query_context.get("resolved_lab_name"),
-        "metrics_used": metrics_used,
-        "ui": resolved_ui,
-    }
-    yield f"data: {json.dumps(meta_update)}\n\n"
+async def render_stream(branch: Branch, meta_extra: Optional[Dict[str, Any]] = None) -> AsyncIterator[str]:
+    """Run a branch and emit the ``/query/stream`` SSE frames."""
+    yield _stream_meta_frame(branch, extra=meta_extra)
 
-    yield _status_event("building_response", "Building response…")
-    async for chunk in stream_db_tokens(
-        question=question,
-        intent=route.intent,
-        lab_name=ctx.effective_lab,
-        planner_hints=planner_hints,
-        query_context=query_context,
-        conversation_context=ctx.llm_history,
-    ):
+    if branch.answer is not None:
+        yield _sse({"event": "token", "text": branch.answer})
+        yield _sse({"event": "done"})
+        return
+
+    prepared = None
+    if branch.prepare:
+        if branch.status_before_prepare:
+            yield _status_event(*branch.status_before_prepare)
+        # Branch pre-work is blocking (HTTP calls, file parsing) — keep it off the loop.
+        prepared = await run_in_threadpool(branch.prepare)
+        if branch.stream_meta_update:
+            yield _sse({"event": "meta_update", **branch.stream_meta_update(prepared)})
+
+    if branch.status_before_render:
+        yield _status_event(*branch.status_before_render)
+
+    async for chunk in branch.open_stream(prepared):
         yield chunk
 
 
-def resolve_execution_intent(intent: IntentType) -> IntentType:
-    """Return a DB-executable intent (maps semantic intents to current_status_db)."""
-    if intent in _KNOWLEDGE_INTENTS:
-        return IntentType.CURRENT_STATUS_DB
-    return intent
+async def stream_query(
+    ctx: ConversationContext,
+    k: int,
+    allow_clarify: bool = True,
+    endpoint_key: str = "query_stream",
+) -> AsyncIterator[str]:
+    """Stream a query given a fully-resolved ConversationContext."""
+    yield _status_event("routing", "Classifying question…")
+    route = await plan_route_async(ctx.effective_question, ctx.effective_lab, ctx.routing_snippet)
+    branch = plan_branch(ctx, route, k=k, allow_clarify=allow_clarify)
+
+    meta_extra: Dict[str, Any] = {}
+    _attach_resolved_question(meta_extra, ctx, route)
+
+    async for chunk in render_stream(branch, meta_extra=meta_extra):
+        yield chunk

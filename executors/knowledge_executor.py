@@ -27,7 +27,6 @@ from storage.embeddings import embed_texts
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-from http_schemas import validate_tool_evidence
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import search_guideline_records, wants_guideline_detail
 
@@ -337,32 +336,6 @@ def answer_env_question_with_metadata(
         guideline_records=effective_guideline_records,
         indexed_sources=indexed_sources,
     )
-    evidence_sources = [
-        {
-            "source_kind": "knowledge_card",
-            "table": "env_knowledge_cards",
-            "operation": "semantic_retrieval",
-            "metric": None,
-            "source_label": card.get("source_label"),
-            "topic": card.get("topic"),
-            "title": card.get("title"),
-            "details": {"card_type": card.get("card_type")},
-        }
-        for card in knowledge_cards
-    ]
-    evidence = validate_tool_evidence(
-        {
-            "evidence_kind": "knowledge_qa",
-            "intent": "definition_explanation",
-            "strategy": "direct",
-            "metric_aliases": [],
-            "resolved_scope": space,
-            "resolved_time_window": None,
-            "provenance_sources": evidence_sources,
-            "confidence_notes": [],
-            "recommendation_allowed": True,
-        }
-    )
     return {
         "answer": resolved_answer,
         "footnotes": footnotes,
@@ -371,7 +344,6 @@ def answer_env_question_with_metadata(
         "knowledge_cards_retrieved": int(len(knowledge_cards)),
         "guideline_records": effective_guideline_records,
         "llm_used": llm_used,
-        "evidence": evidence,
     }
 
 

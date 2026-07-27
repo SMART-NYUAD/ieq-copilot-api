@@ -26,7 +26,6 @@ from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support.time_windows import granularity_hours_for_window
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
-from http_schemas import validate_tool_evidence
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import get_thresholds_for_metrics
 
@@ -268,35 +267,6 @@ def _collect_citation_metrics(
     return collected
 
 
-def _clarify_text_for_invariant_violation(invariant: Dict[str, Any]) -> str:
-    violations = list(invariant.get("violations") or [])
-    if "lab_scope_not_justified" in violations:
-        return (
-            "I can answer this with measured data, but I need the lab first. "
-            "Which lab should I use (for example: smart_lab, concrete_lab, or shores_office)?"
-        )
-    if "metric_not_justified" in violations and "time_window_not_justified" in violations:
-        return (
-            "I can run this once scope is explicit. "
-            "Please provide metric and time window (for example: 'average CO2 in smart_lab last 24 hours')."
-        )
-    if "metric_not_justified" in violations:
-        return (
-            "I can run this once the metric is explicit. "
-            "Which metric should I use (for example: CO2, PM2.5, VOC, humidity, temperature, light, or IEQ)?"
-        )
-    if "time_window_not_justified" in violations:
-        return (
-            "I can run this once the time window is explicit. "
-            "Please specify a window (for example: last hour, last 24 hours, this week, or last week)."
-        )
-    return (
-        "I can run this once scope is clear. Please specify at least one of: "
-        "metric, time window, or lab (for example: "
-        "'average CO2 in smart_lab last 24 hours')."
-    )
-
-
 def prepare_db_query(
     question: str,
     intent: IntentType,
@@ -342,44 +312,6 @@ def prepare_db_query(
         else db_parsing.extract_space_from_question(query_text)
     )
     compared_spaces = db_parsing.extract_compared_spaces(query_text)
-    invariant = db_parsing.validate_db_execution_invariants(
-        question=query_text,
-        intent=intent,
-        selected_metric=metric_alias,
-        resolved_lab_name=resolved_lab_name,
-        request_lab_name=lab_name,
-        explicit_metrics=explicit_metrics,
-        hinted_metrics=hinted_metrics,
-        planner_hints=planner_hints,
-    )
-    if not bool(invariant.get("allowed")):
-        if not guideline_records and metric_alias:
-            guideline_records = get_thresholds_for_metrics([metric_alias])
-        return {
-            "intent": intent,
-            "metric_alias": metric_alias,
-            "window_label": window_label,
-            "rows": [],
-            "payload": [],
-            "fallback_answer": _clarify_text_for_invariant_violation(invariant),
-            "timescale": "clarify",
-            "clarify_reason": "scope_underspecified",
-            "time_window": {
-                "label": window_label,
-                "start": window_start.isoformat(),
-                "end": window_end.isoformat(),
-                "display_start": display_start,
-                "display_end": display_end,
-                "interval_hours": granularity_hours_for_window(window_start, window_end),
-            },
-            "resolved_lab_name": resolved_lab_name,
-            "knowledge_cards": [],
-            "guideline_records": guideline_records,
-            "cards_retrieved": 0,
-            "correlation": None,
-            "sources": [],
-            "invariant_violation": invariant,
-        }
     # LLM-driven root-cause signal from the router (see RoutePlan.analysis_mode).
     # When present it deterministically triggers the diagnostic decomposition;
     # the question-text regex remains an emergency fallback inside the handler.
@@ -657,35 +589,6 @@ def run_db_query(
         planner_hints=planner_hints,
         guideline_records=guideline_records,
     )
-    invariant_violation = context.get("invariant_violation")
-    if invariant_violation:
-        return {
-            "answer": str(context.get("fallback_answer") or ""),
-            "footnotes": [],
-            "indexed_sources": [],
-            "data": [],
-            "cards_retrieved": 0,
-            "correlation": None,
-            "timescale": "clarify",
-            "llm_used": False,
-            "time_window": context.get("time_window"),
-            "resolved_lab_name": context.get("resolved_lab_name"),
-            "sources": [],
-            "invariant_violation": invariant_violation,
-            "evidence": validate_tool_evidence(
-                {
-                    "evidence_kind": "clarify_gate",
-                    "intent": intent.value,
-                    "strategy": "clarify",
-                    "metric_aliases": [str(context.get("metric_alias") or "")],
-                    "resolved_scope": context.get("resolved_lab_name"),
-                    "resolved_time_window": context.get("time_window"),
-                    "provenance_sources": [],
-                    "confidence_notes": ["db_invariant_violation"],
-                    "recommendation_allowed": False,
-                }
-            ),
-        }
     answer, llm_used, indexed_sources = _render_db_answer_with_llm(
         question=query_text,
         intent=intent,
@@ -713,40 +616,6 @@ def run_db_query(
     if not context.get("rows"):
         confidence_notes.append("low_data_coverage")
 
-    evidence_sources: List[Dict[str, Any]] = []
-    for src in context.get("sources") or []:
-        evidence_sources.append(
-            {
-                "source_kind": str(src.get("source_kind") or "unknown"),
-                "table": src.get("table"),
-                "operation": src.get("operation"),
-                "metric": src.get("metric"),
-                "source_label": src.get("source_label"),
-                "topic": src.get("topic"),
-                "title": src.get("title"),
-                "details": {
-                    "window_label": src.get("window_label"),
-                    "row_count": src.get("row_count"),
-                    "lab_scope": src.get("lab_scope"),
-                    "metrics": src.get("metrics"),
-                },
-            }
-        )
-
-    evidence = validate_tool_evidence(
-        {
-            "evidence_kind": "db_query",
-            "intent": intent.value,
-            "strategy": "direct",
-            "metric_aliases": [str(context.get("metric_alias") or "")],
-            "resolved_scope": context.get("resolved_lab_name"),
-            "resolved_time_window": context.get("time_window"),
-            "provenance_sources": evidence_sources,
-            "confidence_notes": confidence_notes,
-            "recommendation_allowed": True,
-        }
-    )
-
     return {
         "answer": resolved_answer,
         "footnotes": footnotes,
@@ -760,7 +629,6 @@ def run_db_query(
         "time_window": context["time_window"],
         "resolved_lab_name": context["resolved_lab_name"],
         "sources": context.get("sources", []),
-        "evidence": evidence,
     }
 
 
@@ -787,11 +655,6 @@ async def stream_db_tokens(
         )
     else:
         context = query_context
-    if context.get("invariant_violation"):
-        fallback = str(context.get("fallback_answer") or "")
-        yield sse.token_event(fallback)
-        yield sse.done_event()
-        return
     payload = context["payload"]
     fallback_answer = context["fallback_answer"]
     backend_semantic_state = context.get("backend_semantic_state")

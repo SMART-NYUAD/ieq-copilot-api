@@ -1,7 +1,6 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch
 
 
 TEST_DIR = os.path.dirname(__file__)

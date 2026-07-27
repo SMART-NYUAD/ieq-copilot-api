@@ -95,16 +95,12 @@ class OrchestratorUsesResolvedQuestion(unittest.TestCase):
     def _run(self, ctx, route):
         captured = {}
 
-        def fake_db(question, k, lab_name, route, llm_history, carried_time_phrase=None, carried_metric=None):
+        def fake_run_db_query(question, intent, lab_name, planner_hints=None, conversation_context=""):
             captured["question"] = question
-            return {
-                "answer": "ok", "timescale": "1hour", "cards_retrieved": 0, "recent_card": False,
-                "footnotes": [], "citation_sources": [], "data": None,
-                "metadata": {"executor": "db_query", "intent": route.intent.value},
-            }
+            return {"answer": "ok", "timescale": "1hour", "metrics_used": ["humidity"]}
 
         with patch.object(qo, "plan_route", return_value=route), \
-             patch.object(qo, "_execute_db", side_effect=fake_db):
+             patch.object(qo, "run_db_query", side_effect=fake_run_db_query):
             result = qo.execute_query(ctx, k=5)
         return captured, result
 
@@ -121,8 +117,7 @@ class OrchestratorUsesResolvedQuestion(unittest.TestCase):
         ctx = _ctx("what about humidity?")
         route = _route("what was the humidity in smart_lab in the first week of May?")
         with patch.object(qo, "plan_route", return_value=route) as mock_plan, \
-             patch.object(qo, "_execute_db", return_value={"metadata": {}, "answer": "",
-                          "timescale": "1hour", "cards_retrieved": 0, "recent_card": False}):
+             patch.object(qo, "run_db_query", return_value={"answer": "ok", "timescale": "1hour"}):
             qo.execute_query(ctx, k=5)
         mock_plan.assert_called_once()
         self.assertEqual(mock_plan.call_args.args[0], "what about humidity?")
@@ -135,6 +130,34 @@ class OrchestratorUsesResolvedQuestion(unittest.TestCase):
         captured, result = self._run(ctx, route)
         self.assertEqual(captured["question"], "what is the co2 in smart_lab?")
         self.assertNotIn("resolved_question", result["metadata"])
+
+    def test_stream_surfaces_the_resolved_question_in_meta(self):
+        # The stream renderer carries the same observability field as the sync body.
+        import asyncio
+
+        ctx = _ctx("what about humidity?")
+        route = _route("what was the humidity in smart_lab in the first week of May?")
+
+        async def _fake_plan(*a, **kw):
+            return route
+
+        async def _fake_tokens(*a, **kw):
+            yield 'data: {"event": "done"}\n\n'
+
+        async def _run():
+            return [c async for c in qo.stream_query(ctx, k=5)]
+
+        with patch.object(qo, "plan_route_async", side_effect=_fake_plan), \
+             patch.object(qo, "prepare_db_query", return_value={"metrics_used": ["humidity"]}), \
+             patch.object(qo, "stream_db_tokens", side_effect=_fake_tokens):
+            chunks = asyncio.new_event_loop().run_until_complete(_run())
+
+        metas = [
+            json.loads(c.removeprefix("data: ").strip())
+            for c in chunks
+            if '"event": "meta"' in c
+        ]
+        self.assertEqual(metas[0]["resolved_question"], route.resolved_question)
 
 
 if __name__ == "__main__":

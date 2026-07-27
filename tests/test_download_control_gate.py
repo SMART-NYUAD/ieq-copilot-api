@@ -28,7 +28,8 @@ from query_routing.llm_router_planner import (
 from query_routing.query_orchestrator import (
     _build_download,
     _choose_executor,
-    _execute_download_control,
+    _download_branch,
+    render_sync,
 )
 
 
@@ -173,7 +174,7 @@ class TestChooseExecutor(unittest.TestCase):
 
 class TestExecuteDownloadControl(unittest.TestCase):
     def test_metadata_and_ui(self):
-        result = _execute_download_control(_make_route(fmt="csv", metric="pm25"), "download last 7 days")
+        result = render_sync(_download_branch(_make_route(fmt="csv", metric="pm25"), "download last 7 days"))
         meta = result["metadata"]
         self.assertEqual(meta["executor"], "download_data")
         self.assertFalse(meta["llm_used"])
@@ -189,7 +190,7 @@ class TestExecuteDownloadControl(unittest.TestCase):
         self.assertIn("download", result["answer"].lower())
 
     def test_missing_metric_asks_followup(self):
-        result = _execute_download_control(_make_route(metric=None), "download the data")
+        result = render_sync(_download_branch(_make_route(metric=None), "download the data"))
         ui = result["metadata"]["ui"]
         self.assertTrue(ui["download_needs_metric"])
         self.assertNotIn("download_metric_type", ui)
