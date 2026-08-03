@@ -35,7 +35,10 @@ class RoutePlan:
     download_format: Optional[str] = None  # "csv" | "json" when intent is download_data
     download_metric: Optional[str] = None  # canonical metric (temperature|humidity|co2|voc|pm25) — REQUIRED to fulfil a download
     download_interval: Optional[str] = None  # aggregation interval (e.g. "1m", "1h", "1d") when intent is download_data
-    analysis_mode: Optional[str] = None    # "diagnostic" when the user asks WHY an index/metric is bad / what is driving it, else None
+    # How to shape the answer, independent of the intent that fetched the data:
+    # "diagnostic" when the user asks WHY an index/metric is bad / what is driving it,
+    # "advisory" when they ask what to DO about it (improve/fix/recommend/next steps), else None.
+    analysis_mode: Optional[str] = None
     resolved_question: Optional[str] = None  # current question rewritten self-contained from prior turns (LLM context resolution); None => use the raw question
     # The router decides when a question cannot be answered without guessing, and supplies the
     # question to ask back. Honored only when the request allows clarification.

@@ -315,8 +315,16 @@ def prepare_db_query(
     # LLM-driven root-cause signal from the router (see RoutePlan.analysis_mode).
     # When present it deterministically triggers the diagnostic decomposition;
     # the question-text regex remains an emergency fallback inside the handler.
-    diagnostic_hint = (
-        str((planner_hints or {}).get("analysis_mode") or "").strip().lower() == "diagnostic"
+    planner_analysis_mode = str((planner_hints or {}).get("analysis_mode") or "").strip().lower()
+    diagnostic_hint = planner_analysis_mode == "diagnostic"
+    # The router's "what should I do" signal (RoutePlan.analysis_mode == "advisory").
+    # It shapes the answer, not the query: the same rows are fetched, but the directive
+    # leads with actions instead of a status report. Carried on the payload so
+    # render_sync and render_stream read one resolved value rather than each re-deriving
+    # it. LLM-primary: the keyword heuristic only speaks when the router supplied no mode
+    # at all (unreachable / regex fallback), never to overrule a mode it did supply.
+    advisory_hint = planner_analysis_mode == "advisory" or (
+        not planner_analysis_mode and db_helpers.is_advisory_query_text(query_text)
     )
     # The router's metric family, when it supplied one. metric_planning falls back to
     # inferring it from the question when this is absent.
@@ -389,6 +397,7 @@ def prepare_db_query(
         payload["correlation_analysis"] = _serialize_timestamp_value(correlation_data)
     payload["metric_coverage"] = _build_metric_coverage(rows=rows, metrics_used=metrics_used)
     payload["operation_type"] = operation_type
+    payload["response_mode"] = "advisory" if advisory_hint else None
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     ts_context = _attach_time_series_context(
@@ -473,10 +482,11 @@ def _build_db_prompt_text(
     intent: IntentType,
     context_data: str,
     diagnostic: Optional[bool] = None,
+    advisory: Optional[bool] = None,
 ) -> str:
     prompt_template = get_shared_prompt_template(
         response_directive=db_helpers.db_response_directive(
-            intent, question=question, diagnostic=diagnostic
+            intent, question=question, diagnostic=diagnostic, advisory=advisory
         )
     )
     messages = prompt_template.format_messages(
@@ -567,6 +577,7 @@ def _render_db_answer_with_llm(
         intent=intent,
         context_data=context_data,
         diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+        advisory=(str((payload or {}).get("response_mode") or "") == "advisory"),
     )
     try:
         text = generate_ollama_text(prompt_text, temperature=ollama_temperature())
@@ -682,6 +693,7 @@ async def stream_db_tokens(
         intent=intent,
         context_data=context_data,
         diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
+        advisory=(str((payload or {}).get("response_mode") or "") == "advisory"),
     )
 
     ollama_payload = {

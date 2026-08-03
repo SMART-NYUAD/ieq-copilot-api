@@ -130,6 +130,14 @@ Sensor data comes from the Smart CRG REST API via `executors/db_support/api_clie
 
 The scope vocabulary is closed and the scope→metrics table lives in code: the router names a family, never a metric, so it cannot invent one and the mapping stays testable. `analysis_mode="diagnostic"` outranks a narrower scope, because a root-cause answer needs every contributing metric.
 
+### Answer shape: `analysis_mode`
+
+`RoutePlan.analysis_mode` decides how the answer is *shaped*, independently of the intent that fetched the data. `"diagnostic"` decomposes drivers; `"advisory"` leads with what to do about them. Both are LLM-decided with a keyword heuristic as the emergency path, and `"advisory"` wins when a question asks WHY and WHAT TO DO in one breath — the action is what was asked for.
+
+`"advisory"` exists because *"how can I improve the air quality?"* and *"what would you recommend to improve VOC?"* were being answered with metric-by-metric status reports, one of them closing on "No immediate action is needed". **The cause was not a missing instruction.** Four separate prompts already said the model MUST give recommendations when asked (`SHARED_SYSTEM_PROMPT`, `PRESENTATION_STYLE_PROMPT`, `_BASE_DIRECTIVE`, `_BASE_AIR_QUALITY_POINT_LOOKUP`). Nothing upstream ever *recognised* the question as advisory, so the directive selected for it was a status directive — and the model followed that directive's structure ("provide an overall status", "include metric-by-metric interpretation") rather than the one sentence buried inside it. Probed before the fix, the advice questions scattered across `definition_explanation` (an advice question read as a glossary lookup), `current_status_db` + `analysis_mode="diagnostic"`, and one unparseable plan.
+
+The lesson is the same one the definite-article bug taught, in a new place: **when the model ignores a rule, give the decision its own field and let it select the structure — do not restate the rule more loudly.** A fifth "you MUST provide recommendations" would have changed nothing. `db_response_directive` now checks advisory before every other directive, and `DB_TOOL_RESPONSE_DIRECTIVE_ADVISORY` suppresses the metric rundown and the missing-metric disclaimer that were crowding the advice out. The resolved flag rides `payload["response_mode"]` so `render_sync` and `render_stream` read one value instead of each re-deriving it. Cases live in `tests/router_eval.py` group `advice`; the answer-shape end of it is phase `P5` of the golden conversation, which asserts action vocabulary and excludes the "no action needed" non-answer.
+
 ### Key invariants
 
 - Endpoint handlers stay thin — all business logic lives in orchestration/executor modules.

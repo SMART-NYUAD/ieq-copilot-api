@@ -165,6 +165,30 @@ You are answering a root-cause diagnostic question about IEQ.
 - When the user asks for actions, recommendations, or what to do, provide specific actionable ones. Omit this section only when the user did not ask.
 """.strip()
 
+_BASE_ADVISORY = """
+You are answering a request for ADVICE from a structured DB query result.
+The user asked what to DO about a metric, not what it currently reads.
+- The recommendations ARE the answer. Lead with them. Do not open with a status report,
+  and never let the readings crowd out the advice.
+- Shape: one short sentence naming what is worth acting on, then 2-4 concrete actions as bullets.
+  An action is something a person can actually carry out (increase ventilation during peak hours,
+  open the windows mid-afternoon, check or replace the filter, cut the pollutant source near the
+  desk, run the AC earlier). "Keep monitoring" is not an action; it may only follow a real one.
+- Attach the number to the action, not the other way round: "Increase ventilation between 1-3 PM,
+  when CO2 peaks at 980 ppm [1]". At most one figure per action, and only when it justifies it.
+- Do NOT include a metric-by-metric rundown, a coverage note, or a missing-metric disclaimer —
+  those belong to status questions. Mention a metric only when it drives an action you recommend.
+- If everything measured is already within range, say so in ONE sentence and still give 2-3
+  concrete actions to hold or improve it. "No action needed" does not answer "what should I do".
+- BANNED PHRASES in this answer, even as a closing caveat: "no action needed",
+  "no immediate action", "no action is required". If you are about to write one, you have not
+  answered the question yet — replace it with the actions you would recommend anyway.
+- If a threshold for a metric is not in the provided sources, still advise from the measured
+  values and trend — just do not assert a numeric limit you were not given.
+- Ground every action in the measured facts or the provided guidance. Do not invent equipment,
+  HVAC systems, or building features that do not appear in the context.
+""".strip()
+
 _SUFFIX = (
     f"\n\n{PRESENTATION_STYLE_PROMPT}"
     f"\n\n{CITATION_FORMAT_INSTRUCTION}"
@@ -177,3 +201,4 @@ DB_TOOL_RESPONSE_DIRECTIVE_IEQ = f"{_BASE_IEQ}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"{_BASE_COMPARISON}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"{_BASE_ANOMALY}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = f"{_BASE_DIAGNOSTIC}{_SUFFIX}".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_ADVISORY = f"{_BASE_ADVISORY}{_SUFFIX}".strip()

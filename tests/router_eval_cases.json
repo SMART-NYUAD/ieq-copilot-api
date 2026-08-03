@@ -13,12 +13,12 @@
     "  lab                          plan.lab_name",
     "  time_phrase_contains         substring of plan.time_phrase (case-insensitive)",
     "  needs_clarification          plan.needs_clarification",
-    "  analysis_mode                plan.analysis_mode ('diagnostic' or null)",
+    "  analysis_mode                plan.analysis_mode ('diagnostic', 'advisory' or null)",
     "  resolved_contains_all        substrings that must appear in resolved_question",
     "  resolved_contains_any        at least one must appear in resolved_question",
     "  resolved_excludes            none may appear in resolved_question",
     "  viewer_type / heatmap_action / heatmap_metric",
-    "  download_format / download_metric / download_interval",
+    "  download_format / download_metric / download_interval / metric_scope",
     "",
     "Groups let the scorecard show which capability regressed, not just a total."
   ],
@@ -480,6 +480,75 @@
       ],
       "question": "what was the average CO2 last week?",
       "expect": {"intent": "aggregation_db"}
+    },
+
+    {
+      "id": "advice-improve-air-quality",
+      "group": "advice",
+      "question": "How can I improve the air quality?",
+      "expect": {"intent": "current_status_db", "analysis_mode": "advisory", "metric_scope": "air_quality"}
+    },
+    {
+      "id": "advice-recommend-improve-voc",
+      "group": "advice",
+      "question": "What would you recommend to improve VOC?",
+      "expect": {"intent": "current_status_db", "analysis_mode": "advisory", "metrics_include": ["voc"]}
+    },
+    {
+      "id": "advice-what-should-i-do",
+      "group": "advice",
+      "question": "What should I do about the CO2?",
+      "expect": {"intent": "current_status_db", "analysis_mode": "advisory"}
+    },
+    {
+      "id": "advice-howto-is-not-definition",
+      "group": "advice",
+      "question": "How do I lower PM2.5?",
+      "expect": {"intent": "current_status_db", "analysis_mode": "advisory"}
+    },
+    {
+      "id": "advice-comfort-scope",
+      "group": "advice",
+      "question": "Any advice on making the space more comfortable?",
+      "expect": {"analysis_mode": "advisory", "metric_scope": "comfort"}
+    },
+    {
+      "id": "advice-next-steps-followup",
+      "group": "advice",
+      "context": [
+        "User: what is the PM2.5?",
+        "Assistant: PM2.5 in smart_lab is 13.5 ug/m3, just above the 12 ug/m3 threshold."
+      ],
+      "question": "what are the next steps?",
+      "expect": {"analysis_mode": "advisory", "resolved_contains_any": ["pm2.5", "pm25"]}
+    },
+    {
+      "id": "advice-elliptical-fix-it",
+      "group": "advice",
+      "context": [
+        "User: what is the VOC?",
+        "Assistant: VOC in smart_lab is 0.06 ppm, within the allowed range."
+      ],
+      "question": "how do I fix it?",
+      "expect": {"analysis_mode": "advisory", "resolved_contains_any": ["voc"]}
+    },
+    {
+      "id": "advice-beats-diagnostic-when-both",
+      "group": "advice",
+      "question": "why is the IEQ low and what should I do about it?",
+      "expect": {"analysis_mode": "advisory"}
+    },
+    {
+      "id": "advice-not-for-plain-status",
+      "group": "advice",
+      "question": "is the air quality ok?",
+      "expect": {"analysis_mode": null}
+    },
+    {
+      "id": "advice-does-not-eat-definitions",
+      "group": "advice",
+      "question": "what is VOC?",
+      "expect": {"intent": "definition_explanation", "analysis_mode": null}
     }
   ]
 }

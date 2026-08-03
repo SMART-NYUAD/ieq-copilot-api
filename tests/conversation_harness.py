@@ -58,7 +58,7 @@ class Expect:
     replaces regex carry-over with an LLM ``resolved_question``.
     """
 
-    phase: str = "BASE"                     # BASE | P0 | P1 | P2 | P3 | P4
+    phase: str = "BASE"                     # BASE | P0 | P1 | P2 | P3 | P4 | P5
     note: str = ""                          # what this turn is probing
     intent: Optional[str] = None            # exact metadata intent value
     resolved_lab: Optional[str] = None      # metadata.resolved_lab_name
@@ -328,6 +328,46 @@ GOLDEN_CONVERSATION: List[Turn] = [
             phase="P4", note="simple factual question -> short answer",
             intent="current_status_db", max_answer_words=90,
             answer_contains_any=["co2", "ppm"],
+        ),
+    ),
+    # P5 — the question asked is the thing that must be answered. These turns ask
+    # what to DO; a status report that happens to mention the metric is a failure,
+    # which is why the action vocabulary is asserted and the two stock non-answers
+    # ("no action needed" / "no immediate action") are excluded.
+    Turn(
+        user="How can I improve the air quality?",
+        expect=Expect(
+            phase="P5", note="advice question -> concrete actions, not a status dump",
+            intent="current_status_db",
+            answer_contains_any=[
+                "ventilat", "window", "filter", "purif", "increase",
+                "reduce", "adjust", "clean",
+            ],
+            answer_excludes=["no action needed", "no immediate action"],
+        ),
+    ),
+    Turn(
+        user="What would you recommend to improve VOC?",
+        expect=Expect(
+            phase="P5",
+            note="advice on an in-range metric: still owes actions, not 'nothing to do'",
+            answer_contains_any=[
+                "ventilat", "window", "filter", "purif", "increase",
+                "reduce", "adjust", "clean", "source",
+            ],
+            answer_excludes=["no action needed", "no immediate action"],
+        ),
+    ),
+    Turn(
+        user="What is VOC?",
+        expect=Expect(
+            phase="P5",
+            note="concept question after advice turns: answer what it IS, no reading, "
+                 "and the article rule still holds deep in a conversation",
+            # The point of this turn is the intent. The cap is loose on purpose — it is
+            # here to catch a definition that turns into a full report, not to police
+            # length; P4 is the strict brevity check (90 words on a factual question).
+            intent="definition_explanation", max_answer_words=180,
         ),
     ),
 ]

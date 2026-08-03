@@ -17,6 +17,7 @@ from prompting.db_prompts import (
     DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
     DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
     DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
+    DB_TOOL_RESPONSE_DIRECTIVE_ADVISORY,
     CITATION_FORMAT_INSTRUCTION,
 )
 
@@ -131,7 +132,57 @@ def is_diagnostic_query_text(question: str) -> bool:
     return any(hint in q for hint in diagnostic_hints)
 
 
-def db_response_directive(intent: Any, question: str = "", diagnostic: Optional[bool] = None) -> str:
+def is_advisory_query_text(question: str) -> bool:
+    """Emergency keyword detection for 'what should I do' questions.
+
+    The router decides this (``RoutePlan.analysis_mode == "advisory"``); this covers
+    the path where the router LLM was unreachable, the same arrangement as
+    :func:`is_diagnostic_query_text`.
+    """
+    q = (question or "").lower()
+    advisory_hints = (
+        "recommend",
+        "recommendation",
+        "suggest",
+        "advice",
+        "advise",
+        "what should i",
+        "what should we",
+        "what can i",
+        "what can we",
+        "how can i",
+        "how can we",
+        "how do i",
+        "how do we",
+        "next step",
+        "what to do",
+        "how to improve",
+        "how to reduce",
+        "how to lower",
+        "how to fix",
+        "improve the",
+        "reduce the",
+        "lower the",
+        "fix the",
+    )
+    return any(hint in q for hint in advisory_hints)
+
+
+def db_response_directive(
+    intent: Any,
+    question: str = "",
+    diagnostic: Optional[bool] = None,
+    advisory: Optional[bool] = None,
+) -> str:
+    # ``advisory`` is the resolved "what should I do" signal (LLM analysis_mode, or the
+    # keyword heuristic when the caller does not pass it). It is checked before every
+    # other directive: the status directives structure the answer as a report, and that
+    # structure is what was burying the recommendations the user actually asked for.
+    # It also beats ``diagnostic`` — asked why AND what to do, the action is the answer.
+    if advisory is None:
+        advisory = is_advisory_query_text(question)
+    if advisory:
+        return DB_TOOL_RESPONSE_DIRECTIVE_ADVISORY
     # ``diagnostic`` is the resolved root-cause signal (LLM analysis_mode, or the
     # operation actually executed). When the caller does not pass it, fall back to
     # the question-text heuristic so direct callers keep their behaviour.

@@ -130,7 +130,8 @@ def _score(expect: Dict[str, Any], plan) -> Tuple[List[str], int]:
               f"unexpected={present} resolved={plan.resolved_question!r}")
 
     for attr in ("viewer_type", "heatmap_action", "heatmap_metric",
-                 "download_format", "download_metric", "download_interval"):
+                 "download_format", "download_metric", "download_interval",
+                 "metric_scope"):
         if attr in expect:
             got = getattr(plan, attr)
             check(attr, got == expect[attr], f"want={expect[attr]} got={got}")
