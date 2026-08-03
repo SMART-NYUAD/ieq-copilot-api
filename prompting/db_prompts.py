@@ -96,7 +96,6 @@ You are answering from a structured DB query result.
   6) confidence qualifier tied to metric coverage.
 - For risk-focused questions, lead with the main risk level and concrete risk drivers first.
 - When the user asks for recommendations, next steps, or advice, you MUST provide specific actionable ones grounded in the data — never skip or refuse when asked.
-- If the user did not ask for recommendations, do not add a "Recommendations" section.
 - When `display_start` and `display_end` are present in measured room facts, copy those values verbatim
     when mentioning the analysis window. Do not rewrite or infer date/month values.
 - Backend Semantic State may include pre-computed trend analysis (`window_stats`, `change_analysis`, `notable_events`).
@@ -195,7 +194,6 @@ You are answering an anomaly analysis from a structured DB query result.
 - When multiple metrics are present (operation_type "anomaly_multi"), summarize which metrics had anomalies and which were clean. Name the metric, the anomalous value, and the time it occurred.
 - When no anomalies are found, briefly list the metrics that were checked and confirm they look normal.
 - OCCUPANCY HOURS CONTEXT: These are working spaces operating 9 AM–5 PM. Metric drops during off-hours (evenings, nights, weekends) are expected unoccupied-condition behavior and must NOT be flagged as anomalies. Only flag off-hours events that are genuinely unusual for an unoccupied space (e.g. a CO2 spike at 2 AM).
-- Do not add a "Next Steps" or "Recommendations" section unless asked.
 - Use at most 1 emoji if it genuinely helps readability.
 """.strip()
 

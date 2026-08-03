@@ -176,9 +176,18 @@ role**, which is the intent.
 directives — that is how the advisory bug started, with four prompts repeating an instruction
 until the model followed none of them. `get_shared_prompt_template(directive, role)` covers the DB
 and knowledge paths; the IFC and sensor-inspection executors hand-write their own system prompts
-and take `role_addendum(role)`, which returns `""` for the default so those two prompts also stay
-byte-identical. Instant branches (viewer/heatmap/download/clarify) make no model call, so role is
-a no-op there but is still echoed in metadata.
+and take `role_addendum(role)`. Instant branches (viewer/heatmap/download/clarify) make no model
+call, so role is a no-op there but is still echoed in metadata.
+
+**The role block is the only place that decides whether to volunteer an action**, and that rule
+was paid for. `facility_manager` says to give the intervention unasked; five clauses elsewhere
+said to withhold action guidance — two in `PRESENTATION_STYLE_PROMPT` (embedded in *both* the
+system prompt and every directive suffix, so it landed twice), one in `SHARED_SYSTEM_PROMPT`, two
+in the DB directives — and two of the five appeared *after* the role block. The role lost. Worse,
+the model recited an instruction into a user-facing answer: *"No action needed unless the user
+asks for recommendations."* The clauses were deleted and each block now states its own policy.
+`test_stakeholder_roles.py` asserts the assembled prompt contains none of them, for every role.
+Do not add a rule about recommendations to any other prompt file.
 
 **Role may widen the data fetched, never narrow it.** Only `researcher` widens, and the widening
 is a *union* with the full pack rather than a swap to it (`_WIDENING_ROLES` in `metric_planning.py`).

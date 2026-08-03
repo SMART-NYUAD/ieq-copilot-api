@@ -200,11 +200,26 @@ class RolesActuallyDifferTests(unittest.TestCase):
 
     def test_facility_manager_answers_whether_to_intervene(self):
         block = role_style_block(ROLE_FACILITY_MANAGER).lower()
-        self.assertIn("do i need to do something", block)
-        # Status questions must still produce an intervention line, which means overriding
-        # the presentation rule that withholds action guidance unless it was asked for.
-        self.assertIn("supersedes the default rule about withholding action guidance", block)
-        self.assertIn("including when the answer is that nothing needs attention", block)
+        self.assertIn("do i need to do something about it", block)
+        self.assertIn("always give the action", block)
+        self.assertIn("a status report with no action is a failed answer", block)
+
+    def test_facility_manager_is_people_first_and_preventative(self):
+        block = role_style_block(ROLE_FACILITY_MANAGER).lower()
+        self.assertIn("people first", block)
+        self.assertIn("occupant comfort, health and complaints are the job", block)
+        self.assertIn("be preventative, not just reactive", block)
+        self.assertIn("before* it crosses", block)
+
+    def test_facility_manager_covers_sla_and_warranty_exposure(self):
+        block = role_style_block(ROLE_FACILITY_MANAGER).lower()
+        self.assertIn("flag sla and compliance exposure", block)
+        self.assertIn("service agreement", block)
+        self.assertIn("respect warranties and service contracts", block)
+        self.assertIn("void a warranty", block)
+        # In-house vs contractor is the distinction that makes the warranty rule usable.
+        self.assertIn("filter swap", block)
+        self.assertIn("route it to the contractor", block)
 
     def test_facility_manager_names_the_physical_checks(self):
         block = role_style_block(ROLE_FACILITY_MANAGER).lower()
@@ -242,6 +257,65 @@ class RolesActuallyDifferTests(unittest.TestCase):
                 "few metrics" in block or "one or two metrics" in block
                 or "at most the one or two metrics" in block,
                 role,
+            )
+
+    def test_nothing_in_the_assembled_prompt_contradicts_the_action_policy(self):
+        """The reported bug: an FM answer that closed "No action needed unless the user asks
+        for recommendations" — the model reciting an instruction instead of answering.
+
+        Five separate clauses told it to withhold action guidance (two of them *after* the
+        role block, since PRESENTATION_STYLE_PROMPT is embedded in both the system prompt
+        and every directive suffix) against one line in the role block saying to give it.
+        The role lost, exactly as the advisory bug did. The clauses are gone; the policy now
+        lives once, in the role block, and each role states its own.
+        """
+        from executors.db_query_executor import _build_db_prompt_text
+
+        banned = (
+            'do not say "no action needed"',
+            "if they did not ask, omit recommendations",
+            'do not add a "recommendations" section',
+            "did not ask for recommendations, omit that section",
+            'do not add a "next steps" or "recommendations" section unless asked',
+        )
+        for role in VALID_ROLES:
+            prompt = " ".join(
+                _build_db_prompt_text(
+                    question="how is the room today?",
+                    intent=IntentType.CURRENT_STATUS_DB,
+                    context_data="CTX",
+                    role=role,
+                ).lower().split()
+            )
+            for clause in banned:
+                self.assertNotIn(clause, prompt, f"{role}: {clause}")
+
+    def test_each_role_states_its_own_action_policy_exactly_once(self):
+        # One owner for the decision. If a second voice reappears anywhere, the role stops
+        # being what decides, which is how this broke the first time.
+        for role in VALID_ROLES:
+            block = role_style_block(role)
+            marker = "ALWAYS GIVE THE ACTION" if role == ROLE_FACILITY_MANAGER else "ACTION GUIDANCE:"
+            self.assertEqual(block.count(marker), 1, role)
+
+    def test_only_the_facility_manager_volunteers_actions(self):
+        for role in (ROLE_OCCUPANT, ROLE_RESEARCHER):
+            self.assertIn(
+                "only when they ask for it", role_style_block(role).lower(), role
+            )
+        # Executive is the exception among the restrained roles: it always names who should
+        # look into a problem, because "is there an alarm?" is unanswered without it. What
+        # it withholds is the technical fix, not the escalation.
+        executive = role_style_block(ROLE_EXECUTIVE).lower()
+        self.assertIn("name who should look into it", executive)
+        self.assertIn("never the technical fix", executive)
+
+    def test_no_role_may_emit_the_stock_non_answer(self):
+        # "No action needed" was what the reported FM answer closed on. It is a non-answer
+        # for every audience, whatever their action policy.
+        for role in VALID_ROLES:
+            self.assertIn(
+                'never close with "no action needed"', role_style_block(role).lower(), role
             )
 
     def test_no_two_role_blocks_are_alike(self):
