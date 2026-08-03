@@ -81,7 +81,8 @@ _SYSTEM_PROMPT = (
     '`current_status_db`, not to `definition_explanation`: "co2?", "voc levels?", "whats co2", '
     '"current readings", "show me temperature", "how is the humidity?". It stays required no matter '
     'what the transcript contains: a reading reported for that SAME metric, or for ANY OTHER metric, '
-    'does not turn a later concept question into a value request. After an answer giving the humidity '
+    'or advice given about that metric, does not turn a later concept question into a value request. '
+    'After an answer giving the humidity '
     "reading, 'what is temperature?' is still `definition_explanation` and 'what is humidity?' is "
     'still `definition_explanation` — only an article in the current Question makes it a value '
     'request.\n'
@@ -101,9 +102,10 @@ _SYSTEM_PROMPT = (
     '  "confidence": float 0-1\n'
     '  "metric_scope": which family of metrics to read — one of [named, air_quality, ieq_index, '
     'comfort, diagnostic, full]\n'
-    '  "analysis_mode": "diagnostic" when the user asks WHY an index/metric is bad/good/changing or '
-    'what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE for / BEHIND it (a root-cause '
-    'question), else null\n'
+    '  "analysis_mode": "advisory" when the user asks what to DO (how to improve/fix/reduce it, what '
+    'they should do, what you recommend, advice, next steps); "diagnostic" when they ask WHY an '
+    'index/metric is bad/good/changing or what is DRIVING / CAUSING / CONTRIBUTING to / RESPONSIBLE '
+    'for / BEHIND it (a root-cause question); else null\n'
     '  "needs_clarification": true ONLY when the question cannot be executed because a required '
     'detail is missing AND cannot be inferred from Prior conversation or a sensible default; else '
     'false\n'
@@ -200,6 +202,14 @@ _SYSTEM_PROMPT = (
     'broad scope does not list that family there) and it NEVER changes `intent` — in particular it '
     "does not touch `metric_has_article`: 'what is temperature?' with no article stays "
     '`definition_explanation` at scope `named`.\n'
+    '- ADVICE: Set `analysis_mode` to "advisory" when the user asks what to DO — how to improve, '
+    'fix, reduce or prevent something, what they should do, what you recommend, or for advice or '
+    'next steps. Like "diagnostic" it is INDEPENDENT of intent: the advice needs current values to '
+    'stand on, so route to the DB intent that supplies them (usually `current_status_db`). An advice '
+    "question is NEVER `definition_explanation` — 'how do I lower PM2.5?' asks what to DO, not what "
+    'PM2.5 IS. Examples (all analysis_mode="advisory"): \'how can I improve the air quality?\', '
+    "'what would you recommend to improve VOC?', 'what should I do about the CO2?', 'what are the "
+    "next steps?'. Non-advisory (null): 'what is the PM2.5?', 'is the air quality ok?'.\n"
     '- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to "diagnostic" whenever the user asks what is '
     'DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or REASON '
     'for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the '
@@ -211,7 +221,9 @@ _SYSTEM_PROMPT = (
     "low?', 'what's dragging down the IEQ?', 'what is hurting indoor environmental quality?', 'what's "
     "the biggest contributor to poor air quality?', 'which factor is making the score worse?', 'what "
     "is behind the drop in IEQ?', 'what's causing the bad comfort score?'. Non-diagnostic "
-    "(analysis_mode=null): 'what is the IEQ?', 'is the IEQ good?', 'show me the IEQ'.\n"
+    "(analysis_mode=null): 'what is the IEQ?', 'is the IEQ good?', 'show me the IEQ'. EXCEPTION — "
+    'if the question ALSO asks what to DO about it, "advisory" wins: \'why is the IEQ low and what '
+    "should I do about it?' is advisory, not diagnostic.\n"
     '\n'
     'Intent definitions:\n'
     '- definition_explanation: conceptual/educational questions asking what a metric MEANS. '
@@ -381,9 +393,10 @@ _HEATMAP_OFF_HINTS = (
 )
 
 
-# Root-cause / driver-decomposition analysis mode. Kept open for future modes
-# (e.g. "correlation") but only "diagnostic" is acted on today.
-_VALID_ANALYSIS_MODES = {"diagnostic"}
+# How the answer should be shaped, independent of which intent fetched the data:
+# "diagnostic" decomposes drivers, "advisory" leads with what to do about them.
+# Kept open for future modes (e.g. "correlation").
+_VALID_ANALYSIS_MODES = {"diagnostic", "advisory"}
 
 # Aliases for the downloadable metrics (superset of the heatmap aliases — also covers co2).
 _DOWNLOAD_METRIC_ALIASES: Dict[str, str] = {
