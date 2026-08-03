@@ -94,8 +94,9 @@ _SYSTEM_PROMPT = (
     'download_data, ifc_model_qa, sensor_inspection, unknown_fallback]\n'
     '  "lab": the lab/space name if mentioned, else null\n'
     '  "second_lab": always null\n'
-    '  "metrics": list of relevant metrics from [co2, pm25, voc, humidity, temperature, light, sound, '
-    'ieq]\n'
+    '  "metrics": ONLY the metrics from [co2, pm25, voc, humidity, temperature, light, sound, ieq] '
+    'that `resolved_question` itself names — empty when it names none, since `metric_scope` carries '
+    'the family. Never expand this into a whole family.\n'
     '  "time_phrase": exact time window phrase from question (e.g. "last 24 hours"), else null\n'
     '  "confidence": float 0-1\n'
     '  "metric_scope": which family of metrics to read — one of [named, air_quality, ieq_index, '
@@ -180,9 +181,10 @@ _SYSTEM_PROMPT = (
     '`needs_clarification` is true, still fill `intent` with your best guess.\n'
     '- METRIC SCOPE: `metric_scope` says WHICH metrics to read. It is independent of `intent` — the '
     'intent decides how to query, the scope decides what to query for.\n'
-    "  * `named` — the user named the metric(s) they want: 'what is the CO2?', 'humidity last week', "
-    "'temperature and humidity'. Use this whenever a specific metric is named and the question is "
-    'about that metric. Also use it for any non-data intent.\n'
+    "  * `named` — the user named the metric(s) they want: 'the CO2 right now', 'humidity last "
+    "week', 'temperature and humidity'. Use this whenever a specific metric is named and the "
+    'question is about that metric. Also use it for any non-data intent, including '
+    '`definition_explanation`.\n'
     "  * `air_quality` — pollutant air quality as a whole, no single metric named: 'how is the air "
     "quality?', 'is the air clean?', 'are pollutant levels ok?'.\n"
     "  * `ieq_index` — the IEQ score itself and its sub-indices (IAQ/ITC/IAC/IIL): 'what is the "
@@ -194,6 +196,10 @@ _SYSTEM_PROMPT = (
     "  * `full` — the user explicitly asks for everything: 'give me a complete assessment'.\n"
     "  When a named metric appears inside a broader question ('is the air quality ok, especially "
     "CO2?'), prefer the broader scope — the named metric still leads the answer.\n"
+    '  `metric_scope` is the ONLY field that widens the metric family. It NEVER edits `metrics` (a '
+    'broad scope does not list that family there) and it NEVER changes `intent` — in particular it '
+    "does not touch `metric_has_article`: 'what is temperature?' with no article stays "
+    '`definition_explanation` at scope `named`.\n'
     '- DIAGNOSTIC / ROOT-CAUSE: Set `analysis_mode` to "diagnostic" whenever the user asks what is '
     'DRIVING, CAUSING, CONTRIBUTING TO, RESPONSIBLE FOR, BEHIND, or the MAIN/BIGGEST FACTOR or REASON '
     'for an index or metric being bad/poor/low/high/good or going up/down — i.e. they want the '
