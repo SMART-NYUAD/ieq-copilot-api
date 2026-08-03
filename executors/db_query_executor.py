@@ -24,6 +24,7 @@ from executors.knowledge_executor import search_knowledge_cards
 from executors.db_support import query_handlers as db_handlers
 from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
+from executors.db_support import threshold_assessment
 from executors.db_support.time_windows import granularity_hours_for_window
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
@@ -497,6 +498,14 @@ def _build_db_prompt_text(
     return build_prompt_text_from_messages(messages)
 
 
+def _latest_reading_row(rows: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """The most recent bucket, which is what a status verdict is about."""
+    for row in reversed(list(rows or [])):
+        if isinstance(row, dict):
+            return {k: v for k, v in row.items() if k not in ("bucket", "lab_space")}
+    return {}
+
+
 def _build_db_context_data(
     *,
     payload: Dict[str, Any],
@@ -504,8 +513,15 @@ def _build_db_context_data(
     knowledge_cards: Optional[List[Dict[str, Any]]],
     numbered_sources_block: str,
     conversation_context: str = "",
+    rows: Optional[List[Dict[str, Any]]] = None,
+    indexed_sources: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     interpretation_cards, guardrails = db_helpers.split_knowledge_cards(knowledge_cards)
+    # Computed once here so render_sync and render_stream cannot disagree about
+    # whether a metric is over its limit.
+    assessment = threshold_assessment.build_assessment_section(
+        _latest_reading_row(rows), indexed_sources or []
+    )
     return build_grounded_context_sections(
         measured_room_facts=payload,
         backend_semantic_state=backend_semantic_state,
@@ -513,6 +529,7 @@ def _build_db_context_data(
         communication_guardrails=guardrails,
         numbered_sources_block=numbered_sources_block,
         conversation_history=conversation_context or None,
+        threshold_assessment=assessment,
     )
 
 
@@ -571,6 +588,8 @@ def _render_db_answer_with_llm(
         knowledge_cards=knowledge_cards,
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
+        rows=rows,
+        indexed_sources=indexed_sources,
     )
     prompt_text = _build_db_prompt_text(
         question=question,
@@ -687,6 +706,8 @@ async def stream_db_tokens(
         knowledge_cards=context.get("knowledge_cards"),
         numbered_sources_block=numbered_sources_block,
         conversation_context=conversation_context,
+        rows=context.get("rows"),
+        indexed_sources=indexed_sources,
     )
     prompt_text = _build_db_prompt_text(
         question=query_text,

@@ -132,6 +132,7 @@ def build_grounded_context_sections(
     numbered_sources_block: Optional[str] = None,
     allow_general_knowledge: bool = False,
     conversation_history: Optional[str] = None,
+    threshold_assessment: Optional[str] = None,
 ) -> str:
     """Build a labeled grounded-context string shared by DB and card paths."""
     knowledge_cards = list(knowledge_cards or [])
@@ -153,6 +154,20 @@ def build_grounded_context_sections(
         "## Measured Room Facts",
         _stringify_section(measured_room_facts),
         "",
+    ]
+
+    # Threshold verdicts are computed in code rather than inferred from the facts
+    # above, because the model was mis-attributing limits and, under pressure,
+    # inventing them. Placed before the semantic state so it is read as a resolved
+    # result rather than one more thing to interpret.
+    if threshold_assessment and threshold_assessment.strip():
+        sections += [
+            "## Threshold Assessment (computed — authoritative)",
+            threshold_assessment.strip(),
+            "",
+        ]
+
+    sections += [
         "## Backend Semantic State",
         _stringify_section(backend_semantic_state),
         "",
