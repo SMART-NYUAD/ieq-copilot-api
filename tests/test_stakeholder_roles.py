@@ -2,20 +2,22 @@
 
 A role is declared by the caller, not inferred from the question, so unlike `intent` or
 `analysis_mode` there is no router eval that can catch a regression here. These tests carry
-the whole guarantee, and it has two halves.
+the whole guarantee, in three parts.
 
-The first half is that the default is a no-op. Before roles existed the assistant had
-exactly one persona, hardcoded in SHARED_SYSTEM_PROMPT as "Write for non-technical
-occupants". `occupant` is that wording verbatim, so `shared_system_prompt(ROLE_OCCUPANT)`
-must be byte-identical to the constant it replaced. That is the strongest available
-statement that a caller who sends no role is unaffected by any of this.
+**Role is per-message and stateless.** Sending a different role on consecutive turns of one
+conversation is the normal case, and omitting it always means the configured default —
+never "whatever the last turn used". Nothing about a role is persisted.
 
-The second half is that a role may never subtract. The completeness rules in db_prompts and
-the computed threshold verdicts were each won back from a specific wrong answer (see
-test_air_quality_completeness and test_threshold_assessment), and the new roles push
-directly against them: `executive` is capped at 60 words and `facility_manager` wants
-operational brevity. Every non-default role therefore carries an explicit clause saying
-completeness outranks it, and the metric pack a role resolves to can only ever grow.
+**Role may never hide a problem.** The completeness rules in db_prompts and the computed
+threshold verdicts were each won back from a specific wrong answer (see
+test_air_quality_completeness and test_threshold_assessment), and two roles now actively
+ask for fewer metrics: `occupant` wants as few as possible, `executive` is capped at 60
+words. Every block therefore scopes that permission to metrics the Threshold Assessment
+reports as within range — a metric flagged EXCEEDS, NEAR or not-rated appears in every
+answer for every audience.
+
+**Role may widen the data fetched, never narrow it.** The metric pack a role resolves to
+can only ever grow, asserted as subset containment across every role × scope.
 """
 
 import os
@@ -347,48 +349,45 @@ class _StoreTestCase(unittest.TestCase):
             del self.store._local.conn
 
 
-class RoleStickinessTests(_StoreTestCase):
-    def test_role_persists_and_is_read_back(self):
-        self.store.append_conversation_turn("conv-role-1", "q", "a", owner="o", role=ROLE_RESEARCHER)
-        self.assertEqual(self.store.get_conversation_role("conv-role-1", owner="o"), ROLE_RESEARCHER)
+class RoleIsNotRememberedTests(_StoreTestCase):
+    """Role is per-message. Nothing about it survives the turn.
 
-    def test_a_turn_without_a_role_does_not_erase_the_stored_one(self):
-        # The row is written with INSERT OR REPLACE, so the previous value has to be
-        # carried forward explicitly or a follow-up turn would silently reset the voice.
-        self.store.append_conversation_turn("conv-role-2", "q1", "a1", owner="o", role=ROLE_EXECUTIVE)
-        self.store.append_conversation_turn("conv-role-2", "q2", "a2", owner="o", role=None)
-        self.assertEqual(self.store.get_conversation_role("conv-role-2", owner="o"), ROLE_EXECUTIVE)
+    An earlier design stored the last-used role on the conversation and inherited it when
+    the field was omitted. It protected a client that forgot to send the field, at the cost
+    of making an omitted field mean something different on turn 5 than on turn 1 — the same
+    request body producing two differently-shaped answers depending on history, which is
+    exactly what makes a role impossible to experiment with.
+    """
 
-    def test_an_explicit_role_replaces_the_stored_one(self):
-        self.store.append_conversation_turn("conv-role-3", "q1", "a1", owner="o", role=ROLE_EXECUTIVE)
-        self.store.append_conversation_turn("conv-role-3", "q2", "a2", owner="o", role=ROLE_RESEARCHER)
-        self.assertEqual(self.store.get_conversation_role("conv-role-3", owner="o"), ROLE_RESEARCHER)
+    def test_the_store_holds_no_role_column(self):
+        conn = self.store._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)")}
+        self.assertNotIn("role", columns)
 
-    def test_unknown_conversation_has_no_role(self):
-        self.assertIsNone(self.store.get_conversation_role("conv-role-absent", owner="o"))
-        self.assertIsNone(self.store.get_conversation_role(None, owner="o"))
+    def test_append_turn_takes_no_role(self):
+        import inspect
 
-    def test_reading_another_callers_role_is_refused(self):
-        # A role is a preference attached to someone else's conversation, so it is subject
-        # to the same ownership rule as the history itself.
-        self.store.append_conversation_turn("conv-role-4", "q", "a", owner="owner-a", role=ROLE_RESEARCHER)
-        with self.assertRaises(self.store.ConversationAccessError):
-            self.store.get_conversation_role("conv-role-4", owner="owner-b")
-
-    def test_migration_adds_the_column_to_a_pre_existing_database(self):
-        path = self.store._DB_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        legacy = sqlite3.connect(str(path))
-        legacy.execute(
-            "CREATE TABLE conversations (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, "
-            "last_turn_index INTEGER NOT NULL DEFAULT 0)"
+        self.assertNotIn(
+            "role", inspect.signature(self.store.append_conversation_turn).parameters
         )
-        legacy.execute("INSERT INTO conversations VALUES ('legacy-conv', '2020-01-01', 3)")
-        legacy.commit()
-        legacy.close()
 
-        self.store.append_conversation_turn("legacy-conv", "q", "a", owner="o", role=ROLE_EXECUTIVE)
-        self.assertEqual(self.store.get_conversation_role("legacy-conv", owner="o"), ROLE_EXECUTIVE)
+    def test_omitting_the_field_gives_the_default_regardless_of_history(self):
+        from storage.conversation_context import build_conversation_context
+
+        cid = "conv-stateless"
+        # Turn 1 explicitly picks a role and is persisted.
+        first = build_conversation_context(
+            question="how is the air quality?", lab_name=None,
+            conversation_id=cid, owner="o", role=ROLE_EXECUTIVE,
+        )
+        self.assertEqual(first.role, ROLE_EXECUTIVE)
+        self.store.append_conversation_turn(cid, "q", "a", owner="o")
+
+        # Turn 2 omits it — and gets the default, not the previous turn's choice.
+        second = build_conversation_context(
+            question="and now?", lab_name=None, conversation_id=cid, owner="o", role=None,
+        )
+        self.assertEqual((second.role, second.role_source), (ROLE_DEFAULT, "default"))
 
 
 class RoleResolutionOrderTests(_StoreTestCase):
@@ -404,14 +403,17 @@ class RoleResolutionOrderTests(_StoreTestCase):
         )
 
     def test_request_role_wins(self):
-        self.store.append_conversation_turn("conv-order-1", "q", "a", owner="o", role=ROLE_EXECUTIVE)
         ctx = self._build("conv-order-1", role=ROLE_RESEARCHER)
         self.assertEqual((ctx.role, ctx.role_source), (ROLE_RESEARCHER, "request"))
 
-    def test_conversation_role_is_inherited_when_the_request_omits_one(self):
-        self.store.append_conversation_turn("conv-order-2", "q", "a", owner="o", role=ROLE_FACILITY_MANAGER)
-        ctx = self._build("conv-order-2")
-        self.assertEqual((ctx.role, ctx.role_source), (ROLE_FACILITY_MANAGER, "conversation"))
+    def test_every_role_is_honoured_within_one_conversation(self):
+        # The point of making this per-message: four consecutive turns on one
+        # conversation_id, four different roles, no new conversation needed.
+        cid = "conv-order-switching"
+        for role in VALID_ROLES:
+            ctx = self._build(cid, role=role)
+            self.assertEqual((ctx.role, ctx.role_source), (role, "request"), role)
+            self.store.append_conversation_turn(cid, "q", "a", owner="o")
 
     def test_falls_back_to_the_configured_default(self):
         ctx = self._build("conv-order-3")

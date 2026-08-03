@@ -53,19 +53,15 @@ class ConversationAccessError(PermissionError):
     """
 
 
-def _migrate_conversation_columns(conn: sqlite3.Connection) -> None:
-    """Add columns to databases created before they existed.
+def _migrate_owner_column(conn: sqlite3.Connection) -> None:
+    """Add the ``owner`` column to databases created before ownership existed.
 
-    ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing table, so each column has to be
-    added explicitly. ``owner`` predates ownership; ``role`` predates stakeholder roles.
-    Existing rows default to the unclaimed owner and to no stored role, which resolves to
-    the configured default — i.e. previous behavior.
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing table, so the column has
+    to be added explicitly. Existing rows default to the unclaimed owner.
     """
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
     if "owner" not in columns:
         conn.execute("ALTER TABLE conversations ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
-    if "role" not in columns:
-        conn.execute("ALTER TABLE conversations ADD COLUMN role TEXT NOT NULL DEFAULT ''")
 
 
 def _open_connection() -> sqlite3.Connection:
@@ -79,11 +75,10 @@ def _open_connection() -> sqlite3.Connection:
             id              TEXT PRIMARY KEY,
             updated_at      TEXT NOT NULL,
             last_turn_index INTEGER NOT NULL DEFAULT 0,
-            owner           TEXT NOT NULL DEFAULT '',
-            role            TEXT NOT NULL DEFAULT ''
+            owner           TEXT NOT NULL DEFAULT ''
         )
     """)
-    _migrate_conversation_columns(conn)
+    _migrate_owner_column(conn)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS turns (
             conversation_id TEXT    NOT NULL,
@@ -184,49 +179,20 @@ def normalize_conversation_id(conversation_id: Optional[str]) -> str:
     return uuid4().hex
 
 
-def get_conversation_role(
-    conversation_id: Optional[str],
-    owner: str = ANONYMOUS_OWNER,
-) -> Optional[str]:
-    """The stakeholder role last used on this conversation, or ``None``.
-
-    This is what makes a role sticky for a client that selects one and then stops sending
-    it. Goes through the same ownership check as history: a role is a preference attached
-    to someone else's conversation, so reading it is subject to the same rule.
-    """
-    raw = (conversation_id or "").strip()
-    if not raw:
-        return None
-    cid = normalize_conversation_id(raw)
-    conn = _conn()
-    _assert_conversation_access(conn, cid, owner)
-    row = conn.execute("SELECT role FROM conversations WHERE id = ?", (cid,)).fetchone()
-    if row is None:
-        return None
-    return str(row["role"] or "") or None
-
-
-def _stored_role(conn: sqlite3.Connection, cid: str) -> str:
-    row = conn.execute("SELECT role FROM conversations WHERE id = ?", (cid,)).fetchone()
-    return "" if row is None else str(row["role"] or "")
-
-
 def append_conversation_turn(
     conversation_id: str,
     user_message: str,
     assistant_message: str,
     owner: str = ANONYMOUS_OWNER,
-    role: Optional[str] = None,
 ) -> int:
     """Persist one turn and return the assigned turn_index.
 
     Writing to a conversation claims it for ``owner``; writing to one already owned by
     someone else raises :class:`ConversationAccessError`.
 
-    ``role`` records the stakeholder role this turn was answered for, so a later turn that
-    omits it inherits the choice. ``None`` means "the caller did not choose one on this
-    turn" and leaves any previously stored role intact — the row is written with
-    ``INSERT OR REPLACE``, so the existing value has to be carried forward explicitly.
+    Note the stakeholder role is deliberately *not* stored here. It is resolved per
+    request from the ``role`` field and nothing else, so an identical request body always
+    produces an identically-shaped answer regardless of what came before it.
     """
     cid = normalize_conversation_id(conversation_id)
     user_text = _trim_text(user_message)
@@ -241,12 +207,11 @@ def append_conversation_turn(
         ).fetchone()
         last_index = row["last_turn_index"] if row else 0
         turn_index = last_index + 1
-        effective_role = str(role or "").strip() or _stored_role(conn, cid)
 
         conn.execute(
-            "INSERT OR REPLACE INTO conversations (id, updated_at, last_turn_index, owner, role) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (cid, now, turn_index, owner, effective_role),
+            "INSERT OR REPLACE INTO conversations (id, updated_at, last_turn_index, owner) "
+            "VALUES (?, ?, ?, ?)",
+            (cid, now, turn_index, owner),
         )
         conn.execute(
             "INSERT OR REPLACE INTO turns (conversation_id, turn_index, ts, user, assistant) VALUES (?, ?, ?, ?, ?)",

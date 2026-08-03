@@ -37,7 +37,6 @@ def persist_turn(
     question: str,
     answer: str,
     owner: str = ANONYMOUS_OWNER,
-    role: Optional[str] = None,
 ) -> Optional[int]:
     if not conversation_id:
         return None
@@ -46,7 +45,6 @@ def persist_turn(
         user_message=question,
         assistant_message=answer,
         owner=owner,
-        role=role,
     )
 
 

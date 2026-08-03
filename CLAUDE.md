@@ -151,12 +151,17 @@ hardcode it.
 `metric_scope` are all properties of the question and must be LLM-derived from its wording. A
 role is a property of the *person*: "how is the air quality?" reads identically from an
 occupant, an operator, an analyst and a director, so there is nothing in the text to infer it
-from. It is declared explicitly, resolved **request → conversation → `DEFAULT_STAKEHOLDER_ROLE`**
-in `build_conversation_context`, and carried on `ConversationContext` like every other per-turn
-view. The conversation-stored role (a `role` column on `conversations`) exists only so a client
-that selects one and then stops sending it does not snap back to the default mid-conversation;
-only an explicit request role is written back, so changing the configured default still reaches
-conversations that never chose one.
+from. It is declared explicitly, resolved in `build_conversation_context` as **the request's
+`role`, or `DEFAULT_STAKEHOLDER_ROLE`** — nothing else — and carried on `ConversationContext`
+like every other per-turn view.
+
+**Role is per-message and deliberately stateless.** An earlier version stored the last-used role
+on the conversation and inherited it when the field was omitted, which protected a client that
+forgot to send it. That was dropped: it made an omitted field mean something different on turn 5
+than on turn 1, so the same request body could produce two differently-shaped answers depending
+on history — which makes the feature impossible to experiment with and hard to debug. Switching
+role between consecutive turns of one conversation is the normal case. Do not reintroduce
+persistence here; `test_stakeholder_roles.py` asserts the column's absence.
 
 `occupant` is the default because **the system already had exactly one persona** — `SHARED_SYSTEM_PROMPT`
 hardcoded *"Write for non-technical occupants: plain language, no jargon"*. The occupant block
@@ -205,7 +210,7 @@ still mandatory. What is no longer mandatory is reciting the readings that were 
 never what protected against the omission. Every role block, occupant included, carries the clause
 scoping "fewer metrics" to the within-range case.
 
-`metadata.role` / `role_source` / `role_fallback_used` are emitted from `_branch_metadata`, so sync
+`metadata.role` / `role_source` (`request` | `default`) / `role_fallback_used` are emitted from `_branch_metadata`, so sync
 and stream cannot disagree. An unrecognised role degrades to the default rather than returning 400
 — a client bug should not fail the query — but `role_fallback_used` keeps it visible.
 

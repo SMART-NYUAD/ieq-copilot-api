@@ -44,15 +44,6 @@ def _query_context_or_403(question: str, lab_name, conversation_id, caller_id: s
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def _sticky_role(ctx) -> str | None:
-    """The role to record on the conversation, or None to leave the stored one alone.
-
-    Only an explicit request role is written back. Persisting a resolved default would
-    freeze today's default into the row, so a later change to
-    ``DEFAULT_STAKEHOLDER_ROLE`` would not reach conversations that never chose a role.
-    """
-    return ctx.role if ctx.role_source == "request" else None
-
 
 @router.post("/query", response_model=QueryResponse)
 async def query_cards(request: QueryRequest, caller_id: str = Depends(require_api_key)):
@@ -81,7 +72,6 @@ async def query_cards(request: QueryRequest, caller_id: str = Depends(require_ap
             question=question,
             answer=str(result.get("answer") or ""),
             owner=caller_id,
-            role=_sticky_role(ctx),
         )
         metadata = attach_conversation_metadata(
             dict(result.get("metadata") or {}),
@@ -153,7 +143,6 @@ async def query_cards_stream(request: QueryRequest, caller_id: str = Depends(req
                         question=question,
                         answer=answer,
                         owner=caller_id,
-                        role=_sticky_role(ctx),
                     )
                 except Exception as exc:
                     log_exception(exc, scope="query.stream.persist")

@@ -47,9 +47,11 @@ share a single conversation namespace (development only).
   conversation. Omit it to start a new one; a fresh id is returned.
 - `role` — who the answer is written for: `occupant` (default), `facility_manager`,
   `researcher`, `executive`. Fetch the list from `GET /roles` rather than hardcoding it.
-  Send it on every request. Omitting it inherits the role last used on this
-  `conversation_id`, then the server default. An unrecognised value falls back to the
-  default rather than failing the request, and is reported as `metadata.role_fallback_used`.
+  **Per-message and stateless**: send a different role on consecutive turns of the same
+  conversation and each is honoured. Omitting it always means the server default, never the
+  previous turn's role — an identical request body always produces an identically-shaped
+  answer. An unrecognised value falls back to the default rather than failing the request,
+  and is reported as `metadata.role_fallback_used`.
 
 ### Response
 
@@ -81,7 +83,7 @@ share a single conversation namespace (development only).
 | `route_confidence`, `planner_model`, `fallback_used` | routing provenance; `fallback_used` means the router LLM was unreachable and a regex plan was used |
 | `resolved_question` | present only when prior turns were used to rewrite the question |
 | `role` | resolved stakeholder role the answer was written for |
-| `role_source` | where it came from: `request`, `conversation`, or `default` |
+| `role_source` | where it came from: `request` or `default` |
 | `role_fallback_used` | `true` when the request sent a role the server did not recognise |
 | `ui` | frontend contract; see below |
 | `llm_used` | `false` when the answer came from a deterministic fallback |
@@ -134,8 +136,11 @@ The stakeholder roles `/query` accepts, for rendering a selector:
 
 Role changes the voice, vocabulary and length of an answer, and for `researcher` widens the
 metrics fetched. It never changes which threshold a reading is compared against, and never
-allows a metric that was fetched to be left out of the answer. Changing role mid-conversation
-is fine — keep the same `conversation_id` so follow-up questions still resolve.
+allows a metric flagged as exceeding, near, or unrated to be left out of the answer.
+
+Role is chosen per message. Switching it mid-conversation is the expected way to use it —
+keep the same `conversation_id` so follow-up questions still resolve, and only the voice
+changes.
 
 ## `GET /sensors/latest/{space}`
 

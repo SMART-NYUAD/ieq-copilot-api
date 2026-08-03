@@ -237,8 +237,9 @@ Request body:
 - `question` (required)
 - `k` (optional, default `5`)
 - `lab_name` (optional)
-- `role` (optional) — who the answer is written for; see `GET /roles`. Defaults to
-  `occupant`, which is the voice this API used before roles existed.
+- `role` (optional) — who the answer is written for; see `GET /roles`. Chosen per message,
+  so it can differ on every turn of the same conversation. Omitting it means
+  `DEFAULT_STAKEHOLDER_ROLE` (`occupant`), never the previous turn's role.
 
 Example:
 
