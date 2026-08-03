@@ -262,6 +262,144 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
             "'the WHO standard requires'."
         ),
     },
+    # -- VOC, expressed in ppm -----------------------------------------
+    # The VOC sensor (Atmocube, Sensirion SGP41) reports TVOC in ppm, range 0-3,
+    # while every published TVOC threshold above is in µg/m³. Without a threshold in
+    # the reading's own unit there is nothing to classify a VOC value against, so the
+    # answer model either stayed silent or reached for another metric's threshold.
+    #
+    # These records restate the same standards in ppm using the conversion factor
+    # published for TVOC sensor readings: 4.9 µg/m³ per 1 ppb (1 ppm = 1000 ppb), the
+    # basis RESET uses to translate its mass-based target to a sensor reading. It is
+    # corroborated internally: 300 µg/m³ -> 0.061 ppm reproduces the top of the
+    # 0.05-0.063 ppm band this system was already treating as the VOC comfort range.
+    #
+    # The ppm figure is DERIVED, not quoted from the standard, and every claim_text and
+    # caveat below says so. TVOC is a summed indicator whose mass/volume relationship
+    # depends on the actual mix of compounds present, so these are comparison aids, not
+    # compliance limits.
+    {
+        "source_key": "RESET_AIR_V2_VOC_PPM",
+        "source_label": "RESET Air Standard v2.1 — Commercial Interiors (ppm equivalent)",
+        "source_url": "https://reset.build/standard/air",
+        "section_ref": "Section 4: Performance Thresholds",
+        "publication_year": 2021,
+        "metric": "voc",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "RESET Air Standard v2 requires TVOC at or below 500 µg/m³ for Grade A "
+            "during occupied hours. Expressed in the unit this sensor reports, that is "
+            "approximately 0.10 ppm (102 ppb), using the published TVOC conversion of "
+            "4.9 µg/m³ per ppb. The ppm figure is a derived equivalent for comparison "
+            "with sensor readings, not a value quoted by the standard."
+        ),
+        "embed_text": (
+            "RESET Air VOC TVOC ppm 0.10 102 ppb Grade A 500 micrograms "
+            "sensor reading equivalent occupied hours"
+        ),
+        "threshold_value": 0.102,
+        "threshold_type": "max",
+        "threshold_unit": "ppm",
+        "threshold_condition": "Grade A, occupied hours (derived from 500 µg/m³)",
+        "caveat_text": (
+            "Derived equivalent, not a figure published by RESET. TVOC is a summed "
+            "indicator: the mass-to-volume relationship depends on which compounds are "
+            "present, so treat this as a comparison aid rather than a compliance limit."
+        ),
+    },
+    {
+        "source_key": "WELL_V2_A04_PPM",
+        "source_label": "WELL Building Standard v2, Feature A04 (ppm equivalent)",
+        "source_url": "https://v2.wellcertified.com/v/en/air/feature/4",
+        "section_ref": "Feature A04: Volatile Compounds",
+        "publication_year": 2020,
+        "metric": "voc",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "WELL Building Standard v2 Feature A04 requires TVOC not to exceed "
+            "500 µg/m³ as a long-term occupancy average, approximately 0.10 ppm "
+            "(102 ppb) in the unit this sensor reports, using the published TVOC "
+            "conversion of 4.9 µg/m³ per ppb. The ppm figure is a derived equivalent "
+            "for comparison with sensor readings, not a value quoted by the standard."
+        ),
+        "embed_text": (
+            "WELL VOC TVOC ppm 0.10 102 ppb 500 micrograms long-term occupancy "
+            "average sensor reading equivalent"
+        ),
+        "threshold_value": 0.102,
+        "threshold_type": "max",
+        "threshold_unit": "ppm",
+        "threshold_condition": "long-term occupancy average (derived from 500 µg/m³)",
+        "caveat_text": (
+            "Derived equivalent, not a figure published by WELL. TVOC is a summed "
+            "indicator whose mass-to-volume relationship depends on the compound mix."
+        ),
+    },
+    {
+        "source_key": "WHO_IAQ_VOC_2010_PPM",
+        "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010 (ppm equivalent)",
+        "source_url": "https://www.who.int/publications/i/item/9789289002134",
+        "section_ref": "Chapter 7: Total VOCs",
+        "publication_year": 2010,
+        "metric": "voc",
+        "citation_tier": "research",
+        "claim_text": (
+            "WHO 2010 indoor air quality guidance places TVOC below 300 µg/m³ in the "
+            "comfort range, approximately 0.06 ppm (61 ppb) in the unit this sensor "
+            "reports, using the published TVOC conversion of 4.9 µg/m³ per ppb. Above "
+            "that, 300–3000 µg/m³ (roughly 0.06–0.61 ppm) is a multifactorial exposure "
+            "range warranting investigation of sources. The ppm figures are derived "
+            "equivalents for comparison with sensor readings, not values quoted by WHO."
+        ),
+        "embed_text": (
+            "WHO VOC TVOC ppm 0.06 61 ppb 300 micrograms comfort range "
+            "multifactorial exposure sensor reading equivalent"
+        ),
+        "threshold_value": 0.061,
+        "threshold_type": "max",
+        "threshold_unit": "ppm",
+        "threshold_condition": "comfort range upper boundary (derived from 300 µg/m³)",
+        "caveat_text": (
+            "Derived equivalent of research-based guidance, not a regulatory standard "
+            "and not a figure published by WHO. Frame as 'WHO guidance suggests'."
+        ),
+    },
+    {
+        "source_key": "UBA_TVOC_PRECAUTIONARY_PPM",
+        "source_label": "German Federal Environment Agency (UBA) — TVOC precautionary level",
+        "source_url": (
+            "https://www.umweltbundesamt.de/en/topics/health/commissions-working-groups/"
+            "german-committee-on-indoor-air-guide-values"
+        ),
+        "section_ref": "Committee on Indoor Air Guide Values, Seifert TVOC scheme",
+        "publication_year": 1999,
+        "metric": "voc",
+        "citation_tier": "research",
+        "claim_text": (
+            "The German Committee on Indoor Air Guide Values applies Seifert's "
+            "five-level TVOC scheme, in which concentrations below 300 µg/m³ are "
+            "considered hygienically safe and, for precautionary reasons, sustained "
+            "levels above 950 µg/m³ should be avoided in occupied indoor air. In the "
+            "unit this sensor reports those are approximately 0.06 ppm and 0.19 ppm "
+            "(61 ppb and 194 ppb), using the published TVOC conversion of 4.9 µg/m³ "
+            "per ppb. The ppm figures are derived equivalents for comparison with "
+            "sensor readings."
+        ),
+        "embed_text": (
+            "UBA German TVOC Seifert five level scheme ppm 0.19 194 ppb 950 "
+            "micrograms precautionary avoid indoor air hygienic"
+        ),
+        "threshold_value": 0.194,
+        "threshold_type": "max",
+        "threshold_unit": "ppm",
+        "threshold_condition": "precautionary avoid level (derived from 950 µg/m³)",
+        "caveat_text": (
+            "Derived equivalent of a precautionary guide value, not a regulatory limit. "
+            "UBA states TVOC should not be the sole criterion for judging indoor air, "
+            "since there is no substantiated dose-effect relationship for the sum "
+            "indicator."
+        ),
+    },
     # -- TEMPERATURE ---------------------------------------------------
     {
         "source_key": "ASHRAE_55_2023_COMFORT",

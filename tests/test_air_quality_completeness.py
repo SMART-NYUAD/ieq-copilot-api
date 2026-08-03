@@ -147,5 +147,72 @@ class GuidelineMetricKeyTests(unittest.TestCase):
         self.assertTrue(thresholded, "VOC has no record carrying a threshold_value")
 
 
+class VocThresholdUnitTests(unittest.TestCase):
+    """A threshold is only usable if it is in the unit the sensor reports.
+
+    The Atmocube (Sensirion SGP41) reports TVOC in ppm, range 0-3, while every
+    published TVOC threshold is in ug/m3. With nothing in ppm to compare against,
+    a VOC reading could not be classified at all -- so the answer either went silent
+    on VOC or leaned on another metric's threshold. The ppm records restate the same
+    standards using the published TVOC conversion of 4.9 ug/m3 per ppb.
+    """
+
+    # 4.9 ug/m3 per ppb, i.e. ppm = (ug/m3 / 4.9) / 1000.
+    UGM3_PER_PPB = 4.9
+    EXPECTED = {
+        "RESET_AIR_V2_VOC_PPM": (500, 0.102),
+        "WELL_V2_A04_PPM": (500, 0.102),
+        "WHO_IAQ_VOC_2010_PPM": (300, 0.061),
+        "UBA_TVOC_PRECAUTIONARY_PPM": (950, 0.194),
+    }
+
+    def _voc_records(self):
+        from storage.seed_guidelines import GUIDELINE_RECORDS
+
+        return {
+            r["source_key"]: r for r in GUIDELINE_RECORDS if r["metric"] == "voc"
+        }
+
+    def test_voc_has_a_threshold_in_the_unit_the_sensor_reports(self):
+        from executors.metric_registry import METRICS
+
+        sensor_unit = METRICS["voc"]["unit"]
+        self.assertEqual(sensor_unit, "ppm")
+        units = {r.get("threshold_unit") for r in self._voc_records().values()}
+        self.assertIn(sensor_unit, units, f"no VOC threshold in {sensor_unit}: {units}")
+
+    def test_ppm_values_match_the_published_conversion(self):
+        records = self._voc_records()
+        for key, (ugm3, expected_ppm) in self.EXPECTED.items():
+            with self.subTest(source=key):
+                self.assertIn(key, records, f"{key} missing from the seed")
+                derived = (ugm3 / self.UGM3_PER_PPB) / 1000.0
+                self.assertAlmostEqual(derived, expected_ppm, places=3)
+                self.assertAlmostEqual(
+                    float(records[key]["threshold_value"]), expected_ppm, places=3
+                )
+                self.assertEqual(records[key]["threshold_unit"], "ppm")
+
+    def test_derived_records_declare_that_they_are_derived(self):
+        # These ppm figures are not printed in the standards. Every one of them must
+        # say so, or the answer model will attribute a number to a source that never
+        # published it -- the failure mode GUIDELINE_CITATIONS exists to prevent.
+        records = self._voc_records()
+        for key in self.EXPECTED:
+            with self.subTest(source=key):
+                record = records[key]
+                blob = f"{record['claim_text']} {record.get('caveat_text') or ''}".lower()
+                self.assertIn("derived", blob)
+                self.assertIn("4.9", record["claim_text"])
+                self.assertIn("µg/m³", record["claim_text"])
+
+    def test_original_mass_based_records_are_kept(self):
+        # The ppm records are companions, not replacements: the µg/m³ figures are what
+        # the standards actually publish and remain the citable ones.
+        units = [r.get("threshold_unit") for r in self._voc_records().values()]
+        self.assertIn("µg/m³", units)
+        self.assertGreaterEqual(units.count("µg/m³"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
