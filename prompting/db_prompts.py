@@ -34,13 +34,37 @@ Rules:
 8. For IEQ index classifications, cite the internal IEQ source [N] when available.
 """.strip()
 
+# Applied to the directives that produce an overall air-quality assessment. It exists because
+# the model was dropping the metrics that contradicted a tidy verdict: given PM2.5 at 17.86
+# ug/m3 (over the WHO 15 ug/m3 24h guideline that was in its own Citation Sources) and VOC at
+# 0.222 ppm, it reported CO2, humidity and the comfort sub-indices and called the air "good,
+# no signs of pollutant buildup". Nothing in the prompt forbade the omission, and two rules
+# invited it: "only the most important metric-by-metric interpretation" and a 90-word cap.
+_METRIC_COMPLETENESS = """
+METRIC COMPLETENESS — these outrank brevity. Length is never a reason to drop a metric:
+- Every pollutant present in Measured Room Facts (CO2, PM2.5, VOC) MUST appear in the answer with
+  its value and unit. If space is tight, combine them into ONE bullet — never omit one.
+- The overall verdict is set by the WORST metric, not the best. Any metric at or above its
+  threshold MUST appear in the opening sentence and the verdict must reflect it. Do not call air
+  quality good, fine, healthy, excellent, or "no concerns" while a measured pollutant sits above a
+  threshold given in Citation Sources.
+- When Citation Sources give more than one threshold for the same metric, the verdict follows the
+  STRICTEST one that applies, and you name that source. Do not reach for the most permissive
+  number to justify a clean verdict — a reading over the strict guideline and under the lax one is
+  reported as exceeding the strict one, with both figures if they matter.
+- A metric with no usable threshold is still reported: give its value, unit and direction of travel,
+  and say plainly that no published threshold was provided for it — or, when the only threshold is
+  in different units than the reading, that the two cannot be compared directly. Never drop a metric
+  because you cannot cite a limit for it, and never convert between units yourself.
+"""
+
 _BASE_DIRECTIVE = """
 You are answering from a structured DB query result.
 - First, answer the exact user question directly before additional detail.
 - Keep the tone warm and personable: write like a helpful IEQ teammate, not a strict compliance report.
 - For air-quality assessment/summary queries, include:
-  1) overall status,
-  2) only the most important metric-by-metric interpretation,
+  1) overall status, set by the worst-performing metric,
+  2) every available pollutant, with the ones at or above threshold interpreted first,
   3) explicit analysis window using the provided time bounds ("from ... to ..."),
   4) stability/trend summary or notable peaks/dips only when they change the answer,
   5) missing-metric coverage note only when those missing metrics are needed for the user's asked scope
@@ -84,7 +108,7 @@ You are answering a current air-quality point lookup from a structured DB query 
 - First, directly answer the exact question asked.
 - Use a friendly, reassuring tone where appropriate so the message feels supportive, not robotic.
 - Provide an overall current air-quality status in plain language.
-- Include concise metric-by-metric interpretation for available core metrics only when needed; combine metrics in one compact bullet when possible.
+- Interpret every available core metric; combine them into one compact bullet when space is tight, but do not leave any of them out.
 - If IEQ is present and IEQ sub-indices are available in rows/context, report every available sub-index explicitly:
   IAQ (air quality), ITC (thermal comfort), IAC (acoustic comfort), and IIL (illumination).
 - Never swap sub-index meanings (IAC is acoustic comfort, not air quality).
@@ -187,6 +211,9 @@ The user asked what to DO about a metric, not what it currently reads.
   values and trend — just do not assert a numeric limit you were not given.
 - Ground every action in the measured facts or the provided guidance. Do not invent equipment,
   HVAC systems, or building features that do not appear in the context.
+- If a measured pollutant sits above a threshold in Citation Sources, that is what you act on
+  first — an advisory answer may be brief, but it may not be reassuring about a metric that is out
+  of range.
 """.strip()
 
 _SUFFIX = (
@@ -194,9 +221,15 @@ _SUFFIX = (
     f"\n\n{CITATION_FORMAT_INSTRUCTION}"
 )
 
-DB_TOOL_RESPONSE_DIRECTIVE = f"{_BASE_DIRECTIVE}{_SUFFIX}".strip()
+# The completeness block rides the two directives that render an overall assessment. It is
+# deliberately NOT on _BASE_IEQ (an IEQ ask wants the score family, and pollutants are explicitly
+# not its subject) nor on _BASE_POINT_LOOKUP (one named metric was asked for; answering with the
+# whole pollutant pack would be the same failure in the other direction).
+DB_TOOL_RESPONSE_DIRECTIVE = f"{_BASE_DIRECTIVE}\n\n{_METRIC_COMPLETENESS.strip()}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP = f"{_BASE_POINT_LOOKUP}{_SUFFIX}".strip()
-DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = f"{_BASE_AIR_QUALITY_POINT_LOOKUP}{_SUFFIX}".strip()
+DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = (
+    f"{_BASE_AIR_QUALITY_POINT_LOOKUP}\n\n{_METRIC_COMPLETENESS.strip()}{_SUFFIX}".strip()
+)
 DB_TOOL_RESPONSE_DIRECTIVE_IEQ = f"{_BASE_IEQ}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"{_BASE_COMPARISON}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"{_BASE_ANOMALY}{_SUFFIX}".strip()
