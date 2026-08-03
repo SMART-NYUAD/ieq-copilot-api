@@ -164,11 +164,18 @@ def build_numbered_sources_block(
             {
                 "index": i,
                 "source_key": record.get("source_key"),
+                # Needed to bind a computed threshold verdict to its citation index
+                # (executors/db_support/threshold_assessment.py).
+                "metric": str(record.get("metric") or "").strip().lower() or None,
                 "source_label": source_label,
                 "section_ref": record.get("section_ref"),
                 "citation_tier": str(record.get("citation_tier") or "source"),
                 "source_url": record.get("source_url"),
                 "threshold_value": threshold_value,
+                # 'max'/'min' is a hard limit; 'range_max'/'range_min' is the edge of an
+                # optimal band. threshold_assessment needs the distinction so drifting
+                # past a comfort-range top is not reported as breaching a limit.
+                "threshold_type": record.get("threshold_type"),
                 "threshold_unit": record.get("threshold_unit"),
                 "caveat_text": record.get("caveat_text"),
             }

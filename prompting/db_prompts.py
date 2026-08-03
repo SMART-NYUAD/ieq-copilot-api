@@ -41,6 +41,21 @@ Rules:
 # no signs of pollutant buildup". Nothing in the prompt forbade the omission, and two rules
 # invited it: "only the most important metric-by-metric interpretation" and a 90-word cap.
 _METRIC_COMPLETENESS = """
+THRESHOLD VERDICTS — the "## Threshold Assessment (computed — authoritative)" section
+already resolved every comparison. It is arithmetic done for you, not a suggestion:
+- Use its verdicts exactly. Never recompute a comparison, never overrule one, and never
+  state a threshold number that does not appear in that section. If it says a metric
+  EXCEEDS, the answer says so; if it says within, the answer says within.
+- Cite the [N] that section gives for a metric — it is the source the threshold came
+  from. Do not attribute the verdict to a different source.
+- A metric marked "not rated" has no threshold in its own unit: report its value and
+  trend and say it could not be compared. Do not convert units to manufacture a verdict.
+- Index metrics (IEQ, IAQ, ITC, IAC, IIL) run 0-100 where HIGHER IS BETTER. Use the band
+  the section states. A low score is a problem, never evidence that things are fine.
+- Quote a threshold NUMBER only for metrics flagged EXCEEDS or NEAR, where the magnitude
+  is the point. For a metric that is within range, say so and let the citation carry the
+  number — the reader can follow [N] for the detail.
+
 METRIC COMPLETENESS — these outrank brevity. Length is never a reason to drop a metric:
 - Every pollutant present in Measured Room Facts (CO2, PM2.5, VOC) MUST appear in the answer with
   its value and unit. If space is tight, combine them into ONE bullet — never omit one.
