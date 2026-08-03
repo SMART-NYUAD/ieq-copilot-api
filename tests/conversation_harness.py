@@ -58,7 +58,7 @@ class Expect:
     replaces regex carry-over with an LLM ``resolved_question``.
     """
 
-    phase: str = "BASE"                     # BASE | P0 | P1 | P2 | P3 | P4 | P5
+    phase: str = "BASE"                     # BASE | P0 | P1 | P2 | P3 | P4 | P5 | P6
     note: str = ""                          # what this turn is probing
     intent: Optional[str] = None            # exact metadata intent value
     resolved_lab: Optional[str] = None      # metadata.resolved_lab_name
@@ -163,6 +163,16 @@ def _span_days(start_iso: Optional[str], end_iso: Optional[str]) -> Optional[flo
     return (end - start).total_seconds() / 86400.0
 
 
+# The answer model writes metric names with Unicode subscripts — "CO₂", "PM₂.₅" — so a
+# plain substring test for "co2" misses an answer that plainly contains it. Fold the
+# subscript digits to ASCII before matching, or these checks measure typography.
+_SUBSCRIPT_DIGITS = {ord("₀") + i: str(i) for i in range(10)}
+
+
+def _fold(text: str) -> str:
+    return str(text or "").translate(_SUBSCRIPT_DIGITS).lower()
+
+
 def _evaluate(expect: Expect, tr: TurnResult) -> List[Check]:
     checks: List[Check] = []
 
@@ -188,17 +198,17 @@ def _evaluate(expect: Expect, tr: TurnResult) -> List[Check]:
         add("clarify", tr.is_clarify == expect.clarify,
             f"want_clarify={expect.clarify} got={tr.is_clarify} (timescale={tr.timescale})")
     if expect.answer_contains_any is not None:
-        low = tr.answer.lower()
-        hit = [t for t in expect.answer_contains_any if t.lower() in low]
+        low = _fold(tr.answer)
+        hit = [t for t in expect.answer_contains_any if _fold(t) in low]
         add("answer_contains_any", bool(hit),
             f"want_any={expect.answer_contains_any} matched={hit}")
     if expect.answer_contains_all is not None:
-        low = tr.answer.lower()
-        missing = [t for t in expect.answer_contains_all if t.lower() not in low]
+        low = _fold(tr.answer)
+        missing = [t for t in expect.answer_contains_all if _fold(t) not in low]
         add("answer_contains_all", not missing, f"missing={missing}")
     if expect.answer_excludes is not None:
-        low = tr.answer.lower()
-        present = [t for t in expect.answer_excludes if t.lower() in low]
+        low = _fold(tr.answer)
+        present = [t for t in expect.answer_excludes if _fold(t) in low]
         add("answer_excludes", not present, f"unexpectedly_present={present}")
     if expect.max_answer_words is not None:
         add("max_answer_words", tr.answer_words <= expect.max_answer_words,
@@ -356,6 +366,19 @@ GOLDEN_CONVERSATION: List[Turn] = [
                 "reduce", "adjust", "clean", "source",
             ],
             answer_excludes=["no action needed", "no immediate action"],
+        ),
+    ),
+    # P6 — an assessment may not drop the metrics that would spoil its verdict.
+    # Asserted on presence, not on values: which pollutants are elevated changes with
+    # the live data, but "every pollutant appears" holds regardless, and it is the
+    # rule that was broken (PM2.5 at 17.86 ug/m3 and VOC at 0.222 ppm were fetched,
+    # then left out of an answer that called the air "good, no pollutant buildup").
+    Turn(
+        user="How is the air quality today?",
+        expect=Expect(
+            phase="P6", note="air-quality assessment must report every pollutant it fetched",
+            intent="current_status_db",
+            answer_contains_all=["pm2", "voc", "co2"],
         ),
     ),
     Turn(
