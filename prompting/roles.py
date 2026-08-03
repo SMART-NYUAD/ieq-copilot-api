@@ -12,11 +12,15 @@ The vocabulary is closed and lives in code, for the same reason the viewer/heatm
 alias maps do (see ``llm_router_planner``): a closed set maps deterministically from a
 client's selection, stays testable, and cannot be invented at runtime.
 
-``ROLE_OCCUPANT`` is the default because it is what this system already did. Before roles
-existed, ``SHARED_SYSTEM_PROMPT`` hardcoded "Write for non-technical occupants: plain
-language, no jargon" — the assistant had exactly one persona, it just was not selectable.
-Keeping that wording as the default role's block is what makes this feature a no-op for a
-caller who sends no role, and ``tests/test_stakeholder_roles.py`` asserts precisely that.
+``ROLE_OCCUPANT`` is the default because it is the audience this system was already aimed
+at: ``SHARED_SYSTEM_PROMPT`` hardcoded "Write for non-technical occupants: plain language,
+no jargon", so the assistant had exactly one persona and it just was not selectable.
+
+The occupant *block* is no longer that wording, though. "No jargon" constrained vocabulary
+and said nothing about volume, so an occupant still received every fetched pollutant with
+its value and unit — a rundown indistinguishable from the researcher's. Fixing that meant
+changing the default, which changes behavior for callers who send no role. That is
+intended; see ``prompting/role_prompts.py``.
 """
 
 from __future__ import annotations

@@ -159,10 +159,13 @@ only an explicit request role is written back, so changing the configured defaul
 conversations that never chose one.
 
 `occupant` is the default because **the system already had exactly one persona** — `SHARED_SYSTEM_PROMPT`
-hardcoded *"Write for non-technical occupants: plain language, no jargon"*. That wording is now
-the occupant block verbatim, so `shared_system_prompt(ROLE_OCCUPANT)` is byte-identical to the
-constant it replaced and a caller who sends no role is provably unaffected. `test_stakeholder_roles.py`
-pins that identity against a literal copy of the old lines.
+hardcoded *"Write for non-technical occupants: plain language, no jargon"*. The occupant block
+began as that wording verbatim, which made the feature a provable no-op; it deliberately is not
+any more. "No jargon" constrains vocabulary and says nothing about *volume*, so combined with the
+completeness rule below an occupant still received every fetched pollutant with its value — the
+researcher's answer in friendlier words. Occupant now says name as few metrics as the question
+allows and never use an index acronym. **This changes default behavior for callers who send no
+role**, which is the intent.
 
 **The block is spliced in one place: the system prompt.** Not also into the DB response
 directives — that is how the advisory bug started, with four prompts repeating an instruction
@@ -179,12 +182,28 @@ promote-to-full would silently drop `itc`/`iaq` — the same failure as the comf
 lost `sound` and `light`. A union cannot lose a metric however the packs are later edited. A named
 metric stays named for every role.
 
-**Role never buys a shorter answer at the cost of a metric.** Each non-default block ends with an
-explicit clause that audience rules govern wording and length only, and never permit dropping a
-fetched metric, restating a computed threshold verdict, or omitting a citation. `executive` is
-capped at 60 words and is the obvious place for the PM2.5 regression to return, so its block says
-brevity means *fewer words about the same facts, not fewer facts*, and a test asserts it. The
-completeness rules and the computed Threshold Assessment section are untouched by role.
+**What differentiates the roles is the question each reader is actually asking**, not adjectives.
+A first version differed mostly in tone and produced four answers that read alike. `facility_manager`
+answers *do I need to intervene, and what do I check* — it names the plausible physical cause and
+the confirming check (filter loading, damper position, AHU schedule, humidifier setpoint, lamp
+failure) and states the intervention or its absence unasked, explicitly superseding the
+presentation rule that withholds action guidance. `researcher` wants trends and **every** applicable
+guideline, not just the governing one. `executive` wants *is everything alright, or is there an
+alarm* — warm, ~60 words, naming who should look at it rather than what to do. `occupant` wants
+*does this affect me* — as few metrics as possible, no index acronyms, every number translated into
+what they would notice.
+
+**Role never buys a shorter answer at the cost of a metric — and that boundary had to move.**
+`_METRIC_COMPLETENESS` used to require every fetched pollutant appear with its value and unit,
+which is what made the occupant answer a rundown; no role block could override a directive. The
+rule now distinguishes what it was actually protecting from what it incidentally mandated: a metric
+flagged **EXCEEDS / NEAR / not rated must appear**, absolutely, for every audience and whatever the
+word cap, while metrics comfortably within range may be accounted for collectively ("everything
+else is within range" — itself a claim that must be true). The PM2.5 bug stays fixed: 17.86 µg/m³
+against WHO's 15 is `EXCEEDS`, and VOC with no comparable threshold is `not rated`, so both are
+still mandatory. What is no longer mandatory is reciting the readings that were fine, which was
+never what protected against the omission. Every role block, occupant included, carries the clause
+scoping "fewer metrics" to the within-range case.
 
 `metadata.role` / `role_source` / `role_fallback_used` are emitted from `_branch_metadata`, so sync
 and stream cannot disagree. An unrecognised role degrades to the default rather than returning 400
@@ -194,7 +213,7 @@ Because the router prompt is not touched, `tests/router_eval.py` is unaffected a
 
 ### Metric completeness in an assessment
 
-An air-quality assessment **must report every pollutant it fetched**, the verdict is set by the **worst** metric rather than the best, and a metric whose threshold is missing (or given in units the reading cannot be compared against) is still reported as such. `_METRIC_COMPLETENESS` in `prompting/db_prompts.py` carries those three rules and is attached to the two directives that render an overall assessment — deliberately *not* to `_BASE_IEQ` (an IEQ ask wants the score family) or `_BASE_POINT_LOOKUP` (one named metric was asked for).
+An air-quality assessment **must report every pollutant the Threshold Assessment flags as EXCEEDS, NEAR, or not rated** — absolutely, whatever the audience or word cap — the verdict is set by the **worst** metric rather than the best, and a metric whose threshold is missing (or given in units the reading cannot be compared against) is still reported as such. Pollutants comfortably within range may be accounted for collectively rather than listed individually; that concession is what lets the `occupant` and `executive` roles be brief, and it was carved out only after establishing it does not touch the omission below (PM2.5 over WHO's limit was `EXCEEDS`, VOC was `not rated` — both remain mandatory). "Everything else is within range" is itself a claim and must be true of every metric it covers. `_METRIC_COMPLETENESS` in `prompting/db_prompts.py` carries these rules and is attached to the two directives that render an overall assessment — deliberately *not* to `_BASE_IEQ` (an IEQ ask wants the score family) or `_BASE_POINT_LOOKUP` (one named metric was asked for).
 
 This exists because *"how is the air quality today?"* answered with CO2, IAQ, humidity and the comfort sub-indices and called the air "good, no signs of pollutant buildup" — while PM2.5 sat at 17.86 µg/m³, above the WHO 15 µg/m³ 24-hour guideline **in its own Citation Sources**, and VOC at 0.222 ppm. Router, metric pack and executor were all correct: both metrics were in the payload with `has_full_coverage: true`. The prompt gave the model discretion ("only the most important metric-by-metric interpretation") under a hard brevity cap ("at most 2 short bullets", "under 90 words") and never said a metric may not be dropped — so it kept the flattering ones. Brevity now explicitly yields to completeness in `PRESENTATION_STYLE_PROMPT`; if you re-tighten that cap, this regresses.
 

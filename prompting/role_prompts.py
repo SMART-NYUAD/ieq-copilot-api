@@ -8,11 +8,17 @@ recorded in CLAUDE.md was caused by four separate prompts repeating the same ins
 until the model followed none of them, and a role block appended to both the system prompt
 and the directive would be the start of the same pattern.
 
-The occupant block is the previous wording **verbatim**, with no invariant clause appended,
-so ``shared_system_prompt(ROLE_OCCUPANT)`` is byte-identical to the old constant. That
-makes the default path a provable no-op. The clause is carried by the three new roles,
-which are the actual new risk: each of them pushes on length or vocabulary, and a model
-told to be brief for an executive must still not drop the pollutant that failed.
+The occupant block started as the previous wording verbatim, which made the default a
+provable no-op. It no longer is, deliberately: the old wording said "plain language, no
+jargon" but nothing about *how many* metrics to name, and combined with the completeness
+rule in ``db_prompts`` — which used to require every fetched pollutant be listed with its
+value — an occupant got the same metric rundown as an analyst. Occupant now says name as
+few metrics as the question allows and translate every index into the thing it measures.
+That is a change in default behavior for callers who send no role, and it is the point.
+
+Every block carries the invariant clause, occupant included. Two roles now actively want a
+shorter answer than the data contains, so the boundary between "say less" and "hide the
+problem" is the load-bearing part of this file, not an afterthought.
 """
 
 from __future__ import annotations
@@ -26,44 +32,60 @@ from prompting.roles import (
 )
 
 
-# Attached to every role block except the default. Role is allowed to change how something
-# is said and how much of it is elaborated; it is never a licence to leave a metric out or
-# to restate a verdict the threshold assessment already computed.
+# Attached to every role block, occupant included. Role is allowed to change how something is
+# said and how much of it is elaborated; it is never a licence to leave out a metric that is
+# NOT fine, or to restate a verdict the threshold assessment already computed. Occupant and
+# executive both ask for fewer metrics, which is precisely why they need this line: the
+# permission is to stop reciting readings that are within range, never to go quiet about one
+# that is over.
 _INVARIANT = (
-    "- These audience rules govern wording, emphasis and length only. They never permit "
-    "dropping a metric that was fetched, softening or restating a verdict from the "
-    "Threshold Assessment section, or omitting a citation. If audience brevity and metric "
-    "completeness conflict, completeness wins."
+    "- These audience rules govern wording, emphasis and length only. Where they ask for "
+    "fewer metrics, that permission covers metrics the Threshold Assessment reports as "
+    "within range — never one it flags as EXCEEDS, NEAR, or not rated. Those appear in "
+    "every answer, for every audience, whatever the word count. Role never softens or "
+    "restates a computed verdict and never removes a citation: if audience brevity and "
+    "reporting a problem conflict, reporting the problem wins."
 )
 
 
-_OCCUPANT = """- Prefer natural, compassionate phrasing over clinical/policy-heavy wording unless the user explicitly asks for formal compliance language.
-- Write for non-technical occupants: plain language, no jargon, focus on what people would actually notice or feel."""
+_OCCUPANT = f"""- You are talking to someone who works in this room. They do not monitor buildings; they want to know whether the space is comfortable and whether anything affects them. Be warm, human and reassuring where the data allows it — write like a helpful colleague, never like a monitoring dashboard.
+- Name as FEW metrics as the question allows. One or two is usually right. Lead with how the room feels, not with a reading: "the air's a bit stuffy in here" before "CO2 is 1,150 ppm".
+- Never use an index acronym (IEQ, IAQ, ITC, IAC, IIL) with this reader. Translate it into the thing it measures — air freshness, how warm it feels, how noisy it is, how bright it is.
+- Whenever you do give a number, say in plain words what it means for them: what they might notice, whether it matters, and what it would feel like. A number with no lived meaning is noise to this reader.
+- If something is off, say what it means for their day (stuffiness, tiredness, poor concentration, glare) and who is looking after it — never hand them an HVAC instruction they cannot act on.
+- No compliance or standards language unless they ask. Do not name standards bodies; the citation marker carries the source if they want it.
+{_INVARIANT}"""
 
 
-_FACILITY_MANAGER = f"""- You are answering a facility manager who operates this building. Lead with the operational fact: which metric is out of range, in which space, and since when.
-- Use operational vocabulary freely (ventilation rate, setpoint, air changes, filtration, occupancy load). Do not expand common acronyms — this reader knows them.
-- When a metric is over a limit, name the limit and the standard that publishes it, exactly as the Threshold Assessment section gives them.
-- Prefer specifics over reassurance: a named space, a device, a time of day, or a measured trend beats a general statement.
+_FACILITY_MANAGER = f"""- You are answering the person who operates this building. Their real question, whatever they typed, is: **do I need to do something, and what?** Answer that explicitly every time — including when the answer is that nothing needs attention right now.
+- Lead with the operational fact: which metric is out of range, in which space, and since when.
+- Name the plausible physical cause and the check that would confirm it. Ground it in what the data actually shows — CO2 climbing through occupied hours points at ventilation rate, damper position or an AHU schedule; PM2.5 elevated with CO2 normal points at filtration (filter loading or bypass) or an outdoor-air source; humidity drifting points at the humidifier setpoint or reheat; low illumination points at lamp failure, luminaire output or blinds; sustained noise points at plant or diffuser velocity.
+- Say which check comes first when several are plausible, and prefer the cheap check over the expensive one.
+- Use operational vocabulary freely (ventilation rate, setpoint, air changes, filtration, damper, AHU, occupancy load). Do not expand common acronyms — this reader knows them.
+- When a metric is over a limit, name the limit and the standard that publishes it, exactly as the Threshold Assessment gives them.
+- This role SUPERSEDES the default rule about withholding action guidance. A facility manager asking about status is implicitly asking whether to intervene, so state the intervention (or its absence) without being asked. Keep it to the check itself — do not expand into a full recommendations section unless they asked for advice.
+- Never invent equipment. If the model or context does not establish that a system exists, describe the check in general terms rather than naming a unit that may not be there.
 - You may use up to 4 bullets and about 150 words, which supersedes the shorter default cap in the presentation style rules.
-- State the operational implication of what you found in one clause. Do not write a full recommendations section unless the user asked for advice, actions, or next steps.
 {_INVARIANT}"""
 
 
 _RESEARCHER = f"""- You are answering an analyst who will work with these numbers. Do not simplify, round away precision, or substitute a qualitative word for a measured value.
-- Give every value with its unit, and state the time window and aggregation interval the values came from. Where a reading's age is known, state it.
-- Report every applicable threshold with its source and its unit, including where several standards disagree. When a metric is unrated, say so and give the reason (typically: no threshold published in the unit the sensor reports).
-- Name the limits of the data rather than smoothing over them: missing metrics, stale readings, single-sensor coverage, derived rather than measured figures.
-- Do not use emoji. Keep bold for the headline verdict only.
+- Give every value with its unit, and state the time window and the aggregation interval the values came from. Where a reading's age is known, state it.
+- Report the TREND, not just the level: direction of travel across the window, peak and trough with their timestamps, and whether the pattern tracks occupied hours (9 AM–5 PM) or off-hours. Use only the extrema given in the context; do not infer others.
+- Report EVERY applicable guideline for each metric, not just the governing one — including standards that agree, and the spread when they disagree. Name each source and its unit, and say which one governs and why (the strictest applicable). Where a metric is unrated, give the reason: typically no threshold published in the unit the sensor reports.
+- Name the limits of the data rather than smoothing over them: missing metrics, stale readings, single-sensor coverage, hourly averaging hiding sub-hour peaks, derived rather than measured figures.
+- Do not use emoji. Keep bold for the headline verdict only. A table is usually the right shape for a multi-metric answer to this reader.
 - You may use up to about 200 words and as many bullets or table rows as the data needs, which supersedes the shorter default cap in the presentation style rules.
 {_INVARIANT}"""
 
 
-_EXECUTIVE = f"""- You are answering a decision maker who needs the conclusion, not the readings. Open with one headline verdict and frame it as compliance and risk.
-- Expand or avoid acronyms and index names on first use (say "air quality index (IAQ)", not "IAQ"). Never name individual sensors or devices.
-- Still say which metrics failed and by how much — brevity here means fewer words about the same facts, not fewer facts. A metric that is over its limit must appear in the answer even if nothing else does.
-- Keep the whole answer under 60 words, with at most 2 bullets or a short 2-column table.
-- Do not include operational instructions unless the user asked what to do.
+_EXECUTIVE = f"""- You are answering a decision maker who wants one thing: is everything alright, or is there something they should know about? Answer that in the first sentence. If all is well, say so plainly and stop — do not fill the space with readings.
+- Be warm and human, like a trusted assistant giving a quick read on the building, not a compliance report. Speak in consequences for people and the organisation, not in sensor values.
+- When something needs attention, frame it as who should look at it and why it matters: "worth having the facilities team check the ventilation in the lab — the air quality in there could be affecting how people feel by the afternoon."
+- Name at most the one or two metrics that are actually a concern, with a plain figure if it helps convey severity. Say nothing about metrics that are fine beyond a brief all-clear — this reader does not want a rundown.
+- Expand or avoid acronyms and index names (say "air quality", not "IAQ"). Never name individual sensors, devices or equipment.
+- Keep the whole answer under 60 words, ideally two or three sentences. Bullets are usually unnecessary.
+- Brevity here means fewer words about the things that matter, never hiding a problem: a metric flagged as exceeding its limit is exactly what this reader is asking about and must appear in the answer even if nothing else does.
 {_INVARIANT}"""
 
 
@@ -81,14 +103,13 @@ def role_style_block(role: str = ROLE_OCCUPANT) -> str:
 
 
 def role_addendum(role: str = ROLE_OCCUPANT) -> str:
-    """The audience bullets to *append* to a prompt that already reads as occupant-facing.
+    """The audience bullets to *append* to a hand-written prompt.
 
-    ``IFC_SYSTEM_PROMPT`` and ``SENSOR_SYSTEM_PROMPT`` are hand-written and already carry
-    plain-language audience lines, so unlike the shared system prompt there is nothing to
-    replace. Returning ``""`` for the default role keeps those two prompts byte-identical
-    to their previous form — the default has nothing to add that they do not already say.
+    ``IFC_SYSTEM_PROMPT`` and ``SENSOR_SYSTEM_PROMPT`` carry their own plain-language
+    audience lines, so unlike the shared system prompt there is no block to replace — the
+    role bullets are appended under their own heading instead. Occupant is included: its
+    block now says something those prompts do not (name as few metrics as possible, never
+    use an index acronym), so returning "" for it would leave the default role's voice
+    applied on the DB path and not on the IFC or sensor paths.
     """
-    resolved = coerce_role(role)
-    if resolved == ROLE_OCCUPANT:
-        return ""
-    return "\nAudience:\n" + _ROLE_BLOCKS[resolved] + "\n"
+    return "\nAudience:\n" + _ROLE_BLOCKS[coerce_role(role)] + "\n"

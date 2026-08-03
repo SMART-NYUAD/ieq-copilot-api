@@ -110,40 +110,48 @@ class RoleNormalizationTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in catalog if e["default"]], [ROLE_DEFAULT])
 
 
-class DefaultRoleIsANoOpTests(unittest.TestCase):
-    """The whole feature must be invisible to a caller who does not use it."""
-
+class DefaultRoleTests(unittest.TestCase):
     def test_default_is_the_occupant_role(self):
         self.assertEqual(ROLE_DEFAULT, ROLE_OCCUPANT)
 
-    def test_occupant_prompt_is_byte_identical_to_the_module_constant(self):
+    def test_module_constant_is_the_default_rendering(self):
         self.assertEqual(shared_system_prompt(ROLE_OCCUPANT), SHARED_SYSTEM_PROMPT)
-
-    def test_occupant_block_is_the_previous_hardcoded_wording(self):
-        self.assertEqual(role_style_block(ROLE_OCCUPANT), _LEGACY_AUDIENCE_LINES)
-        self.assertIn(_LEGACY_AUDIENCE_LINES, SHARED_SYSTEM_PROMPT)
 
     def test_unknown_role_renders_the_default_prompt(self):
         self.assertEqual(shared_system_prompt("cto"), SHARED_SYSTEM_PROMPT)
 
-    def test_addendum_is_empty_for_the_default_role(self):
-        # IFC/sensor prompts already read as occupant-facing, so the default adds nothing
-        # and those two prompts stay byte-identical to their previous form.
-        self.assertEqual(role_addendum(ROLE_OCCUPANT), "")
+    def test_occupant_deliberately_replaced_the_legacy_wording(self):
+        # The occupant block began as this wording verbatim, which made the feature a
+        # provable no-op. It is not any more, on purpose: "no jargon" constrained
+        # vocabulary and said nothing about volume, so an occupant still got every fetched
+        # pollutant listed — the researcher's answer in friendlier words. If this assertion
+        # ever starts failing because the old lines came back, the occupant rundown came
+        # back with them.
+        self.assertNotIn(_LEGACY_AUDIENCE_LINES, SHARED_SYSTEM_PROMPT)
+        self.assertIn("as FEW metrics as the question allows", role_style_block(ROLE_OCCUPANT))
+
+    def test_every_role_including_the_default_has_an_addendum(self):
+        # The occupant block now says something the hand-written IFC/sensor prompts do not,
+        # so returning "" for it would apply the default voice on the DB path only.
         for role in VALID_ROLES:
-            if role != ROLE_OCCUPANT:
-                self.assertTrue(role_addendum(role).strip(), role)
+            self.assertTrue(role_addendum(role).strip(), role)
 
 
-class RoleNeverSubtractsTests(unittest.TestCase):
-    _NON_DEFAULT = (ROLE_FACILITY_MANAGER, ROLE_RESEARCHER, ROLE_EXECUTIVE)
+class RoleMayNotHideAProblemTests(unittest.TestCase):
+    """Two roles now ask for fewer metrics. This is the line they may not cross."""
 
-    def test_every_new_role_carries_the_completeness_clause(self):
-        for role in self._NON_DEFAULT:
+    def test_every_role_carries_the_invariant_clause(self):
+        for role in VALID_ROLES:
             block = role_style_block(role).lower()
-            self.assertIn("never permit dropping a metric", block, role)
-            self.assertIn("threshold assessment", block, role)
-            self.assertIn("completeness wins", block, role)
+            self.assertIn("exceeds, near, or not rated", block, role)
+            self.assertIn("every answer, for every audience", block, role)
+            self.assertIn("reporting the problem wins", block, role)
+
+    def test_the_permission_is_scoped_to_metrics_within_range(self):
+        # The failure this guards against is a role block that reads as a general licence
+        # to say less. Every block must tie "fewer metrics" to the within-range case.
+        for role in VALID_ROLES:
+            self.assertIn("within range", role_style_block(role).lower(), role)
 
     def test_role_does_not_touch_the_assessment_directives(self):
         # Role is spliced into the system prompt only. If a future change starts appending
@@ -153,17 +161,97 @@ class RoleNeverSubtractsTests(unittest.TestCase):
             DB_TOOL_RESPONSE_DIRECTIVE,
             DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
         ):
-            self.assertIn("Report EVERY", directive.replace("report every", "Report EVERY"))
             for role in VALID_ROLES:
                 self.assertNotIn(role_style_block(role), directive)
 
-    def test_brevity_roles_still_forbid_omitting_a_failing_metric(self):
-        # The executive role is the shortest and therefore the most likely to drop the
-        # metric that spoils the verdict — the exact PM2.5 regression from
-        # test_air_quality_completeness, in a new place.
+    def test_the_shortest_role_still_reports_a_failing_metric(self):
+        # Executive is capped at 60 words and is where the PM2.5 omission would return.
         block = role_style_block(ROLE_EXECUTIVE).lower()
-        self.assertIn("must appear in the answer", block)
-        self.assertIn("fewer words about the same facts, not fewer facts", block)
+        self.assertIn("must appear in the answer even if nothing else does", block)
+        self.assertIn("never hiding a problem", block)
+
+    def test_completeness_rule_still_mandates_the_metrics_that_failed(self):
+        # The relaxation that lets brief roles stop reciting in-range readings must not
+        # have weakened the rule for the metrics the original bug dropped: PM2.5 above the
+        # WHO guideline and VOC with no comparable threshold were EXCEEDS and not-rated.
+        for directive in (
+            DB_TOOL_RESPONSE_DIRECTIVE,
+            DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
+        ):
+            # These are wrapped prompt constants; assert on meaning, not line breaks.
+            text = " ".join(directive.lower().split())
+            self.assertIn('exceeds, near, or "not rated"', text)
+            self.assertIn("must appear in the answer with its value and unit", text)
+            self.assertIn("no word cap, audience, or brevity instruction permits omitting one", text)
+            # An all-clear about the metrics that were not named is still a claim.
+            self.assertIn("never imply an all-clear you have not earned", text)
+
+
+class RolesActuallyDifferTests(unittest.TestCase):
+    """Each role must ask for something the others do not.
+
+    The first version of these blocks differed mostly in adjectives, which produced four
+    answers that read alike. What separates them is the *question each reader is really
+    asking*: do I need to intervene (FM), what do the numbers and guidelines say
+    (researcher), is anything wrong (executive), does this affect me (occupant).
+    """
+
+    def test_facility_manager_answers_whether_to_intervene(self):
+        block = role_style_block(ROLE_FACILITY_MANAGER).lower()
+        self.assertIn("do i need to do something", block)
+        # Status questions must still produce an intervention line, which means overriding
+        # the presentation rule that withholds action guidance unless it was asked for.
+        self.assertIn("supersedes the default rule about withholding action guidance", block)
+        self.assertIn("including when the answer is that nothing needs attention", block)
+
+    def test_facility_manager_names_the_physical_checks(self):
+        block = role_style_block(ROLE_FACILITY_MANAGER).lower()
+        for check in ("filtration", "ventilation rate", "damper", "humidifier", "lamp failure"):
+            self.assertIn(check, block, check)
+        # Grounded in the model/context — the DB directive already forbids inventing HVAC,
+        # and a role that invites naming equipment has to repeat that boundary.
+        self.assertIn("never invent equipment", block)
+
+    def test_researcher_asks_for_trends_and_every_guideline(self):
+        block = role_style_block(ROLE_RESEARCHER).lower()
+        self.assertIn("report the trend", block)
+        self.assertIn("peak and trough with their timestamps", block)
+        self.assertIn("report every applicable guideline", block)
+        self.assertIn("not just the governing one", block)
+
+    def test_executive_leads_with_all_clear_or_alarm_and_is_warm(self):
+        block = role_style_block(ROLE_EXECUTIVE).lower()
+        self.assertIn("is everything alright", block)
+        self.assertIn("warm and human", block)
+        # Names who should act rather than what to do technically.
+        self.assertIn("facilities team", block)
+        self.assertIn("this reader does not want a rundown", block)
+
+    def test_occupant_is_warm_and_avoids_index_acronyms(self):
+        block = role_style_block(ROLE_OCCUPANT).lower()
+        self.assertIn("never use an index acronym", block)
+        self.assertIn("what it means for them", block)
+        self.assertIn("warm", block)
+
+    def test_the_two_brief_roles_both_ask_for_fewer_metrics(self):
+        for role in (ROLE_OCCUPANT, ROLE_EXECUTIVE):
+            block = role_style_block(role).lower()
+            self.assertTrue(
+                "few metrics" in block or "one or two metrics" in block
+                or "at most the one or two metrics" in block,
+                role,
+            )
+
+    def test_no_two_role_blocks_are_alike(self):
+        blocks = {role: role_style_block(role) for role in VALID_ROLES}
+        self.assertEqual(len(set(blocks.values())), len(VALID_ROLES))
+        # Beyond mere inequality: the shared invariant clause is the only text every block
+        # has in common, so strip it and the remainder must still be disjoint enough that
+        # no block is a substring of another.
+        for a in VALID_ROLES:
+            for b in VALID_ROLES:
+                if a != b:
+                    self.assertNotIn(blocks[a], blocks[b], f"{a} inside {b}")
 
 
 class RoleWidensButNeverNarrowsTests(unittest.TestCase):

@@ -56,9 +56,18 @@ already resolved every comparison. It is arithmetic done for you, not a suggesti
   is the point. For a metric that is within range, say so and let the citation carry the
   number — the reader can follow [N] for the detail.
 
-METRIC COMPLETENESS — these outrank brevity. Length is never a reason to drop a metric:
-- Every pollutant present in Measured Room Facts (CO2, PM2.5, VOC) MUST appear in the answer with
-  its value and unit. If space is tight, combine them into ONE bullet — never omit one.
+METRIC COMPLETENESS — these outrank brevity. Length is never a reason to hide a problem:
+- Every pollutant flagged EXCEEDS, NEAR, or "not rated" in the Threshold Assessment
+  MUST appear in the answer with its value and unit. This is absolute: no word cap,
+  audience, or brevity instruction permits omitting one. If space is tight, combine them
+  into ONE bullet — never omit one.
+- Pollutants that are comfortably within range carry no such obligation individually. You may
+  account for them collectively ("everything else is within range") instead of listing each value,
+  and for a reader who wants the short version you should. What is forbidden is silence about a
+  metric that is NOT fine — that is the omission this rule exists to prevent, and reciting
+  reassuring numbers was never what protected against it.
+- Never imply an all-clear you have not earned. "Everything else is within range" is a claim about
+  the metrics you did not name, and it must be true of every one of them.
 - The overall verdict is set by the WORST metric, not the best. Any metric at or above its
   threshold MUST appear in the opening sentence and the verdict must reflect it. Do not call air
   quality good, fine, healthy, excellent, or "no concerns" while a measured pollutant sits above a
