@@ -1059,6 +1059,9 @@ def execute_intent_query(
     # LLM router's metric scope (RoutePlan.metric_scope). None falls back to inferring
     # the scope from question text — see metric_planning.classify_metric_scope.
     metric_scope: Optional[str] = None,
+    # Caller's stakeholder role. It may widen the resolved metric pack, never narrow it —
+    # see metric_planning._WIDENING_ROLES.
+    role: Optional[str] = None,
     # Legacy parameter kept for backwards compatibility — no longer used
     cur: Any = None,
 ) -> Dict[str, Any]:
@@ -1076,6 +1079,7 @@ def execute_intent_query(
         intent=intent,
         is_diagnostic=is_diagnostic,
         metric_scope=metric_scope,
+        role=role,
     )
 
     handlers: List[Tuple[str, Any]] = [

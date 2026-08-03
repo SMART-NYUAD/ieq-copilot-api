@@ -34,7 +34,8 @@ share a single conversation namespace (development only).
   "k": 5,
   "lab_name": "smart_lab",
   "allow_clarify": true,
-  "conversation_id": "optional_conversation_id"
+  "conversation_id": "optional_conversation_id",
+  "role": "occupant"
 }
 ```
 
@@ -44,6 +45,11 @@ share a single conversation namespace (development only).
   best-effort basis instead (default `true`).
 - `conversation_id` — echo the value from a previous response to continue that
   conversation. Omit it to start a new one; a fresh id is returned.
+- `role` — who the answer is written for: `occupant` (default), `facility_manager`,
+  `researcher`, `executive`. Fetch the list from `GET /roles` rather than hardcoding it.
+  Send it on every request. Omitting it inherits the role last used on this
+  `conversation_id`, then the server default. An unrecognised value falls back to the
+  default rather than failing the request, and is reported as `metadata.role_fallback_used`.
 
 ### Response
 
@@ -74,6 +80,9 @@ share a single conversation namespace (development only).
 | `intent` | router intent (see `CLAUDE.md` for the taxonomy) |
 | `route_confidence`, `planner_model`, `fallback_used` | routing provenance; `fallback_used` means the router LLM was unreachable and a regex plan was used |
 | `resolved_question` | present only when prior turns were used to rewrite the question |
+| `role` | resolved stakeholder role the answer was written for |
+| `role_source` | where it came from: `request`, `conversation`, or `default` |
+| `role_fallback_used` | `true` when the request sent a role the server did not recognise |
 | `ui` | frontend contract; see below |
 | `llm_used` | `false` when the answer came from a deterministic fallback |
 | `lab_name`, `resolved_lab_name`, `time_window` | resolved scope (DB path) |
@@ -111,6 +120,22 @@ is why citations arrive at the end rather than in `meta`.
 
 A stream always terminates with `done`. If the answer model is unreachable, the executor
 emits a deterministic grounded answer rather than an empty stream.
+
+## `GET /roles`
+
+The stakeholder roles `/query` accepts, for rendering a selector:
+
+```json
+{
+  "roles": [{"id": "occupant", "label": "Occupant", "description": "...", "default": true}],
+  "default": "occupant"
+}
+```
+
+Role changes the voice, vocabulary and length of an answer, and for `researcher` widens the
+metrics fetched. It never changes which threshold a reading is compared against, and never
+allows a metric that was fetched to be left out of the answer. Changing role mid-conversation
+is fine — keep the same `conversation_id` so follow-up questions still resolve.
 
 ## `GET /sensors/latest/{space}`
 

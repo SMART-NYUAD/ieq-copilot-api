@@ -5,6 +5,9 @@ from typing import Any, Iterable, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from prompting.role_prompts import role_style_block
+from prompting.roles import ROLE_DEFAULT
+
 
 GUIDELINE_CITATIONS = """
 Use retrieved citation records as the source of truth for all threshold claims.
@@ -47,7 +50,14 @@ Presentation and readability:
 """.strip()
 
 
-SHARED_SYSTEM_PROMPT = f"""You are a friendly, knowledgeable indoor environmental quality (IEQ) assistant for a university campus.
+def shared_system_prompt(role: str = ROLE_DEFAULT) -> str:
+    """The answer-model system prompt, written for one stakeholder role.
+
+    ``role`` supplies the ``Domain style:`` audience bullets and nothing else — it is the
+    single point where a role changes what the model is told. See ``prompting.role_prompts``
+    for why it is only spliced here and not also into the response directives.
+    """
+    return f"""You are a friendly, knowledgeable indoor environmental quality (IEQ) assistant for a university campus.
 You receive grounded context from measured room facts, backend semantic state, and knowledge cards.
 
 Grounding rules:
@@ -89,8 +99,7 @@ Presentation style:
 {PRESENTATION_STYLE_PROMPT}
 
 Domain style:
-- Prefer natural, compassionate phrasing over clinical/policy-heavy wording unless the user explicitly asks for formal compliance language.
-- Write for non-technical occupants: plain language, no jargon, focus on what people would actually notice or feel.
+{role_style_block(role)}
 - Format times in a human-friendly way (e.g. "Mon DD, YYYY, HH:MM AM/PM"). If `display_start` / `display_end` are provided, use those exact strings.
 - When metrics are missing, only mention missing coverage if those metrics are necessary for the asked scope.
   Do not add pollutant-missing disclaimers for IEQ/sub-index-only questions.
@@ -109,6 +118,12 @@ When giving numbers:
 - Include the value and unit (ppm, ug/m3, lux, dB, %RH, degC).
 - Pair it with a brief occupant-focused interpretation.
 - If a value is near a threshold, mention that in plain language."""
+
+
+# The default-role rendering, kept as a module constant because it is what most callers and
+# every existing test import. ``shared_system_prompt(ROLE_OCCUPANT)`` is byte-identical to
+# the constant this replaced, which is the regression guard for the whole role feature.
+SHARED_SYSTEM_PROMPT = shared_system_prompt()
 
 
 def _stringify_section(data: Any) -> str:
@@ -214,10 +229,13 @@ def build_grounded_context_sections(
     return "\n".join(sections)
 
 
-def get_shared_prompt_template(response_directive: str = "") -> ChatPromptTemplate:
+def get_shared_prompt_template(
+    response_directive: str = "",
+    role: str = ROLE_DEFAULT,
+) -> ChatPromptTemplate:
     prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", SHARED_SYSTEM_PROMPT),
+            ("system", shared_system_prompt(role)),
             (
                 "human",
                 """Question: {question}

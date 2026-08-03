@@ -208,6 +208,12 @@ Returns service info and endpoint list.
 
 Basic health check. Unauthenticated, for liveness probes.
 
+### `GET /roles`
+
+The stakeholder roles `/query` accepts (`occupant`, `facility_manager`, `researcher`,
+`executive`) with display labels and the server default. Fetch this to build a role selector
+rather than hardcoding the list.
+
 ### Authentication
 
 Set `RAG_API_KEYS` to a comma-separated list of keys to protect `/query`, `/query/stream`,
@@ -231,6 +237,8 @@ Request body:
 - `question` (required)
 - `k` (optional, default `5`)
 - `lab_name` (optional)
+- `role` (optional) — who the answer is written for; see `GET /roles`. Defaults to
+  `occupant`, which is the voice this API used before roles existed.
 
 Example:
 

@@ -26,6 +26,7 @@ from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support import threshold_assessment
 from executors.db_support.time_windows import granularity_hours_for_window
+from prompting.roles import ROLE_DEFAULT
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import get_thresholds_for_metrics
@@ -274,6 +275,7 @@ def prepare_db_query(
     lab_name: Optional[str],
     planner_hints: Optional[Dict[str, Any]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
+    role: str = ROLE_DEFAULT,
 ) -> Dict[str, Any]:
     query_text = str(question or "").strip()
     guideline_records = list(guideline_records or [])
@@ -345,6 +347,7 @@ def prepare_db_query(
         hinted_metrics=hinted_metrics,
         diagnostic_hint=diagnostic_hint,
         metric_scope=metric_scope,
+        role=role,
     )
 
     operation_type = str(branch_result["operation_type"])
@@ -399,6 +402,10 @@ def prepare_db_query(
     payload["metric_coverage"] = _build_metric_coverage(rows=rows, metrics_used=metrics_used)
     payload["operation_type"] = operation_type
     payload["response_mode"] = "advisory" if advisory_hint else None
+    # Carried on the payload for the same reason as response_mode: the stream renderer is
+    # handed an already-prepared context, so reading the role from anywhere else would let
+    # the two renderers prompt with different audiences for the same turn.
+    payload["stakeholder_role"] = role
     if row_summary:
         payload["row_summary"] = _serialize_timestamp_value(row_summary)
     ts_context = _attach_time_series_context(
@@ -484,11 +491,13 @@ def _build_db_prompt_text(
     context_data: str,
     diagnostic: Optional[bool] = None,
     advisory: Optional[bool] = None,
+    role: str = ROLE_DEFAULT,
 ) -> str:
     prompt_template = get_shared_prompt_template(
         response_directive=db_helpers.db_response_directive(
             intent, question=question, diagnostic=diagnostic, advisory=advisory
-        )
+        ),
+        role=role,
     )
     messages = prompt_template.format_messages(
         question=question,
@@ -597,6 +606,7 @@ def _render_db_answer_with_llm(
         context_data=context_data,
         diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
         advisory=(str((payload or {}).get("response_mode") or "") == "advisory"),
+        role=str((payload or {}).get("stakeholder_role") or ROLE_DEFAULT),
     )
     try:
         text = generate_ollama_text(prompt_text, temperature=ollama_temperature())
@@ -614,6 +624,7 @@ def run_db_query(
     planner_hints: Optional[Dict[str, Any]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     conversation_context: str = "",
+    role: str = ROLE_DEFAULT,
 ) -> Dict:
     query_text = str(question or "").strip()
     context = prepare_db_query(
@@ -622,6 +633,7 @@ def run_db_query(
         lab_name=lab_name,
         planner_hints=planner_hints,
         guideline_records=guideline_records,
+        role=role,
     )
     answer, llm_used, indexed_sources = _render_db_answer_with_llm(
         question=query_text,
@@ -674,6 +686,7 @@ async def stream_db_tokens(
     query_context: Optional[Dict[str, Any]] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     conversation_context: str = "",
+    role: str = ROLE_DEFAULT,
 ) -> AsyncIterator[str]:
     from fastapi.concurrency import run_in_threadpool
 
@@ -686,6 +699,7 @@ async def stream_db_tokens(
             lab_name,
             planner_hints,
             guideline_records,
+            role,
         )
     else:
         context = query_context
@@ -715,6 +729,7 @@ async def stream_db_tokens(
         context_data=context_data,
         diagnostic=(str((payload or {}).get("operation_type") or "") == "diagnostic"),
         advisory=(str((payload or {}).get("response_mode") or "") == "advisory"),
+        role=str((payload or {}).get("stakeholder_role") or ROLE_DEFAULT),
     )
 
     ollama_payload = {

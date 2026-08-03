@@ -178,7 +178,7 @@ class TestIfcStream(unittest.TestCase):
         async def _fake_plan(*a, **kw):
             return route
 
-        async def _fake_tokens(user_question):
+        async def _fake_tokens(user_question, role=None):
             yield f"data: {json.dumps({'event': 'token', 'text': '2 doors.'})}\n\n"
             yield f"data: {json.dumps({'event': 'done'})}\n\n"
 

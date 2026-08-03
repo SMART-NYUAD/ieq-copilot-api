@@ -18,6 +18,7 @@ async def root():
             "query": "POST /query - Routed query endpoint",
             "query_stream": "POST /query/stream - Routed streaming query",
             "health": "GET /health - Health check",
+            "roles": "GET /roles - Stakeholder roles accepted by /query",
         },
     }
 
@@ -25,6 +26,19 @@ async def root():
 @router.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@router.get("/roles", dependencies=[Depends(require_api_key)])
+async def roles():
+    """The stakeholder roles ``/query`` accepts, for a client to render a selector from.
+
+    Served rather than documented-only so a frontend does not hardcode a closed vocabulary
+    that then drifts away from ``prompting/roles.py``.
+    """
+    from core_settings import default_stakeholder_role
+    from prompting.roles import role_catalog
+
+    return {"roles": role_catalog(), "default": default_stakeholder_role()}
 
 
 @router.get("/sensors/latest/{space}", dependencies=[Depends(require_api_key)])
