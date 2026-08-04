@@ -14,6 +14,7 @@ from prompting.db_prompts import (
     DB_TOOL_RESPONSE_DIRECTIVE_POINT_LOOKUP,
     DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP,
     DB_TOOL_RESPONSE_DIRECTIVE_IEQ,
+    DB_TOOL_RESPONSE_DIRECTIVE_COMFORT,
     DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON,
     DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY,
     DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC,
@@ -202,6 +203,14 @@ def db_response_directive(
     if intent_value in {"point_lookup_db", "current_status_db"}:
         if ieq_index_query:
             return DB_TOOL_RESPONSE_DIRECTIVE_IEQ
+        # A comfort question is about how the space FEELS, across thermal, acoustic and
+        # visual as well as air. It used to fall through to the air-quality directive —
+        # which opens "you are answering a current air-quality point lookup" and says to
+        # "center on pollutants" — so "how is the comfort today?" was answered with "the
+        # air quality in smart_lab today is good". Right data, wrong subject: the comfort
+        # metric pack was fetched correctly and then described as an air assessment.
+        if is_comfort_assessment_query_text(question) and not is_air_quality_query_text(question):
+            return DB_TOOL_RESPONSE_DIRECTIVE_COMFORT
         if (
             is_air_quality_query_text(question)
             or is_comfort_assessment_query_text(question)

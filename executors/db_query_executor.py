@@ -356,6 +356,10 @@ def prepare_db_query(
     correlation_data = branch_result.get("correlation_data")
     metric_alias = str(branch_result.get("metric_alias") or metric_alias)
     metrics_used = list(branch_result.get("metrics_used") or [metric_alias])
+    # Applied here, before anything reads the rows, so the payload, the coverage summary and
+    # the threshold assessment all see the same scoped set. Filtering only one of them would
+    # leave the others disagreeing about what the question was about.
+    rows = _restrict_rows_to_metrics(rows, metrics_used)
     if not guideline_records:
         citation_metrics = _collect_citation_metrics(
             question=query_text,
@@ -482,6 +486,38 @@ def prepare_db_query(
             for card in knowledge_cards
         ],
     }
+
+
+def _restrict_rows_to_metrics(
+    rows: List[Dict[str, Any]], metrics_used: List[str]
+) -> List[Dict[str, Any]]:
+    """Drop metric columns the query did not ask for.
+
+    The upstream sensor API returns every metric column whatever the request asks for, so a
+    correctly-scoped air-quality query still came back carrying itc/iac/iil. Those flowed
+    into Measured Room Facts and into the computed Threshold Assessment, which produced
+    verdicts for them — and _METRIC_COMPLETENESS then made reporting a flagged metric
+    mandatory. That is how "what about the air?" ended up leading with the lighting score:
+    every layer behaved correctly on data that should never have reached it.
+
+    Only keys that are KNOWN metric names and absent from ``metrics_used`` are removed.
+    Bookkeeping columns (bucket, lab_space) and the generic ``value``/aggregate columns used
+    by the point-lookup and aggregation shapes are left untouched, so this cannot quietly
+    empty a row shape it does not recognise.
+    """
+    keep = {str(m).lower() for m in metrics_used or []}
+    if not keep:
+        return rows
+    known = {str(m).lower() for m in metric_registry.CANONICAL_METRIC_COLUMN_MAP}
+    drop = known - keep
+    if not drop:
+        return rows
+    return [
+        {k: v for k, v in row.items() if str(k).lower() not in drop}
+        if isinstance(row, dict)
+        else row
+        for row in rows
+    ]
 
 
 def _build_db_prompt_text(

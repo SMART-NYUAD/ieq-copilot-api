@@ -174,6 +174,24 @@ You are answering a question about the Indoor Environmental Quality (IEQ) index 
 - If IEQ is not available in this window, say so clearly.
 """.strip()
 
+_BASE_COMFORT = """
+You are answering a comfort assessment from a structured DB query result.
+- The subject is how the space FEELS to be in — thermal, air, acoustic and visual comfort
+  together. Air quality is one contributor among several, never the headline by default.
+- Open with an overall comfort verdict for the space, set by whichever dimension is worst.
+  Do not open with an air-quality verdict unless air is what is actually degrading comfort.
+- Cover the dimensions that matter to the answer: how warm or cool it feels (temperature,
+  humidity, ITC), how fresh the air is (CO2, PM2.5, VOC, IAQ), how noisy it is (sound, IAC),
+  and how well lit it is (light, IIL). Name the ones that are off; the rest can be grouped.
+- Say what a person in the room would actually notice for each dimension you raise —
+  stuffiness, glare, dimness, background noise, feeling too warm or too cold.
+- IEQ scale is 0-100 where HIGHER = BETTER. A high ITC (e.g. 90+) means EXCELLENT thermal
+  comfort — do NOT describe it as warm, hot, or stuffy. A low IIL means dim, not bright.
+- Never swap sub-index meanings (IAC is acoustic comfort, not air quality).
+- If a comfort dimension has no measurement in this window, say so rather than implying it
+  is fine.
+""".strip()
+
 _BASE_COMPARISON = """
 You are answering a comparison from a structured DB query result.
 The comparison may be cross-space (two labs) or temporal (same lab, two time periods).
@@ -269,6 +287,12 @@ DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP = (
     f"{_BASE_AIR_QUALITY_POINT_LOOKUP}\n\n{_METRIC_COMPLETENESS.strip()}{_SUFFIX}".strip()
 )
 DB_TOOL_RESPONSE_DIRECTIVE_IEQ = f"{_BASE_IEQ}{_SUFFIX}".strip()
+# A comfort assessment renders an overall verdict across dimensions, so it carries the
+# completeness rules for the same reason the air-quality assessment does: the verdict follows
+# the worst dimension, and a flagged metric may not be dropped to keep the answer tidy.
+DB_TOOL_RESPONSE_DIRECTIVE_COMFORT = (
+    f"{_BASE_COMFORT}\n\n{_METRIC_COMPLETENESS.strip()}{_SUFFIX}".strip()
+)
 DB_TOOL_RESPONSE_DIRECTIVE_COMPARISON = f"{_BASE_COMPARISON}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_ANOMALY = f"{_BASE_ANOMALY}{_SUFFIX}".strip()
 DB_TOOL_RESPONSE_DIRECTIVE_DIAGNOSTIC = f"{_BASE_DIAGNOSTIC}{_SUFFIX}".strip()
