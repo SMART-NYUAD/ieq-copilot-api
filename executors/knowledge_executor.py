@@ -27,7 +27,10 @@ from executors import sse
 from storage.embeddings import embed_query
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
+from executors.db_support import threshold_assessment
+from prompting.db_prompts import THRESHOLD_VERDICTS
 from prompting.roles import ROLE_DEFAULT
+from storage.guideline_store import get_thresholds_for_metrics
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import search_guideline_records, wants_guideline_detail
@@ -41,12 +44,20 @@ _NO_LLM_KNOWLEDGE_ANSWER = (
 )
 _DETERMINISTIC_ANSWER_MAX_CHARS = 600
 
-CARD_TOOL_RESPONSE_DIRECTIVE = """
+CARD_TOOL_RESPONSE_DIRECTIVE = f"""
 You are answering from card-based retrieval context.
 - Follow the shared presentation style from the system prompt.
 - Use the retrieved cards as grounding for key evidence.
 - If the question is about risks, lead with risk level and main drivers.
-- Do not provide recommendations unless the user explicitly asks for recommendations or next steps.
+- Whether to volunteer recommendations that were not asked for is decided by the audience
+  block under `Domain style:` in the system prompt. Do not restate a rule about
+  recommendations back to the reader.
+- A definition answer explains the concept first. When a live reading for that metric is in
+  context, you may add what it currently shows — but the verdict on that reading comes from
+  the Threshold Assessment below, never from your own judgement of whether the number looks
+  normal.
+
+{THRESHOLD_VERDICTS}
 """.strip()
 
 _KNOWLEDGE_CONTEXT_CACHE_LOCK = Lock()
@@ -318,6 +329,85 @@ def _deterministic_knowledge_answer(knowledge_cards: List[Dict[str, Any]]) -> st
     return _NO_LLM_KNOWLEDGE_ANSWER
 
 
+def _readings_from_live_data(live_sensor_data: Any) -> Dict[str, Any]:
+    """Metric -> latest value from the live payload handed over by the orchestrator.
+
+    Row-shape normalisation lives in threshold_assessment.readings_from_rows so the DB and
+    knowledge paths cannot disagree about what a reading row means.
+    """
+    if not isinstance(live_sensor_data, dict):
+        return {}
+    return threshold_assessment.readings_from_rows(
+        live_sensor_data.get("rows") or [], live_sensor_data.get("metric")
+    )
+
+
+def _merge_guideline_records(
+    primary: List[Dict[str, Any]], extra: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Union two record lists, keeping the first occurrence of each id."""
+    merged: List[Dict[str, Any]] = []
+    seen: set = set()
+    for record in list(primary or []) + list(extra or []):
+        key = record.get("id") or (record.get("source_key"), record.get("metric"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(record)
+    return merged
+
+
+def build_knowledge_grounding(
+    *,
+    user_question: str,
+    knowledge_cards: List[Dict[str, Any]],
+    live_sensor_data: Any,
+    guideline_records: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Assemble the grounded context for a knowledge answer.
+
+    Returns ``(context_text, indexed_sources, effective_guideline_records)``.
+
+    Built once and shared by the sync and streaming paths, which previously assembled it
+    separately and had already drifted — the sync path passed the searched guideline records
+    into the card context while the stream passed an empty list.
+
+    The threshold work this restores: when a live reading is in context, the knowledge path
+    now fetches the guideline records for exactly the metrics on screen and renders the same
+    computed ``## Threshold Assessment`` section the DB path uses. Without it the model was
+    handed a number and no limit to compare it against, and judged the reading itself —
+    producing "TVOC is 0.08 ppm, within typical indoor ranges and considered acceptable" one
+    turn after the DB path had correctly reported the same 0.08 ppm as exceeding the WHO
+    guideline of 0.061 ppm. Same conversation, same reading, opposite verdicts.
+    """
+    readings = _readings_from_live_data(live_sensor_data)
+    effective_records = list(guideline_records or [])
+    if readings:
+        # Deterministic lookup by metric name — the same call the DB path makes. Semantic
+        # guideline search only fires when the question is *about* standards, so without
+        # this a definition question had no citation sources at all and therefore nothing
+        # for the assessment to compare against.
+        effective_records = _merge_guideline_records(
+            effective_records, get_thresholds_for_metrics(sorted(readings))
+        )
+
+    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_records)
+    assessment = (
+        threshold_assessment.build_assessment_section(readings, indexed_sources)
+        if readings
+        else ""
+    )
+    grounded = build_grounded_context_sections(
+        measured_room_facts=live_sensor_data if live_sensor_data is not None else [],
+        backend_semantic_state=None,
+        knowledge_cards=knowledge_cards,
+        numbered_sources_block=numbered_sources_block,
+        allow_general_knowledge=True,
+        threshold_assessment=assessment,
+    )
+    return grounded, indexed_sources, effective_records
+
+
 def answer_env_question_with_metadata(
     user_question: str,
     k: int = 5,
@@ -338,13 +428,11 @@ def answer_env_question_with_metadata(
         space=space,
         guideline_records=effective_guideline_records,
     )
-    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
-    grounded_context = build_grounded_context_sections(
-        measured_room_facts=live_sensor_data if live_sensor_data is not None else [],
-        backend_semantic_state=None,
+    grounded_context, indexed_sources, effective_guideline_records = build_knowledge_grounding(
+        user_question=user_question,
         knowledge_cards=context.get("knowledge_cards", []),
-        numbered_sources_block=numbered_sources_block,
-        allow_general_knowledge=True,
+        live_sensor_data=live_sensor_data,
+        guideline_records=effective_guideline_records,
     )
     context_label = (
         "Live sensor readings with knowledge grounding"
@@ -399,20 +487,17 @@ async def stream_knowledge_tokens(
         searched_guidelines = search_guideline_records(question=user_question, k=3)
         if searched_guidelines:
             effective_guideline_records = searched_guidelines
-    numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
-
     context = _build_knowledge_context(
         user_question=user_question,
         k=k,
         space=space,
-        guideline_records=[],
+        guideline_records=effective_guideline_records,
     )
-    grounded_context = build_grounded_context_sections(
-        measured_room_facts=live_sensor_data if live_sensor_data is not None else [],
-        backend_semantic_state=None,
+    grounded_context, indexed_sources, effective_guideline_records = build_knowledge_grounding(
+        user_question=user_question,
         knowledge_cards=context.get("knowledge_cards", []),
-        numbered_sources_block=numbered_sources_block,
-        allow_general_knowledge=True,
+        live_sensor_data=live_sensor_data,
+        guideline_records=effective_guideline_records,
     )
     context_label = (
         "Live sensor readings with knowledge grounding"

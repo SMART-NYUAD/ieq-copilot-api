@@ -507,12 +507,15 @@ def _build_db_prompt_text(
     return build_prompt_text_from_messages(messages)
 
 
-def _latest_reading_row(rows: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
-    """The most recent bucket, which is what a status verdict is about."""
-    for row in reversed(list(rows or [])):
-        if isinstance(row, dict):
-            return {k: v for k, v in row.items() if k not in ("bucket", "lab_space")}
-    return {}
+def _latest_reading_row(
+    rows: Optional[List[Dict[str, Any]]], fallback_metric: Optional[str] = None
+) -> Dict[str, Any]:
+    """The most recent bucket, which is what a status verdict is about.
+
+    Delegates to threshold_assessment so the DB and knowledge paths normalise reading rows
+    through one implementation — see readings_from_rows for the row shapes involved.
+    """
+    return threshold_assessment.readings_from_rows(rows, fallback_metric)
 
 
 def _build_db_context_data(
@@ -529,7 +532,10 @@ def _build_db_context_data(
     # Computed once here so render_sync and render_stream cannot disagree about
     # whether a metric is over its limit.
     assessment = threshold_assessment.build_assessment_section(
-        _latest_reading_row(rows), indexed_sources or []
+        # A single-metric payload names its metric here; without it a value-shaped row
+        # produces no verdicts at all.
+        _latest_reading_row(rows, (payload or {}).get("metric")),
+        indexed_sources or [],
     )
     return build_grounded_context_sections(
         measured_room_facts=payload,
