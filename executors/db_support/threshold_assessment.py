@@ -312,6 +312,39 @@ def render_assessment_block(assessments: List[MetricAssessment]) -> str:
     return "\n".join(lines)
 
 
+# Row keys that are not metrics. A reading row carries these alongside the values.
+_NON_METRIC_ROW_KEYS = frozenset({"lab_space", "bucket", "space", "timestamp"})
+
+
+def readings_from_rows(
+    rows: Optional[Iterable[Dict[str, Any]]],
+    fallback_metric: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Metric -> latest value, from either row shape the query layer produces.
+
+    A metric *pack* produces one column per metric (``{"co2": 452, "voc": 0.06, ...}``),
+    while a single named metric produces a generic ``value`` column and names the metric
+    elsewhere on the payload. Both shapes reach the assessment, and only the first used to
+    work: a point lookup like "what is the VOC?" arrived as ``{"value": 0.06}``, matched no
+    metric, and produced ZERO verdict lines — silently handing the model a number with no
+    computed comparison, which is the exact situation this module exists to prevent.
+
+    ``fallback_metric`` is the metric name to attach when the row is ``value``-shaped.
+    """
+    latest: Dict[str, Any] = {}
+    for row in reversed(list(rows or [])):
+        if isinstance(row, dict):
+            latest = row
+            break
+    if not latest:
+        return {}
+    readings = {k: v for k, v in latest.items() if k not in _NON_METRIC_ROW_KEYS}
+    if set(readings) == {"value"}:
+        metric = str(fallback_metric or "").strip()
+        return {metric: readings["value"]} if metric else {}
+    return readings
+
+
 def build_assessment_section(
     readings: Dict[str, Any],
     indexed_sources: Iterable[Dict[str, Any]],

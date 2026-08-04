@@ -44,7 +44,13 @@ Rules:
 # 0.222 ppm, it reported CO2, humidity and the comfort sub-indices and called the air "good,
 # no signs of pollutant buildup". Nothing in the prompt forbade the omission, and two rules
 # invited it: "only the most important metric-by-metric interpretation" and a 90-word cap.
-_METRIC_COMPLETENESS = """
+# The verdict rules are separated from the completeness rules because they have different
+# scopes. THRESHOLD_VERDICTS applies wherever a computed assessment is present — including
+# the knowledge path, which grounds definition answers in a live reading and was previously
+# left to judge that reading itself. METRIC COMPLETENESS applies only where an *assessment*
+# is the answer; attaching it to a definition question would demand the whole pollutant pack
+# in reply to "what is VOC?".
+THRESHOLD_VERDICTS = """
 THRESHOLD VERDICTS — the "## Threshold Assessment (computed — authoritative)" section
 already resolved every comparison. It is arithmetic done for you, not a suggestion:
 - Use its verdicts exactly. Never recompute a comparison, never overrule one, and never
@@ -61,7 +67,9 @@ already resolved every comparison. It is arithmetic done for you, not a suggesti
   case say the reading is above, near, or within its limit and let [N] carry the figure.
   This governs the THRESHOLD figure and the standard's name, never the metric's own value
   and unit: those are required whenever the metric appears, for every audience.
+"""
 
+_METRIC_COMPLETENESS = THRESHOLD_VERDICTS + """
 METRIC COMPLETENESS — these outrank brevity. Length is never a reason to hide a problem:
 - Every pollutant flagged EXCEEDS, NEAR, or "not rated" in the Threshold Assessment
   MUST appear in the answer with its value and unit. This is absolute: no word cap,

@@ -64,6 +64,7 @@ python -m unittest discover -s tests -p "test_db_default_windows.py"        # ti
 python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
 python -m unittest discover -s tests -p "test_stakeholder_roles.py"         # role vocabulary, prompts, widening
 python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # embedding/rerank invariants
+python -m unittest discover -s tests -p "test_knowledge_path_grounding.py"  # knowledge-path verdicts + row shapes
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -302,6 +303,27 @@ Four rules earn their place, each from a wrong answer:
 Index metrics (IEQ/IAQ/ITC/IAC/IIL) get their own vocabulary — `POOR`/`FAIR`/`GOOD` against the 0–100 bands — because nothing is "exceeded" when a score is low, and `EXCEEDS` invited the model to describe 0/100 as a breached limit rather than the worst possible score.
 
 **Citation style:** a threshold *number* is quoted only for metrics flagged `EXCEEDS` or `NEAR`, where magnitude is the point. A metric within range says so and lets `[N]` carry the number — the frontend renders citations, so the reader can follow the source for detail instead of reading a list of limits that are all fine.
+
+**Every path that shows a reading gets the computed section — including the knowledge path.**
+It grounds definition answers in a live reading, and used to build no assessment and (because
+semantic guideline search only fires for standards questions) usually no citation sources
+either. Handed a number with no limit, the model judged it: one conversation reported
+*"VOC at 0.08 ppm exceeds the WHO guideline (0.061 ppm)"* on the DB path and, one turn later,
+*"0.08 ppm, within typical indoor ranges and considered acceptable"* on the knowledge path.
+`build_knowledge_grounding` now fetches thresholds deterministically for the metrics on screen
+(`get_thresholds_for_metrics`, the same call the DB path makes) and renders the same section.
+It is shared by the sync and streaming knowledge paths, which had already drifted apart.
+
+**Reading rows come in two shapes and both must normalise.** A metric pack produces one column
+per metric; a single named metric produces a generic `value` column with the metric named on
+the payload. Only the first was handled, so every **point lookup** — "what is the CO2?" —
+normalised to `{"value": 453}`, matched no metric, and produced zero verdict lines: the
+computed machinery was silently bypassed for the narrowest question in the system.
+`threshold_assessment.readings_from_rows` is the one implementation both paths call.
+
+`THRESHOLD_VERDICTS` is split out from `_METRIC_COMPLETENESS` so the knowledge directive can
+take the verdict rules without the completeness rules — a definition question must not be made
+to recite the whole pollutant pack.
 
 Do not move this comparison back into the prompt. Two attempts are on record: a "cite the source that publishes the number you applied" clause produced a fabricated *"RESET Air Grade A threshold of 0.07 ppm"* and was reverted, and every prose variant left attribution wrong roughly as often as right.
 
