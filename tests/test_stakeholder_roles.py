@@ -130,7 +130,7 @@ class DefaultRoleTests(unittest.TestCase):
         # ever starts failing because the old lines came back, the occupant rundown came
         # back with them.
         self.assertNotIn(_LEGACY_AUDIENCE_LINES, SHARED_SYSTEM_PROMPT)
-        self.assertIn("as FEW metrics as the question allows", role_style_block(ROLE_OCCUPANT))
+        self.assertIn("does not want a rundown", role_style_block(ROLE_OCCUPANT))
 
     def test_every_role_including_the_default_has_an_addendum(self):
         # The occupant block now says something the hand-written IFC/sensor prompts do not,
@@ -247,17 +247,45 @@ class RolesActuallyDifferTests(unittest.TestCase):
     def test_occupant_is_warm_and_avoids_index_acronyms(self):
         block = role_style_block(ROLE_OCCUPANT).lower()
         self.assertIn("never use an index acronym", block)
-        self.assertIn("what it means for them", block)
-        self.assertIn("warm", block)
+        self.assertIn("never name a standards body", block)
+        self.assertIn("warm and human", block)
+        # Every number must be tied to something the reader would actually experience.
+        self.assertIn("a number with no lived meaning is noise", block)
 
-    def test_the_two_brief_roles_both_ask_for_fewer_metrics(self):
+    def test_the_two_brief_roles_share_the_same_structural_constraints(self):
+        """Occupant was reworked to match executive's shape after its answers ran ~110
+        words against executive's ~49. The difference was not tone but structure:
+        executive had a word cap, discouraged bullets, and said to stop once the
+        all-clear was given. Occupant had none of the three."""
         for role in (ROLE_OCCUPANT, ROLE_EXECUTIVE):
             block = role_style_block(role).lower()
-            self.assertTrue(
-                "few metrics" in block or "one or two metrics" in block
-                or "at most the one or two metrics" in block,
-                role,
-            )
+            self.assertIn("keep the whole answer under", block, f"{role}: no word cap")
+            self.assertIn("bullets are usually unnecessary", block, f"{role}: bullets")
+            self.assertIn("does not want a rundown", block, f"{role}: rundown")
+            self.assertIn("say so", block, f"{role}: all-clear-and-stop")
+
+    def test_wording_examples_do_not_double_as_reusable_verdict_phrases(self):
+        """An example phrase short enough to paste WILL be pasted into the wrong slot.
+
+        A first version of the occupant block offered the literal wording "a touch above
+        what is usually recommended" as an illustration. The model lifted it and applied it
+        to CO2 at 466 ppm — a metric the Threshold Assessment reports as WITHIN its limit —
+        inverting a computed verdict in a sentence the reader has no way to check. Executive
+        stayed accurate because its examples are full sentences that only fit their context.
+
+        So the blocks bind verdict wording to the computed section, and the illustrations
+        are complete sentences rather than droppable fragments.
+        """
+        occupant = role_style_block(ROLE_OCCUPANT).lower()
+        self.assertIn("take the verdict from the threshold assessment", occupant)
+        self.assertIn("never from a phrase in this block", occupant)
+        # And the specific inversion is named, since "close to the limit" reads harmless.
+        self.assertIn('never "a little above" or "close to the limit"', occupant)
+
+    def test_the_brief_roles_still_keep_their_citations(self):
+        # Brevity must not cost the [N] markers — they are what makes the answer checkable
+        # once the standards names are gone.
+        self.assertIn("[n] marker", role_style_block(ROLE_OCCUPANT).lower())
 
     def test_nothing_in_the_assembled_prompt_contradicts_the_action_policy(self):
         """The reported bug: an FM answer that closed "No action needed unless the user asks
