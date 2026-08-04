@@ -29,7 +29,7 @@ from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
 from executors.db_support import threshold_assessment
 from prompting.db_prompts import THRESHOLD_VERDICTS
-from prompting.roles import ROLE_DEFAULT
+from prompting.roles import ROLE_DEFAULT, role_wants_compliance_detail
 from storage.guideline_store import get_thresholds_for_metrics
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
@@ -363,6 +363,7 @@ def build_knowledge_grounding(
     knowledge_cards: List[Dict[str, Any]],
     live_sensor_data: Any,
     guideline_records: List[Dict[str, Any]],
+    role: str = ROLE_DEFAULT,
 ) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Assemble the grounded context for a knowledge answer.
 
@@ -393,7 +394,9 @@ def build_knowledge_grounding(
 
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_records)
     assessment = (
-        threshold_assessment.build_assessment_section(readings, indexed_sources)
+        threshold_assessment.build_assessment_section(
+            readings, indexed_sources, compliance_detail=role_wants_compliance_detail(role)
+        )
         if readings
         else ""
     )
@@ -433,6 +436,7 @@ def answer_env_question_with_metadata(
         knowledge_cards=context.get("knowledge_cards", []),
         live_sensor_data=live_sensor_data,
         guideline_records=effective_guideline_records,
+        role=role,
     )
     context_label = (
         "Live sensor readings with knowledge grounding"
@@ -498,6 +502,7 @@ async def stream_knowledge_tokens(
         knowledge_cards=context.get("knowledge_cards", []),
         live_sensor_data=live_sensor_data,
         guideline_records=effective_guideline_records,
+        role=role,
     )
     context_label = (
         "Live sensor readings with knowledge grounding"

@@ -130,3 +130,16 @@ def role_catalog() -> List[Dict[str, Any]]:
         }
         for role in VALID_ROLES
     ]
+
+
+# Roles that want compliance detail — threshold figures, standards bodies, index acronyms —
+# in the computed Threshold Assessment they are shown. The others get the same verdicts
+# rendered in plain language with the metrics that are fine collapsed into one sentence.
+# This is a rendering choice, never a verdict change: what a metric's status IS does not
+# depend on who is reading.
+_COMPLIANCE_DETAIL_ROLES = frozenset({ROLE_RESEARCHER, ROLE_FACILITY_MANAGER})
+
+
+def role_wants_compliance_detail(role: Optional[str]) -> bool:
+    """Whether this reader should see threshold numbers and standards names."""
+    return coerce_role(role) in _COMPLIANCE_DETAIL_ROLES

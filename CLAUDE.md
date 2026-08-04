@@ -66,6 +66,7 @@ python -m unittest discover -s tests -p "test_stakeholder_roles.py"         # ro
 python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # embedding/rerank invariants
 python -m unittest discover -s tests -p "test_knowledge_path_grounding.py"  # knowledge-path verdicts + row shapes
 python -m unittest discover -s tests -p "test_scope_leaks.py"               # scope survives to the answer
+python -m unittest discover -s tests -p "test_audience_rendering.py"        # evidence rendered per audience
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -330,6 +331,28 @@ Four rules earn their place, each from a wrong answer:
 - **A hard limit outranks a comfort-band edge.** `threshold_type` `max`/`min` is a limit; `range_max`/`range_min` is the top of an optimal band. 54.8 %RH is above EPA's 50 % optimal top but well under ASHRAE's 65 % limit — treating those alike flags an ordinary room. Band edges only decide when a metric has no hard limit, and then report as *outside optimal range*.
 
 Index metrics (IEQ/IAQ/ITC/IAC/IIL) get their own vocabulary — `POOR`/`FAIR`/`GOOD` against the 0–100 bands — because nothing is "exceeded" when a score is low, and `EXCEEDS` invited the model to describe 0/100 as a breached limit rather than the worst possible score.
+
+**The assessment is rendered for the audience.** `build_assessment_section(..., compliance_detail=)`
+— resolved from the role by `role_wants_compliance_detail` — decides how the verdicts are
+*described*, never what they are. `researcher` and `facility_manager` see the full form:
+threshold figure, publishing body, index acronyms, one line per metric. `occupant` and
+`executive` see plain wording ("is close to the recommended limit"), index scores translated
+("air quality score", not "IAQ Sub-index"), and the metrics that are within range collapsed
+into one sentence. `_plainify_payload` relabels the same acronyms in `## Measured Room Facts`,
+which is serialized verbatim into the prompt.
+
+This is not a second way of saying what the role blocks already say — it is the reason they
+could not work. The section is headed *"COMPUTED ... authoritative: state them as given"*, so
+whatever appears in it is what the model writes. An occupant block forbidding standards names
+and index acronyms was competing with a block of authoritative text containing both, per
+metric, for six metrics. Three rounds of prompt wording failed before the evidence itself was
+scoped. Same principle as `_restrict_rows_to_metrics`: narrow the data, do not ask the model to
+ignore it.
+
+A metric flagged EXCEEDS, NEAR or not-rated keeps its own line with value and unit for **every**
+audience — only what is fine is collapsed, and the collapsed sentence names every metric it
+covers so the claim stays checkable. Citations survive in both forms; `[N]` is what replaces
+naming the standard inline.
 
 **Citation style:** a threshold *number* is quoted only for metrics flagged `EXCEEDS` or `NEAR`, where magnitude is the point. A metric within range says so and lets `[N]` carry the number — the frontend renders citations, so the reader can follow the source for detail instead of reading a list of limits that are all fine.
 
