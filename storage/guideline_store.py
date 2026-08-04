@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from storage.postgres_client import get_cursor
-from storage.embeddings import embed_texts
+from storage.embeddings import embed_query
 
 
 _log = logging.getLogger(__name__)
@@ -101,13 +101,15 @@ def search_guideline_records(
     """
     if not question:
         return []
-    embeddings = embed_texts([question])
-    if not embeddings:
+    embedding = embed_query(question)
+    if not embedding:
         return []
-    query_embedding = _normalize_embedding_dim(embeddings[0])
+    query_embedding = _normalize_embedding_dim(embedding)
     try:
         with get_cursor(real_dict=True) as cur:
-            cur.execute("SET LOCAL ivfflat.probes = 5")
+            # No probe setting: migration 004 dropped the ivfflat index here too. It was
+            # lists=10 over ~40 rows and this call ran at the default probes=1, i.e. it
+            # could only ever see about a tenth of the corpus.
             filters = ["is_active = TRUE"]
             params: List[Any] = [query_embedding, query_embedding]
             if metric_filter:

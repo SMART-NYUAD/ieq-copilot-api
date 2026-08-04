@@ -36,6 +36,13 @@ python -m unittest discover -s tests -p "test_branch_model.py"
 python scripts/check_tests_hermetic.py
 ```
 
+**Score knowledge retrieval against the live embedding store** (network by design):
+```bash
+python tests/retrieval_eval.py                # top-1 + recall@3 over golden cases
+python tests/retrieval_eval.py --probe-sweep  # ivfflat recall diagnostic
+python tests/retrieval_eval.py --ablate       # bge query-prefix ablation
+```
+
 **Score the router prompt against the live LLM** (network by design — not part of `discover`):
 ```bash
 python tests/router_eval.py                  # golden router cases + golden conversation
@@ -56,6 +63,7 @@ python -m unittest discover -s tests -p "test_router_failure_paths.py"      # ro
 python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows
 python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
 python -m unittest discover -s tests -p "test_stakeholder_roles.py"         # role vocabulary, prompts, widening
+python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # embedding/rerank invariants
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -234,6 +242,49 @@ This exists because *"how is the air quality today?"* answered with CO2, IAQ, hu
 A second defect made VOC the cheapest metric to drop. Its guideline records were stored under the legacy key `tvoc` while `guideline_store.get_thresholds_for_metrics` looks up `voc`, so VOC really had no retrievable threshold — and an uncited numeric claim is discouraged elsewhere in the prompt, so the model preferred silence. The deployed CHECK constraint had drifted the same way (permitting `tvoc`, forbidding `voc`, the reverse of migration 002). `storage/migrations/003_normalize_voc_guideline_metric.sql` replaces the constraint and normalises the rows; `test_air_quality_completeness.py` compares the seed's metric keys against migration 002's CHECK so that drift cannot return silently.
 
 **VOC thresholds exist in two units on purpose.** The Atmocube (Sensirion SGP41) reports TVOC in **ppm**, range 0–3, while every published TVOC threshold is in µg/m³ — so before this there was nothing to classify a VOC reading against, and the answer either went silent on VOC or borrowed another metric's threshold. Four companion records restate the same standards in ppm using the conversion published for TVOC sensor readings, **4.9 µg/m³ per ppb**: RESET Air Grade A and WELL v2 A04 500 µg/m³ → `0.102 ppm`, WHO 2010 comfort 300 µg/m³ → `0.061 ppm`, UBA/Seifert precautionary 950 µg/m³ → `0.194 ppm`. That factor is corroborated internally — 300 µg/m³ → 0.061 ppm reproduces the top of the 0.05–0.063 ppm band this system already treated as the VOC comfort range. The mass-based records are kept: they are what the standards actually publish, and the ppm figures are **derived**, which every one of their `claim_text` and `caveat_text` fields states. Note the sensor is ethanol-calibrated, TVOC is a summed indicator, and its mass/volume relationship depends on the compound mix — so these are comparison aids, not compliance limits.
+
+### Knowledge-card retrieval
+
+Cards are retrieved by vector similarity (`search_knowledge_cards` in
+`executors/knowledge_executor.py`) over `env_knowledge_card_embeddings`, then reranked by a
+small card-type nudge. `BAAI/bge-large-en-v1.5` (1024-dim) produces the vectors.
+
+**Query and passage embeddings are not the same call.** bge is trained with an asymmetric
+retrieval objective: the query side carries an instruction prefix, the passage side does not.
+`embed_query()` applies it, `embed_texts()`/`embed_documents()` do not. Every retrieval path
+must use `embed_query`; anything stored must use the passage side. Mixing them is the
+documented misuse and costs ranking quality on exactly the short questions this system gets.
+
+**There is no ANN index, deliberately.** `env_knowledge_card_embeddings_embedding_idx` was
+built `WITH (lists = 100)` over 55 rows — about 0.55 vectors per list, so most lists were
+empty. An ivfflat scan visits only `probes` lists and reports the shortfall as *fewer rows*,
+never as an error. Measured: `probes=1` (the Postgres default) returned **zero** rows for a
+LIMIT-5 query; `probes=10` (what the code set) returned the wrong cards at similarity 0.483;
+`probes=100` returned the right ones at 0.629. Migration 004 drops it. At this corpus size an
+exact scan is microseconds and always correct. Do not add an index back until the corpus is
+in the tens of thousands of rows, and then prefer HNSW, which has no `lists` to get wrong.
+
+**The rerank nudge breaks ties; it does not decide ranking.** Real similarities span roughly
+0.45–0.65. The original nudges reached ±0.7 — several times that spread — so `card_type`
+outranked the embedding outright and a barely-related interpretation card beat an
+exactly-on-topic explanation card by a fixed margin. Nudges are now capped by
+`_MAX_PRIORITY_NUDGE` (0.10) and `test_retrieval_ranking.py` asserts it.
+
+**Retrieval is measured, not assumed.** `python tests/retrieval_eval.py` scores golden cases
+(`tests/retrieval_eval_cases.json`) as top-1 and recall@3; `--probe-sweep` reprints the
+ivfflat diagnostic above and `--ablate` measures the query prefix. It is network-dependent by
+design and is not part of `unittest discover`, the same arrangement as `tests/router_eval.py`.
+A retrieval bug belongs there as a case first. The corpus scored **3/17 top-1 before this
+work and 16/17 after**; the one remaining failure is recorded in the cases file as a known
+bi-encoder limitation on two near-duplicate cards rather than quietly dropped.
+
+**Card metric names are the registry's names.** `voc` and `sound`, not `tvoc`/`noise`
+(migration 005), matching `executors/metric_registry.py` and the guideline records that
+migration 003 already normalised. Two evidence stores disagreeing about what a metric is
+called cannot be joined or reasoned about together.
+
+Add cards with `python -m storage.seed_knowledge_cards` (`--list` to preview). It inserts by
+title, so it is safe to re-run.
 
 ### Threshold verdicts are computed, not prompted
 

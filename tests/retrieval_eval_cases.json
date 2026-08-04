@@ -1,0 +1,116 @@
+{
+  "_comment": "Golden retrieval cases for tests/retrieval_eval.py. Each case names a question and what a correct card set looks like. `expect_metric` is the metric the top-ranked card must carry; `expect_type` its card_type; `expect_title_contains` a substring of an acceptable title. A case passes when the top-1 card satisfies every key present, and `recall_at_3` reports whether an acceptable card appears in the top 3. Add a case here first when a retrieval bug is reported.",
+  "cases": [
+    {
+      "id": "define-co2",
+      "group": "definition",
+      "question": "what is CO2?",
+      "expect_metric": "co2",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "define-voc",
+      "group": "definition",
+      "question": "what is VOC?",
+      "expect_metric": "voc",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "define-pm25",
+      "group": "definition",
+      "question": "what is PM2.5?",
+      "expect_metric": "pm25",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "define-humidity",
+      "group": "definition",
+      "question": "what is relative humidity?",
+      "expect_metric": "humidity",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "define-ieq",
+      "group": "definition",
+      "question": "what is the IEQ score?",
+      "expect_title_contains": "IEQ"
+    },
+    {
+      "id": "explain-verb-pm25",
+      "group": "definition",
+      "question": "explain PM2.5 to me",
+      "expect_metric": "pm25",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "tell-me-about-voc",
+      "group": "definition",
+      "question": "tell me about VOCs",
+      "expect_metric": "voc"
+    },
+    {
+      "id": "what-are-vocs",
+      "group": "definition",
+      "question": "what are volatile organic compounds?",
+      "expect_metric": "voc"
+    },
+    {
+      "id": "interpret-high-co2",
+      "group": "interpretation",
+      "question": "the CO2 is high, what does that mean for people in the room?",
+      "expect_metric": "co2"
+    },
+    {
+      "id": "interpret-pm25-elevated",
+      "group": "interpretation",
+      "question": "PM2.5 is elevated but VOC looks fine",
+      "expect_metric": "pm25",
+      "known_limitation": "The corpus holds 'PM2.5 elevated while TVOC is acceptable' and its mirror 'TVOC elevated while PM2.5 is acceptable'. The two differ only by which metric name sits on which side, which a bi-encoder cannot reliably separate; the correct card ranks #2. Fixing it needs either a cross-encoder rerank or card summaries that lead with the elevated metric. Kept as a failing case on purpose so the limitation stays visible rather than being quietly accepted."
+    },
+    {
+      "id": "guardrail-health-risk",
+      "group": "guardrail",
+      "question": "is this air dangerous to my health?",
+      "expect_type": "caveat"
+    },
+    {
+      "id": "guardrail-safe",
+      "group": "guardrail",
+      "question": "is it safe to work in here all day?",
+      "expect_type": "caveat"
+    },
+    {
+      "id": "subindex-itc",
+      "group": "subindex",
+      "question": "what does the thermal comfort sub-index mean?",
+      "expect_title_contains": "thermal comfort subindex"
+    },
+    {
+      "id": "co2-ventilation-caveat",
+      "group": "caveat",
+      "question": "does CO2 tell me everything about air quality?",
+      "expect_metric": "co2",
+      "expect_type": "caveat"
+    },
+    {
+      "id": "define-light",
+      "group": "definition",
+      "question": "what does the light level mean?",
+      "expect_metric": "light",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "define-sound",
+      "group": "definition",
+      "question": "what is the sound level measurement?",
+      "expect_metric": "sound",
+      "expect_type": "explanation"
+    },
+    {
+      "id": "subindex-iil",
+      "group": "subindex",
+      "question": "what does the illumination subindex mean?",
+      "expect_title_contains": "illumination subindex"
+    }
+  ]
+}

@@ -16,11 +16,28 @@ _GUIDELINE_EMBED_DIM = 1536
 
 
 def _normalize_embedding_dim(embedding: List[float], target_dim: int = _GUIDELINE_EMBED_DIM) -> List[float]:
+    """Fit a model vector to the column width declared by migration 002.
+
+    The column is vector(1536) — an OpenAI-era width — while the configured model
+    (bge-large-en-v1.5) is 1024. Zero-padding the difference is SAFE for cosine similarity:
+    the appended zeros change neither the dot product nor either norm, so ranking is
+    identical to comparing the raw 1024-dim vectors. It costs 50% more storage and distance
+    work, which at this corpus size is irrelevant.
+
+    Truncation is NOT safe — it discards real components and silently degrades every
+    comparison — so a model wider than the column raises instead. That is the trap this
+    guard exists for: swapping in a 2048-dim model would otherwise keep working while
+    quietly returning worse results.
+    """
     values = list(embedding or [])
     if len(values) == target_dim:
         return values
     if len(values) > target_dim:
-        return values[:target_dim]
+        raise ValueError(
+            f"embedding has {len(values)} dimensions but the guideline column holds "
+            f"{target_dim}. Truncating would corrupt the vector — widen the column with a "
+            f"migration and re-embed instead."
+        )
     return values + [0.0] * (target_dim - len(values))
 
 
