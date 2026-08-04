@@ -65,6 +65,7 @@ python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # au
 python -m unittest discover -s tests -p "test_stakeholder_roles.py"         # role vocabulary, prompts, widening
 python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # embedding/rerank invariants
 python -m unittest discover -s tests -p "test_knowledge_path_grounding.py"  # knowledge-path verdicts + row shapes
+python -m unittest discover -s tests -p "test_scope_leaks.py"               # scope survives to the answer
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -139,6 +140,34 @@ Sensor data comes from the Smart CRG REST API via `executors/db_support/api_clie
 *Which* metrics a question needs is decided once, in `executors/db_support/metric_planning.py`, and handed to the handlers as a `MetricPlan` (priority-ordered `metrics` + a `limit`; `plan.selected` is what to fetch). The router picks the family via `RoutePlan.metric_scope` ∈ `named` / `air_quality` / `ieq_index` / `comfort` / `diagnostic` / `full`; `classify_metric_scope` reproduces the choice from question text when the router LLM was unreachable — the same LLM-primary/keyword-fallback arrangement as `analysis_mode`.
 
 The scope vocabulary is closed and the scope→metrics table lives in code: the router names a family, never a metric, so it cannot invent one and the mapping stays testable. `analysis_mode="diagnostic"` outranks a narrower scope, because a root-cause answer needs every contributing metric.
+
+### A question's scope must survive to the answer
+
+Two symptoms, one shape: the scope is decided correctly and then widened or relabelled downstream.
+
+**Sub-index expansion is scope-aware.** `with_ieq_sub_indices` appends the IEQ sub-indices when
+the composite is in the pack — a bare IEQ number cannot explain itself. But `ieq` also rides in
+the *air-quality* pack as a summary, and expanding to all four dragged `itc`/`iac`/`iil` into
+air answers; the threshold assessment then produced verdicts for them and `_METRIC_COMPLETENESS`
+made reporting them mandatory. That is how *"what about the air?"* led with the lighting score.
+Relevance now depends on scope (`_SCOPE_SUB_INDICES`): `air_quality` keeps `iaq` — it *is* the
+air dimension — and drops the rest; `ieq_index`, `comfort`, `diagnostic` and `full` keep all four.
+
+**Scoping the request is not enough — the sensor API ignores it.** It returns every metric
+column whatever was asked for, so a correctly scoped query still came back carrying the metrics
+it had excluded. `_restrict_rows_to_metrics` drops known metric columns absent from
+`metrics_used`, once, before the payload, the coverage summary or the assessment read the rows.
+It only removes keys it recognises as metrics, so point-lookup and aggregate row shapes
+(`value`, `avg_value`) pass through untouched.
+
+**A comfort question gets a comfort directive.** `db_response_directive` routed comfort
+questions to `DB_TOOL_RESPONSE_DIRECTIVE_AIR_QUALITY_POINT_LOOKUP`, which opens *"you are
+answering a current air-quality point lookup"* and says to *"center on pollutants"* — so
+*"how is the comfort today?"* was answered with *"the air quality in smart_lab today is good"*.
+The comfort pack was fetched correctly and then described as an air assessment. This dates to
+the first commit. `DB_TOOL_RESPONSE_DIRECTIVE_COMFORT` leads with an overall comfort verdict set
+by the worst dimension and covers thermal, air, acoustic and visual; it carries
+`_METRIC_COMPLETENESS` for the same reason the air-quality directive does.
 
 ### Answer shape: `analysis_mode`
 

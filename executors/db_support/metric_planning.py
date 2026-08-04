@@ -136,19 +136,45 @@ def is_full_assessment_query(question: str) -> bool:
     return any(phrase in q for phrase in _FULL_ASSESSMENT_PHRASES)
 
 
-def with_ieq_sub_indices(metrics: List[str]) -> List[str]:
-    """Append the IEQ sub-indices when the composite is present.
+# Which sub-indices are relevant to each scope. The composite IEQ appears in several packs
+# as a summary, and expanding it to ALL FOUR sub-indices wherever it appeared is what put
+# illumination and acoustics into air-quality answers: "what about the air?" resolved to
+# [co2, pm25, voc, humidity, ieq], the expansion added iaq+itc+iac+iil, the threshold
+# assessment computed a verdict for IIL, and _METRIC_COMPLETENESS then made reporting it
+# mandatory. The model was obeying the prompt; the pack had been widened behind it.
+#
+# IAQ is kept for air scope because it IS the air-quality sub-index. ITC/IAC/IIL are
+# thermal, acoustic and visual — nothing to do with air.
+_SCOPE_SUB_INDICES: Dict[str, tuple] = {
+    SCOPE_AIR_QUALITY: ("iaq",),
+    SCOPE_IEQ_INDEX: _IEQ_SUB_INDICES,
+    SCOPE_COMFORT: _IEQ_SUB_INDICES,      # comfort genuinely spans thermal, acoustic, visual
+    SCOPE_DIAGNOSTIC: _IEQ_SUB_INDICES,   # root cause needs every contributing dimension
+    SCOPE_FULL: _IEQ_SUB_INDICES,
+    SCOPE_NAMED: _IEQ_SUB_INDICES,        # naming the composite is asking for its breakdown
+}
+
+
+def with_ieq_sub_indices(metrics: List[str], scope: Optional[str] = None) -> List[str]:
+    """Append the IEQ sub-indices relevant to ``scope`` when the composite is present.
 
     A snapshot of the IEQ score is a bare number; the sub-indices are what let the answer
     say *why* it is what it is. Only the point-lookup path does this — an aggregate row
     reports the composite over a window, where the sub-index breakdown does not apply the
     same way.
+
+    Which sub-indices are relevant depends on what was asked. When IEQ is the SUBJECT the
+    whole breakdown belongs; when it rides along in another pack as a summary, dragging in
+    every dimension changes the topic of the answer. ``scope=None`` keeps the historical
+    all-four behaviour for direct callers.
     """
     expanded = list(metrics)
-    if "ieq" in expanded:
-        for sub in _IEQ_SUB_INDICES:
-            if sub not in expanded:
-                expanded.append(sub)
+    if "ieq" not in expanded:
+        return expanded
+    relevant = _SCOPE_SUB_INDICES.get(str(scope or ""), _IEQ_SUB_INDICES)
+    for sub in relevant:
+        if sub not in expanded:
+            expanded.append(sub)
     return expanded
 
 

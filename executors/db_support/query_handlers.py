@@ -500,7 +500,7 @@ def _handle_point_lookup(
     )
     if is_multi:
         # A snapshot of the composite needs its breakdown to be explainable.
-        metric_names = with_ieq_sub_indices(plan.selected)
+        metric_names = with_ieq_sub_indices(plan.selected, plan.scope)
         if not metric_names:
             return {
                 "operation_type": "point_lookup_multi_metric",
