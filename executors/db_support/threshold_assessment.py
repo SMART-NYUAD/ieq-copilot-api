@@ -257,8 +257,89 @@ def _format_value(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
-def render_assessment_block(assessments: List[MetricAssessment]) -> str:
-    """Render the verdicts as the labelled context section the prompt refers to."""
+# Plain-language labels for readers who should never see an index acronym. The section is
+# labelled authoritative and says "state them as given", so whatever appears here is what
+# the model writes — an occupant asked "how is the air?" and got "IAQ Sub-index is 94.0"
+# because that is the string it was handed.
+_PLAIN_LABELS = {
+    "ieq": "overall comfort score",
+    "iaq": "air quality score",
+    "itc": "thermal comfort score",
+    "iac": "noise comfort score",
+    "iil": "lighting score",
+}
+
+# Verdict phrasing without the threshold figure or the publishing body. The citation marker
+# still carries the source, so nothing is lost for a reader who wants it — the frontend
+# renders [N].
+_PLAIN_VERBS = {
+    STATUS_EXCEEDS: "is above what is recommended",
+    STATUS_NEAR: "is close to the recommended limit",
+    STATUS_WITHIN: "is within the recommended range",
+    STATUS_OUTSIDE_BAND: "is outside the ideal range, though not over a hard limit",
+}
+
+
+def _plain_display(a: "MetricAssessment") -> str:
+    return _PLAIN_LABELS.get(a.metric, a.display)
+
+
+def _render_plain(assessments: List[MetricAssessment]) -> List[str]:
+    """One line per metric that needs attention; everything else in a single sentence.
+
+    This is what makes an audience-scoped answer possible at all. The full renderer emits a
+    line per metric carrying a threshold number and a standards body, and the model is
+    instructed to state those as given — so no prompt wording could stop an occupant answer
+    reciting "0.061 ppm (WHO Indoor Air Quality Guidelines)" for six metrics. Selecting and
+    phrasing here removes the material rather than asking the model to ignore it.
+
+    Metrics that are FINE are collapsed. Metrics that are NOT fine keep their own line, with
+    value and unit, because that is the boundary the completeness rules protect.
+    """
+    lines: List[str] = []
+    fine: List[str] = []
+    for a in assessments:
+        value = f"{_format_value(a.value)} {a.unit}".strip()
+        citation = f" [{a.source_index}]" if a.source_index else ""
+        if a.is_index:
+            if a.status in (STATUS_GOOD,):
+                fine.append(_plain_display(a))
+            else:
+                lines.append(
+                    f"- {_plain_display(a)} = {value} — {a.band_label}. Status: {a.status}."
+                )
+            continue
+        if a.status == STATUS_UNRATED:
+            lines.append(
+                f"- {_plain_display(a)} = {value} — no comparable limit was published for "
+                f"this reading, so it could not be checked. Status: {a.status}."
+            )
+            continue
+        if a.status == STATUS_WITHIN:
+            fine.append(_plain_display(a))
+            continue
+        lines.append(
+            f"- {_plain_display(a)} = {value} — {_PLAIN_VERBS[a.status]}{citation}. "
+            f"Status: {a.status}."
+        )
+    if fine:
+        # Stated as a fact the answer may repeat, and true of every metric it names.
+        lines.append(
+            f"- Everything else measured is within its recommended range: {', '.join(fine)}."
+        )
+    return lines
+
+
+def render_assessment_block(
+    assessments: List[MetricAssessment], compliance_detail: bool = True
+) -> str:
+    """Render the verdicts as the labelled context section the prompt refers to.
+
+    ``compliance_detail=False`` drops the threshold figures, the standards bodies and the
+    index acronyms, and collapses the metrics that are within range into one sentence. The
+    verdicts themselves are unchanged — the same computation, described for a reader who
+    does not want compliance language.
+    """
     if not assessments:
         return ""
     lines = [
@@ -268,7 +349,9 @@ def render_assessment_block(assessments: List[MetricAssessment]) -> str:
         "appear here.",
         "",
     ]
-    for a in assessments:
+    if not compliance_detail:
+        lines += _render_plain(assessments)
+    for a in assessments if compliance_detail else []:
         value = f"{_format_value(a.value)} {a.unit}".strip()
         if a.is_index:
             lines.append(
@@ -348,5 +431,8 @@ def readings_from_rows(
 def build_assessment_section(
     readings: Dict[str, Any],
     indexed_sources: Iterable[Dict[str, Any]],
+    compliance_detail: bool = True,
 ) -> str:
-    return render_assessment_block(assess_readings(readings, indexed_sources))
+    return render_assessment_block(
+        assess_readings(readings, indexed_sources), compliance_detail=compliance_detail
+    )

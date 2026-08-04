@@ -26,7 +26,7 @@ from executors.db_support import query_parsing as db_parsing
 from executors.db_support import response_helpers as db_helpers
 from executors.db_support import threshold_assessment
 from executors.db_support.time_windows import granularity_hours_for_window
-from prompting.roles import ROLE_DEFAULT
+from prompting.roles import ROLE_DEFAULT, role_wants_compliance_detail
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import get_thresholds_for_metrics
@@ -554,6 +554,40 @@ def _latest_reading_row(
     return threshold_assessment.readings_from_rows(rows, fallback_metric)
 
 
+# Index keys as they appear in a reading row, and the words a non-technical reader uses.
+# Relabelled rather than removed: an IEQ question still needs the scores, and dropping them
+# would answer "what is the IEQ score?" with nothing.
+_PLAIN_PAYLOAD_LABELS = {
+    "ieq": "overall_comfort_score",
+    "iaq": "air_quality_score",
+    "itc": "thermal_comfort_score",
+    "iac": "noise_comfort_score",
+    "iil": "lighting_score",
+}
+
+
+def _plainify_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Relabel index acronyms in the payload for readers who must never see them.
+
+    ``## Measured Room Facts`` is serialized verbatim into the prompt, so `"iaq": 93.6` is a
+    string the model can copy — and did, producing "the IAQ score is 93.6" for an occupant
+    whose audience block forbids index acronyms outright. A rule cannot beat a value sitting
+    in the data; renaming the key removes the thing being copied.
+
+    Values, units and row structure are untouched. This is a labelling change only.
+    """
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return payload
+    relabelled = [
+        {_PLAIN_PAYLOAD_LABELS.get(str(k).lower(), k): v for k, v in row.items()}
+        if isinstance(row, dict)
+        else row
+        for row in rows
+    ]
+    return {**payload, "rows": relabelled}
+
+
 def _build_db_context_data(
     *,
     payload: Dict[str, Any],
@@ -563,18 +597,21 @@ def _build_db_context_data(
     conversation_context: str = "",
     rows: Optional[List[Dict[str, Any]]] = None,
     indexed_sources: Optional[List[Dict[str, Any]]] = None,
+    role: str = ROLE_DEFAULT,
 ) -> str:
     interpretation_cards, guardrails = db_helpers.split_knowledge_cards(knowledge_cards)
     # Computed once here so render_sync and render_stream cannot disagree about
     # whether a metric is over its limit.
+    compliance_detail = role_wants_compliance_detail(role)
     assessment = threshold_assessment.build_assessment_section(
         # A single-metric payload names its metric here; without it a value-shaped row
         # produces no verdicts at all.
         _latest_reading_row(rows, (payload or {}).get("metric")),
         indexed_sources or [],
+        compliance_detail=compliance_detail,
     )
     return build_grounded_context_sections(
-        measured_room_facts=payload,
+        measured_room_facts=payload if compliance_detail else _plainify_payload(payload),
         backend_semantic_state=backend_semantic_state,
         knowledge_cards=interpretation_cards,
         communication_guardrails=guardrails,
@@ -641,6 +678,7 @@ def _render_db_answer_with_llm(
         conversation_context=conversation_context,
         rows=rows,
         indexed_sources=indexed_sources,
+        role=str((payload or {}).get("stakeholder_role") or ROLE_DEFAULT),
     )
     prompt_text = _build_db_prompt_text(
         question=question,
