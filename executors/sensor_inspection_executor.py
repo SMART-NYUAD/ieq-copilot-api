@@ -33,6 +33,8 @@ from core_settings import (
 )
 from executors.db_support import api_client
 from ollama_helpers import extract_generate_chunk, extract_generate_text
+from prompting.role_prompts import role_addendum
+from prompting.roles import ROLE_DEFAULT
 from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
 
 
@@ -280,9 +282,9 @@ def _deterministic_fallback(question: str, facts: List[Dict[str, Any]], threshol
     )
 
 
-def _build_prompt(question: str, context_text: str) -> str:
+def _build_prompt(question: str, context_text: str, role: str = ROLE_DEFAULT) -> str:
     return (
-        f"{SENSOR_SYSTEM_PROMPT}\n\n"
+        f"{SENSOR_SYSTEM_PROMPT}\n{role_addendum(role)}\n"
         f"=== Sensor Snapshot ===\n{context_text}\n=== End Snapshot ===\n\n"
         f"Question: {question}\n\n"
         "Answer the question using only the sensor snapshot above."
@@ -296,7 +298,9 @@ def _no_data_answer() -> str:
     )
 
 
-def answer_sensor_question_with_metadata(user_question: str, space: Optional[str] = None) -> Dict[str, Any]:
+def answer_sensor_question_with_metadata(
+    user_question: str, space: Optional[str] = None, role: str = ROLE_DEFAULT
+) -> Dict[str, Any]:
     """Synchronously answer a per-sensor question with grounding metadata."""
     slug = slugify_space(space)
     threshold = sensor_stale_hours()
@@ -313,7 +317,7 @@ def answer_sensor_question_with_metadata(user_question: str, space: Optional[str
         }
 
     context_text = _build_context_text(slug, facts, now, threshold)
-    prompt = _build_prompt(user_question, context_text)
+    prompt = _build_prompt(user_question, context_text, role)
     payload = {
         "model": ollama_model(),
         "prompt": prompt,
@@ -344,7 +348,9 @@ def answer_sensor_question_with_metadata(user_question: str, space: Optional[str
     }
 
 
-async def stream_sensor_tokens(user_question: str, space: Optional[str] = None) -> AsyncIterator[str]:
+async def stream_sensor_tokens(
+    user_question: str, space: Optional[str] = None, role: str = ROLE_DEFAULT
+) -> AsyncIterator[str]:
     """Stream a per-sensor answer as SSE token events."""
     slug = slugify_space(space)
     threshold = sensor_stale_hours()
@@ -360,7 +366,7 @@ async def stream_sensor_tokens(user_question: str, space: Optional[str] = None) 
         return
 
     context_text = _build_context_text(slug, facts, now, threshold)
-    prompt = _build_prompt(user_question, context_text)
+    prompt = _build_prompt(user_question, context_text, role)
     payload = {
         "model": ollama_model(),
         "prompt": prompt,

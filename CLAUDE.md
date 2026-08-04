@@ -55,6 +55,7 @@ python -m unittest discover -s tests -p "test_branch_model.py"              # br
 python -m unittest discover -s tests -p "test_router_failure_paths.py"      # router transport/parse failures
 python -m unittest discover -s tests -p "test_db_default_windows.py"        # time windows
 python -m unittest discover -s tests -p "test_api_auth_and_ownership.py"    # auth + conversation ownership
+python -m unittest discover -s tests -p "test_stakeholder_roles.py"         # role vocabulary, prompts, widening
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -87,7 +88,7 @@ POST /query or /query/stream
 
 ### ConversationContext
 
-`build_conversation_context()` in `storage/conversation_context.py` is called once at the HTTP boundary and produces a frozen dataclass containing every view downstream components need: `effective_question`, `effective_lab`, `routing_snippet` (for the router LLM), `llm_history` (for the answer LLM), and carry-over slots (`carried_metric`, `carried_time_phrase`). No downstream layer reconstructs context independently — they all read from this single object. Carry-over values are passed as structured `planner_hints` to executors; they are **never appended to `effective_question`**.
+`build_conversation_context()` in `storage/conversation_context.py` is called once at the HTTP boundary and produces a frozen dataclass containing every view downstream components need: `effective_question`, `effective_lab`, `routing_snippet` (for the router LLM), `llm_history` (for the answer LLM), carry-over slots (`carried_metric`, `carried_time_phrase`), and the resolved stakeholder `role`. No downstream layer reconstructs context independently — they all read from this single object. Carry-over values are passed as structured `planner_hints` to executors; they are **never appended to `effective_question`**.
 
 ### Routing
 
@@ -138,9 +139,95 @@ The scope vocabulary is closed and the scope→metrics table lives in code: the 
 
 The lesson is the same one the definite-article bug taught, in a new place: **when the model ignores a rule, give the decision its own field and let it select the structure — do not restate the rule more loudly.** A fifth "you MUST provide recommendations" would have changed nothing. `db_response_directive` now checks advisory before every other directive, and `DB_TOOL_RESPONSE_DIRECTIVE_ADVISORY` suppresses the metric rundown and the missing-metric disclaimer that were crowding the advice out. The resolved flag rides `payload["response_mode"]` so `render_sync` and `render_stream` read one value instead of each re-deriving it. Cases live in `tests/router_eval.py` group `advice`; the answer-shape end of it is phase `P5` of the golden conversation, which asserts action vocabulary and excludes the "no action needed" non-answer.
 
+### Stakeholder roles: who the answer is written for
+
+`role` on the request declares the caller's stakeholder role — `occupant` (default),
+`facility_manager`, `researcher`, `executive` — and selects the audience block spliced into the
+answer model's system prompt. The vocabulary is closed and lives in `prompting/roles.py`; the
+blocks live in `prompting/role_prompts.py`; `GET /roles` serves the list so a frontend does not
+hardcode it.
+
+**Role is the one signal the router is never asked for.** `intent`, `analysis_mode` and
+`metric_scope` are all properties of the question and must be LLM-derived from its wording. A
+role is a property of the *person*: "how is the air quality?" reads identically from an
+occupant, an operator, an analyst and a director, so there is nothing in the text to infer it
+from. It is declared explicitly, resolved in `build_conversation_context` as **the request's
+`role`, or `DEFAULT_STAKEHOLDER_ROLE`** — nothing else — and carried on `ConversationContext`
+like every other per-turn view.
+
+**Role is per-message and deliberately stateless.** An earlier version stored the last-used role
+on the conversation and inherited it when the field was omitted, which protected a client that
+forgot to send it. That was dropped: it made an omitted field mean something different on turn 5
+than on turn 1, so the same request body could produce two differently-shaped answers depending
+on history — which makes the feature impossible to experiment with and hard to debug. Switching
+role between consecutive turns of one conversation is the normal case. Do not reintroduce
+persistence here; `test_stakeholder_roles.py` asserts the column's absence.
+
+`occupant` is the default because **the system already had exactly one persona** — `SHARED_SYSTEM_PROMPT`
+hardcoded *"Write for non-technical occupants: plain language, no jargon"*. The occupant block
+began as that wording verbatim, which made the feature a provable no-op; it deliberately is not
+any more. "No jargon" constrains vocabulary and says nothing about *volume*, so combined with the
+completeness rule below an occupant still received every fetched pollutant with its value — the
+researcher's answer in friendlier words. Occupant now says name as few metrics as the question
+allows and never use an index acronym. **This changes default behavior for callers who send no
+role**, which is the intent.
+
+**The block is spliced in one place: the system prompt.** Not also into the DB response
+directives — that is how the advisory bug started, with four prompts repeating an instruction
+until the model followed none of them. `get_shared_prompt_template(directive, role)` covers the DB
+and knowledge paths; the IFC and sensor-inspection executors hand-write their own system prompts
+and take `role_addendum(role)`. Instant branches (viewer/heatmap/download/clarify) make no model
+call, so role is a no-op there but is still echoed in metadata.
+
+**The role block is the only place that decides whether to volunteer an action**, and that rule
+was paid for. `facility_manager` says to give the intervention unasked; five clauses elsewhere
+said to withhold action guidance — two in `PRESENTATION_STYLE_PROMPT` (embedded in *both* the
+system prompt and every directive suffix, so it landed twice), one in `SHARED_SYSTEM_PROMPT`, two
+in the DB directives — and two of the five appeared *after* the role block. The role lost. Worse,
+the model recited an instruction into a user-facing answer: *"No action needed unless the user
+asks for recommendations."* The clauses were deleted and each block now states its own policy.
+`test_stakeholder_roles.py` asserts the assembled prompt contains none of them, for every role.
+Do not add a rule about recommendations to any other prompt file.
+
+**Role may widen the data fetched, never narrow it.** Only `researcher` widens, and the widening
+is a *union* with the full pack rather than a swap to it (`_WIDENING_ROLES` in `metric_planning.py`).
+That distinction is load-bearing: `SCOPE_COMFORT` is ten metrics and `SCOPE_FULL` is eight, so a
+promote-to-full would silently drop `itc`/`iaq` — the same failure as the comfort comparison that
+lost `sound` and `light`. A union cannot lose a metric however the packs are later edited. A named
+metric stays named for every role.
+
+**What differentiates the roles is the question each reader is actually asking**, not adjectives.
+A first version differed mostly in tone and produced four answers that read alike. `facility_manager`
+answers *do I need to intervene, and what do I check* — it names the plausible physical cause and
+the confirming check (filter loading, damper position, AHU schedule, humidifier setpoint, lamp
+failure) and states the intervention or its absence unasked, explicitly superseding the
+presentation rule that withholds action guidance. `researcher` wants trends and **every** applicable
+guideline, not just the governing one. `executive` wants *is everything alright, or is there an
+alarm* — warm, ~60 words, naming who should look at it rather than what to do. `occupant` wants
+*does this affect me* — as few metrics as possible, no index acronyms, every number translated into
+what they would notice.
+
+**Role never buys a shorter answer at the cost of a metric — and that boundary had to move.**
+`_METRIC_COMPLETENESS` used to require every fetched pollutant appear with its value and unit,
+which is what made the occupant answer a rundown; no role block could override a directive. The
+rule now distinguishes what it was actually protecting from what it incidentally mandated: a metric
+flagged **EXCEEDS / NEAR / not rated must appear**, absolutely, for every audience and whatever the
+word cap, while metrics comfortably within range may be accounted for collectively ("everything
+else is within range" — itself a claim that must be true). The PM2.5 bug stays fixed: 17.86 µg/m³
+against WHO's 15 is `EXCEEDS`, and VOC with no comparable threshold is `not rated`, so both are
+still mandatory. What is no longer mandatory is reciting the readings that were fine, which was
+never what protected against the omission. Every role block, occupant included, carries the clause
+scoping "fewer metrics" to the within-range case.
+
+`metadata.role` / `role_source` (`request` | `default`) / `role_fallback_used` are emitted from `_branch_metadata`, so sync
+and stream cannot disagree. An unrecognised role degrades to the default rather than returning 400
+— a client bug should not fail the query — but `role_fallback_used` keeps it visible.
+
+Because the router prompt is not touched, `tests/router_eval.py` is unaffected and needs no cases.
+
 ### Metric completeness in an assessment
 
-An air-quality assessment **must report every pollutant it fetched**, the verdict is set by the **worst** metric rather than the best, and a metric whose threshold is missing (or given in units the reading cannot be compared against) is still reported as such. `_METRIC_COMPLETENESS` in `prompting/db_prompts.py` carries those three rules and is attached to the two directives that render an overall assessment — deliberately *not* to `_BASE_IEQ` (an IEQ ask wants the score family) or `_BASE_POINT_LOOKUP` (one named metric was asked for).
+An air-quality assessment **must report every pollutant the Threshold Assessment flags as EXCEEDS, NEAR, or not rated** — absolutely, whatever the audience or word cap — the verdict is set by the **worst** metric rather than the best, and a metric whose threshold is missing (or given in units the reading cannot be compared against) is still reported as such. Pollutants comfortably within range may be accounted for collectively rather than listed individually; that concession is what lets the `occupant` and `executive` roles be brief, and it was carved out only after establishing it does not touch the omission below (PM2.5 over WHO's limit was `EXCEEDS`, VOC was `not rated` — both remain mandatory). "Everything else is within range" is itself a claim and must be true of every metric it covers. `_METRIC_COMPLETENESS` in `prompting/db_prompts.py` carries these rules and is attached to the two directives that render an overall assessment — deliberately *not* to `_BASE_IEQ` (an IEQ ask wants the score family) or `_BASE_POINT_LOOKUP` (one named metric was asked for).
 
 This exists because *"how is the air quality today?"* answered with CO2, IAQ, humidity and the comfort sub-indices and called the air "good, no signs of pollutant buildup" — while PM2.5 sat at 17.86 µg/m³, above the WHO 15 µg/m³ 24-hour guideline **in its own Citation Sources**, and VOC at 0.222 ppm. Router, metric pack and executor were all correct: both metrics were in the payload with `has_full_coverage: true`. The prompt gave the model discretion ("only the most important metric-by-metric interpretation") under a hard brevity cap ("at most 2 short bullets", "under 90 words") and never said a metric may not be dropped — so it kept the flattering ones. Brevity now explicitly yields to completeness in `PRESENTATION_STYLE_PROMPT`; if you re-tighten that cap, this regresses.
 
@@ -211,6 +298,7 @@ All runtime settings come from `.env` (auto-loaded by `core_settings.py`) and th
 | `DOWNLOAD_SPACE_SLUG` | Default `{slug}` for the `download_data` endpoint path when no space is named (default: `smart_lab`) |
 | `DOWNLOAD_DEFAULT_INTERVAL` | Default aggregation interval for `download_data` when none is named (default: `1h`, emitted to the frontend as `1hr`) |
 | `SENSOR_STALE_HOURS` | Age threshold (hours) above which a sensor reading is flagged faulty/offline by `sensor_inspection` (default: `24`) |
+| `DEFAULT_STAKEHOLDER_ROLE` | Role used when neither the request nor the conversation supplies one — `occupant` (default) \| `facility_manager` \| `researcher` \| `executive`. `occupant` reproduces the single persona the assistant had before roles existed. An unrecognised value falls back to it |
 
 Two distinct Ollama models are configured separately: one for routing (`OLLAMA_ROUTER_*`) and one for answer generation (`OLLAMA_*`). Keep these separate — the router runs at temperature 0.0 with constrained output; the answer model has different latency/quality tradeoffs.
 
@@ -224,6 +312,7 @@ These are all the routes the app serves:
 - `GET /health` — liveness check (unauthenticated, for probes)
 - `GET /sensors/latest/{space}` — latest reading snapshot for a space
 - `GET /ifc/summary` — parsed structured summary of the IFC building model (units, storeys, element counts, materials)
+- `GET /roles` — stakeholder roles accepted by `/query`, with labels and the server default
 
 Everything except `/` and `/health` requires an API key when `RAG_API_KEYS` is set.
 

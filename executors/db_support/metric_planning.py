@@ -69,6 +69,19 @@ _PACKS: Dict[str, List[str]] = {
 # planner hint list from fanning out unboundedly.
 _NAMED_SCOPE_LIMIT = 6
 
+# Roles may widen a pack, never narrow one. The widening is expressed as a *union* with the
+# full pack rather than a swap to it, which is what makes "never narrows" true by
+# construction instead of by inspection: SCOPE_COMFORT is ten metrics and SCOPE_FULL is
+# eight, so promoting comfort→full would quietly drop `itc`/`iaq` — the exact class of bug
+# the limit-travels-with-the-pack rule above exists to prevent. A union cannot lose a metric
+# whatever the packs are later changed to.
+#
+# Only the researcher role widens. The others differ in how the same readings are described,
+# not in which readings are fetched; an executive answer is short because it says less about
+# each metric, not because it was given fewer. SCOPE_NAMED is left alone for everyone —
+# asking for one metric means wanting that metric, whoever is asking.
+_WIDENING_ROLES = {"researcher"}
+
 _POLLUTANTS = {"co2", "pm25", "voc"}
 _IEQ_SUB_INDICES = ("iaq", "itc", "iac", "iil")
 
@@ -275,11 +288,13 @@ def plan_metrics(
     intent: IntentType,
     is_diagnostic: bool = False,
     metric_scope: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> MetricPlan:
     """Resolve one question to the metrics to fetch and the limit that applies.
 
     ``metric_scope`` is the router's decision; anything absent or unrecognised falls back
-    to :func:`classify_metric_scope`.
+    to :func:`classify_metric_scope`. ``role`` is the caller's stakeholder role, which may
+    widen the resolved pack (see :data:`_WIDENING_ROLES`) but never narrow it.
     """
     supplied_scope = str(metric_scope or "").strip().lower()
     scope_inferred = supplied_scope not in VALID_METRIC_SCOPES
@@ -309,6 +324,12 @@ def plan_metrics(
         # Named metrics trail the pack so they are visible to callers, but the limit is the
         # pack's own length: a pack is a complete answer, not a starting point.
         metrics, limit = pack + [m for m in named if m not in pack], len(pack)
+        if str(role or "") in _WIDENING_ROLES:
+            widened = pack + [m for m in _PACKS[SCOPE_FULL] if m not in pack]
+            # The extras go after the pack, so priority order — and therefore what a limit
+            # would cut first — still reflects what the question was about.
+            metrics = widened + [m for m in named if m not in widened]
+            limit = len(widened)
 
     # Drop anything the metric registry cannot resolve to a column, before the limit is
     # applied, so an unknown alias costs the answer a slot rather than a metric.

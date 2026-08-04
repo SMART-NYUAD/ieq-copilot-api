@@ -95,7 +95,7 @@ class OrchestratorUsesResolvedQuestion(unittest.TestCase):
     def _run(self, ctx, route):
         captured = {}
 
-        def fake_run_db_query(question, intent, lab_name, planner_hints=None, conversation_context=""):
+        def fake_run_db_query(question, intent, lab_name, planner_hints=None, conversation_context="", role=None):
             captured["question"] = question
             return {"answer": "ok", "timescale": "1hour", "metrics_used": ["humidity"]}
 

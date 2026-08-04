@@ -189,6 +189,10 @@ def append_conversation_turn(
 
     Writing to a conversation claims it for ``owner``; writing to one already owned by
     someone else raises :class:`ConversationAccessError`.
+
+    Note the stakeholder role is deliberately *not* stored here. It is resolved per
+    request from the ``role`` field and nothing else, so an identical request body always
+    produces an identically-shaped answer regardless of what came before it.
     """
     cid = normalize_conversation_id(conversation_id)
     user_text = _trim_text(user_message)

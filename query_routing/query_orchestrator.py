@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple
 
 from fastapi.concurrency import run_in_threadpool
@@ -38,6 +38,7 @@ from executors.sensor_inspection_executor import (
 )
 from query_routing.intent_classifier import IntentType
 from query_routing.llm_router_planner import plan_route, plan_route_async
+from prompting.roles import ROLE_DEFAULT
 from query_routing.metadata_builders import derive_ui_contract
 from query_routing.router_types import RoutePlan, RouteExecutor
 from storage.conversation_context import ConversationContext
@@ -86,6 +87,12 @@ class Branch:
     timescale: str
     lab_name: Optional[str] = None
     llm_used: bool = False
+    # Stakeholder role this branch was built for. Instant branches ignore it — their
+    # answer is a fixed confirmation with no model call — but it is still carried so the
+    # metadata echo is identical across every branch.
+    role: str = ROLE_DEFAULT
+    role_source: str = "default"
+    role_fallback_used: bool = False
 
     # Instant branch.
     answer: Optional[str] = None
@@ -345,9 +352,9 @@ def _download_branch(route: RoutePlan, question: str) -> Branch:
     )
 
 
-def _ifc_branch(route: RoutePlan, question: str) -> Branch:
+def _ifc_branch(route: RoutePlan, question: str, role: str = ROLE_DEFAULT) -> Branch:
     def _run(_prepared: Any) -> Dict[str, Any]:
-        result = answer_ifc_question_with_metadata(user_question=question)
+        result = answer_ifc_question_with_metadata(user_question=question, role=role)
         # The IFC model has no per-claim numbered citations, so citation_sources stays
         # empty; provenance (the model file) is surfaced in metadata instead.
         return _core_result(
@@ -366,14 +373,18 @@ def _ifc_branch(route: RoutePlan, question: str) -> Branch:
         timescale="model",
         llm_used=True,
         run_sync=_run,
-        open_stream=lambda _prepared: stream_ifc_tokens(user_question=question),
+        open_stream=lambda _prepared: stream_ifc_tokens(user_question=question, role=role),
         status_before_render=("reading_model", "Reading building model…"),
     )
 
 
-def _sensor_branch(route: RoutePlan, question: str, lab_name: Optional[str]) -> Branch:
+def _sensor_branch(
+    route: RoutePlan, question: str, lab_name: Optional[str], role: str = ROLE_DEFAULT
+) -> Branch:
     def _run(_prepared: Any) -> Dict[str, Any]:
-        result = answer_sensor_question_with_metadata(user_question=question, space=lab_name)
+        result = answer_sensor_question_with_metadata(
+            user_question=question, space=lab_name, role=role
+        )
         # Narrative-only, like the IFC branch: provenance goes to metadata, not citations.
         return _core_result(
             result.get("answer") or "",
@@ -389,7 +400,9 @@ def _sensor_branch(route: RoutePlan, question: str, lab_name: Optional[str]) -> 
         lab_name=lab_name,
         llm_used=True,
         run_sync=_run,
-        open_stream=lambda _prepared: stream_sensor_tokens(user_question=question, space=lab_name),
+        open_stream=lambda _prepared: stream_sensor_tokens(
+            user_question=question, space=lab_name, role=role
+        ),
         status_before_render=("reading_sensors", "Reading sensor status…"),
     )
 
@@ -419,7 +432,13 @@ def _fetch_live_sensor_data(
     return None
 
 
-def _knowledge_branch(route: RoutePlan, question: str, lab_name: Optional[str], k: int) -> Branch:
+def _knowledge_branch(
+    route: RoutePlan,
+    question: str,
+    lab_name: Optional[str],
+    k: int,
+    role: str = ROLE_DEFAULT,
+) -> Branch:
     effective_k = max(1, min(k, 8))
 
     def _run(live_sensor_data: Any) -> Dict[str, Any]:
@@ -428,6 +447,7 @@ def _knowledge_branch(route: RoutePlan, question: str, lab_name: Optional[str], 
             k=effective_k,
             space=lab_name,
             live_sensor_data=live_sensor_data,
+            role=role,
         )
         return _core_result(
             result.get("answer") or "",
@@ -452,6 +472,7 @@ def _knowledge_branch(route: RoutePlan, question: str, lab_name: Optional[str], 
             k=effective_k,
             space=lab_name,
             live_sensor_data=live_sensor_data,
+            role=role,
         ),
         status_before_prepare=("searching_knowledge", "Searching knowledge base…"),
     )
@@ -463,6 +484,7 @@ def _db_branch(
     lab_name: Optional[str],
     llm_history: str,
     planner_hints: Dict[str, Any],
+    role: str = ROLE_DEFAULT,
 ) -> Branch:
     def _resolved_ui(metrics: list) -> Dict[str, Any]:
         return derive_ui_contract(
@@ -480,6 +502,7 @@ def _db_branch(
             lab_name=lab_name,
             planner_hints=planner_hints,
             conversation_context=llm_history,
+            role=role,
         )
         metrics = list(db_result.get("metrics_used") or planner_hints.get("metrics_priority") or [])
         return _core_result(
@@ -520,7 +543,9 @@ def _db_branch(
         timescale="pending",
         lab_name=lab_name,
         llm_used=True,
-        prepare=lambda: prepare_db_query(question, route.intent, lab_name, planner_hints),
+        prepare=lambda: prepare_db_query(
+            question, route.intent, lab_name, planner_hints, role=role
+        ),
         run_sync=_run,
         open_stream=lambda query_context: stream_db_tokens(
             question=question,
@@ -529,6 +554,7 @@ def _db_branch(
             planner_hints=planner_hints,
             query_context=query_context,
             conversation_context=llm_history,
+            role=role,
         ),
         status_before_prepare=("querying_db", "Fetching sensor data…"),
         status_before_render=("building_response", "Building response…"),
@@ -561,7 +587,24 @@ def plan_branch(
     This is the only intent ladder in the system — both renderers consume its result.
     """
     question = _resolved_question(ctx, route)
+    branch = _plan_unroled_branch(ctx, route, question, k, allow_clarify)
+    # Stamped once, here, rather than by each factory: the metadata echo must be identical
+    # on every branch, including the instant ones that never consult the role.
+    return replace(
+        branch,
+        role=ctx.role,
+        role_source=ctx.role_source,
+        role_fallback_used=ctx.role_fallback_used,
+    )
 
+
+def _plan_unroled_branch(
+    ctx: ConversationContext,
+    route: RoutePlan,
+    question: str,
+    k: int,
+    allow_clarify: bool,
+) -> Branch:
     # The router asks for clarification only when answering would mean guessing. A caller
     # that opted out (allow_clarify=False) gets the best-effort answer instead.
     if allow_clarify and route.needs_clarification:
@@ -575,13 +618,13 @@ def plan_branch(
     if executor == RouteExecutor.DOWNLOAD_DATA:
         return _download_branch(route, question)
     if executor == RouteExecutor.IFC_QA:
-        return _ifc_branch(route, question)
+        return _ifc_branch(route, question, ctx.role)
     if executor == RouteExecutor.SENSOR_INSPECTION:
-        return _sensor_branch(route, question, ctx.effective_lab)
+        return _sensor_branch(route, question, ctx.effective_lab, ctx.role)
     if route.intent == IntentType.UNKNOWN_FALLBACK:
         return _unknown_branch(route)
     if executor == RouteExecutor.KNOWLEDGE_QA:
-        return _knowledge_branch(route, question, ctx.effective_lab, k)
+        return _knowledge_branch(route, question, ctx.effective_lab, k, ctx.role)
     return _db_branch(
         route,
         question,
@@ -592,6 +635,7 @@ def plan_branch(
             carried_time_phrase=ctx.carried_time_phrase,
             carried_metric=ctx.carried_metric,
         ),
+        ctx.role,
     )
 
 
@@ -611,6 +655,9 @@ def _branch_metadata(
         "route_confidence": branch.route.confidence,
         "planner_model": branch.route.model,
         "fallback_used": branch.route.fallback_used,
+        "role": branch.role,
+        "role_source": branch.role_source,
+        "role_fallback_used": branch.role_fallback_used,
         "ui": ui if ui is not None else branch.ui,
     }
     meta.update(branch.extra_meta)

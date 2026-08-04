@@ -357,6 +357,20 @@ def display_timezone() -> timezone:
     return timezone(timedelta(hours=display_utc_offset_hours()))
 
 
+def default_stakeholder_role() -> str:
+    """Role used when neither the request nor the conversation supplies one.
+
+    Override with ``DEFAULT_STAKEHOLDER_ROLE``. Defaults to ``occupant``, which reproduces
+    the single hardcoded persona this assistant had before roles existed — so a deployment
+    that sets nothing, and a client that sends nothing, both keep the previous behavior.
+    An unrecognised value falls back to that default rather than failing at startup.
+    """
+    ensure_env_loaded()
+    from prompting.roles import ROLE_DEFAULT, coerce_role
+
+    return coerce_role((os.getenv("DEFAULT_STAKEHOLDER_ROLE", "") or "").strip().lower() or ROLE_DEFAULT)
+
+
 
     ensure_env_loaded()
     return _parse_bool(os.getenv("ROUTER_SEMANTIC_REWRITE_ENABLED", "false"), default=False)

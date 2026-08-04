@@ -34,12 +34,15 @@ def _normalize_allow_clarify(flag) -> bool:
     return bool(flag if flag is not None else True)
 
 
-def _query_context_or_403(question: str, lab_name, conversation_id, caller_id: str):
+def _query_context_or_403(question: str, lab_name, conversation_id, caller_id: str, role=None):
     """Build the turn context, mapping a foreign conversation_id to HTTP 403."""
     try:
-        return build_query_context(question, lab_name, conversation_id, owner=caller_id)
+        return build_query_context(
+            question, lab_name, conversation_id, owner=caller_id, role=role
+        )
     except ConversationAccessError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -48,7 +51,11 @@ async def query_cards(request: QueryRequest, caller_id: str = Depends(require_ap
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     ctx = _query_context_or_403(
-        question, _normalize_lab(request.lab_name), request.conversation_id, caller_id
+        question,
+        _normalize_lab(request.lab_name),
+        request.conversation_id,
+        caller_id,
+        role=request.role,
     )
     try:
         k = _normalize_k(request.k)
@@ -96,7 +103,11 @@ async def query_cards_stream(request: QueryRequest, caller_id: str = Depends(req
 
     k = _normalize_k(request.k)
     ctx = _query_context_or_403(
-        question, _normalize_lab(request.lab_name), request.conversation_id, caller_id
+        question,
+        _normalize_lab(request.lab_name),
+        request.conversation_id,
+        caller_id,
+        role=request.role,
     )
 
     async def _generate():

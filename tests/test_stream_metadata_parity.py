@@ -35,6 +35,8 @@ def _ctx():
         carried_time_phrase=None,
         conversation_id="test-conv",
         raw_block="",
+        role="researcher",
+        role_source="request",
     )
 
 
@@ -99,6 +101,14 @@ class TestStreamMetadataParity(unittest.TestCase):
         # UI is derived from the executed query's single metric, not the route's 2-metric default.
         self.assertEqual(mu["ui"]["panel"], "single_metric")
         self.assertEqual(mu["ui"]["primary_metric"], "co2")
+
+    def test_meta_frame_echoes_the_resolved_role(self):
+        # Both renderers build metadata through _branch_metadata, so the role echo cannot
+        # drift between them — this pins the stream half of that.
+        meta = [e for e in _events(_collect(_ctx())) if e.get("event") == "meta"][0]
+        self.assertEqual(meta["role"], "researcher")
+        self.assertEqual(meta["role_source"], "request")
+        self.assertFalse(meta["role_fallback_used"])
 
     def test_initial_meta_is_pending_then_corrected(self):
         events = _events(_collect(_ctx()))

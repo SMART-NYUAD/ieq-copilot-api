@@ -12,6 +12,10 @@ class QueryRequest(BaseModel):
     allow_clarify: Optional[bool] = True
     conversation_id: Optional[str] = None
     turn_index: Optional[int] = None
+    # Stakeholder role the answer should be written for (see prompting/roles.py).
+    # Omit to inherit the conversation's last-used role, then the configured default.
+    # An unrecognised value falls back to the default rather than failing the request.
+    role: Optional[str] = None
 
 
 class QueryResponse(BaseModel):

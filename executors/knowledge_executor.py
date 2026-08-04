@@ -27,6 +27,7 @@ from executors import sse
 from storage.embeddings import embed_texts
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
+from prompting.roles import ROLE_DEFAULT
 from prompting.shared_prompts import build_grounded_context_sections, get_shared_prompt_template
 from evidence.citation_processor import build_numbered_sources_block, process_answer_citations
 from storage.guideline_store import search_guideline_records, wants_guideline_detail
@@ -278,6 +279,7 @@ def answer_env_question_with_metadata(
     space: Optional[str] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     live_sensor_data: Optional[Any] = None,
+    role: str = ROLE_DEFAULT,
 ) -> Dict[str, Any]:
     effective_guideline_records = list(guideline_records or [])
     if wants_guideline_detail(user_question):
@@ -304,7 +306,9 @@ def answer_env_question_with_metadata(
         if live_sensor_data is not None
         else "Measured room facts with knowledge grounding"
     )
-    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
+    prompt_template = get_shared_prompt_template(
+        response_directive=CARD_TOOL_RESPONSE_DIRECTIVE, role=role
+    )
     messages = prompt_template.format_messages(
         question=user_question,
         context_label=context_label,
@@ -343,6 +347,7 @@ async def stream_knowledge_tokens(
     space: Optional[str] = None,
     guideline_records: Optional[List[Dict[str, Any]]] = None,
     live_sensor_data: Optional[Any] = None,
+    role: str = ROLE_DEFAULT,
 ) -> AsyncIterator[str]:
     effective_guideline_records = list(guideline_records or [])
     if wants_guideline_detail(user_question):
@@ -369,7 +374,9 @@ async def stream_knowledge_tokens(
         if live_sensor_data is not None
         else "Measured room facts with knowledge grounding"
     )
-    prompt_template = get_shared_prompt_template(response_directive=CARD_TOOL_RESPONSE_DIRECTIVE)
+    prompt_template = get_shared_prompt_template(
+        response_directive=CARD_TOOL_RESPONSE_DIRECTIVE, role=role
+    )
     messages = prompt_template.format_messages(
         question=user_question,
         context_label=context_label,

@@ -20,6 +20,7 @@ def build_query_context(
     lab_name: Optional[str],
     conversation_id: Optional[str],
     owner: str = ANONYMOUS_OWNER,
+    role: Optional[str] = None,
 ) -> ConversationContext:
     """Build the canonical ConversationContext for one HTTP turn."""
     return build_conversation_context(
@@ -27,6 +28,7 @@ def build_query_context(
         lab_name=lab_name,
         conversation_id=conversation_id,
         owner=owner,
+        role=role,
     )
 
 

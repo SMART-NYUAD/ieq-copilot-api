@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from core_settings import default_stakeholder_role
+from prompting.roles import ROLE_DEFAULT, normalize_role
 from storage.conversation_store import ANONYMOUS_OWNER, build_compact_context
 from storage.conversation_memory import apply_routing_memory, compute_question_signals, extract_routing_memory
 
@@ -126,6 +128,27 @@ class ConversationContext:
     llm_history: str          # Compact block injected into answer LLM context
     carried_metric: Optional[str] = None       # Metric inferred from prior turns
     carried_time_phrase: Optional[str] = None  # Time window inferred from prior turns
+    # Who the answer is being written for. Unlike everything above, this is not derived
+    # from the question or the history — it is declared by the caller (see prompting.roles)
+    # and resolved here so no downstream layer has to re-derive it.
+    role: str = ROLE_DEFAULT
+    role_source: str = "default"       # request | default
+    role_fallback_used: bool = False   # caller sent a role we did not recognise
+
+
+def _resolve_role(requested_role: Optional[str]) -> tuple[str, str, bool]:
+    """Resolve the stakeholder role for this turn: the request, or the configured default.
+
+    Deliberately stateless. An earlier design inherited the conversation's last-used role
+    when the field was omitted, which protected a client that forgot to send it — but it
+    made an omitted field mean something different on turn 5 than on turn 1, so the same
+    request body could produce two differently-shaped answers depending on history. Role
+    is a per-message choice; nothing about it is remembered.
+    """
+    role, fallback_used = normalize_role(requested_role)
+    if role:
+        return role, "request", fallback_used
+    return default_stakeholder_role(), "default", fallback_used
 
 
 def build_conversation_context(
@@ -133,6 +156,7 @@ def build_conversation_context(
     lab_name: Optional[str],
     conversation_id: Optional[str],
     owner: str = ANONYMOUS_OWNER,
+    role: Optional[str] = None,
 ) -> ConversationContext:
     """Build the canonical context for one turn.
 
@@ -140,9 +164,13 @@ def build_conversation_context(
     pre-computes every view needed downstream so no layer does its own
     extraction. ``owner`` is the authenticated caller id; loading history for a
     conversation owned by someone else raises ``ConversationAccessError``.
+
+    ``role`` is the caller's declared stakeholder role for this message, or ``None`` for
+    the configured default. It is not remembered between turns.
     """
     original_question = str(question or "").strip()
     cid, raw_block = build_compact_context(conversation_id, owner=owner)
+    resolved_role, role_source, role_fallback_used = _resolve_role(role)
 
     # Sanitize once, here, so every prompt view is built from neutralized text — a caller
     # that formats its own view cannot forget to do it.
@@ -178,4 +206,7 @@ def build_conversation_context(
         llm_history=llm_history,
         carried_metric=carried_metric,
         carried_time_phrase=carried_time_phrase,
+        role=resolved_role,
+        role_source=role_source,
+        role_fallback_used=role_fallback_used,
     )

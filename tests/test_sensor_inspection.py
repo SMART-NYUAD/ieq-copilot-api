@@ -199,7 +199,7 @@ class TestStream(unittest.TestCase):
         async def _fake_plan(*a, **kw):
             return route
 
-        async def _fake_tokens(user_question, space=None):
+        async def _fake_tokens(user_question, space=None, role=None):
             yield f"data: {json.dumps({'event': 'token', 'text': 'Sensor 08 is offline.'})}\n\n"
             yield f"data: {json.dumps({'event': 'done'})}\n\n"
 

@@ -30,6 +30,8 @@ from core_settings import (
 from executors import sse
 from ollama_helpers import extract_generate_chunk, extract_generate_text
 from ifc_model.ifc_store import build_ifc_context_text, get_ifc_summary
+from prompting.role_prompts import role_addendum
+from prompting.roles import ROLE_DEFAULT
 from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
 
 
@@ -90,9 +92,9 @@ def _coerce_text(value: Any) -> str:
     return str(value)
 
 
-def _build_prompt(user_question: str, context_text: str) -> str:
+def _build_prompt(user_question: str, context_text: str, role: str = ROLE_DEFAULT) -> str:
     return (
-        f"{IFC_SYSTEM_PROMPT}\n\n"
+        f"{IFC_SYSTEM_PROMPT}\n{role_addendum(role)}\n"
         f"=== Building Model Context ===\n{context_text}\n=== End Context ===\n\n"
         f"Question: {user_question}\n\n"
         "Answer the question using only the building model context above."
@@ -117,7 +119,9 @@ def _evidence_sources(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def answer_ifc_question_with_metadata(user_question: str) -> Dict[str, Any]:
+def answer_ifc_question_with_metadata(
+    user_question: str, role: str = ROLE_DEFAULT
+) -> Dict[str, Any]:
     """Synchronously answer an IFC-model question with grounding metadata."""
     path = ifc_model_path()
     try:
@@ -131,7 +135,7 @@ def answer_ifc_question_with_metadata(user_question: str) -> Dict[str, Any]:
             "model_available": False,
         }
 
-    prompt = _build_prompt(user_question, context_text)
+    prompt = _build_prompt(user_question, context_text, role)
     payload = {
         "model": ollama_model(),
         "prompt": prompt,
@@ -181,7 +185,9 @@ def _deterministic_fallback(summary: Dict[str, Any], user_question: str) -> str:
     return " ".join(parts)
 
 
-async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
+async def stream_ifc_tokens(
+    user_question: str, role: str = ROLE_DEFAULT
+) -> AsyncIterator[str]:
     """Stream an IFC-model answer as SSE token events."""
     path = ifc_model_path()
     try:
@@ -193,7 +199,7 @@ async def stream_ifc_tokens(user_question: str) -> AsyncIterator[str]:
         yield sse.done_event()
         return
 
-    prompt = _build_prompt(user_question, context_text)
+    prompt = _build_prompt(user_question, context_text, role)
     payload = {
         "model": ollama_model(),
         "prompt": prompt,
