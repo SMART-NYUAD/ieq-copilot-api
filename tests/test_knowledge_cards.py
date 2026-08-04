@@ -124,14 +124,20 @@ class KnowledgeCardTests(unittest.TestCase):
         self.assertIn("2026-03-28T14:15:28+04:00", rendered)
         self.assertIn("2026-03-28T15:15:28+04:00", rendered)
 
-    @patch("executors.knowledge_executor.embed_texts")
+    # Fixture similarities across these three tests are deliberately CLOSE (0.74 vs 0.78).
+    # Real cosine scores on this corpus span roughly 0.45-0.65, so a 0.04 gap is a genuine
+    # near-tie and the card-type nudge is what should decide it. An earlier version used
+    # 0.91 vs 0.72 and asserted type still won — encoding the bug these tests now guard
+    # against, where card_type overrode the embedding outright. If you widen the gap here,
+    # you are re-asserting that semantics do not matter.
+    @patch("executors.knowledge_executor.embed_query")
     @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_prefers_explanations_for_definition_query(
         self,
         mock_get_cursor,
-        mock_embed_texts,
+        mock_embed_query,
     ):
-        mock_embed_texts.return_value = [[0.1, 0.2]]
+        mock_embed_query.return_value = [0.1, 0.2]
         rows = [
             {
                 "knowledge_card_id": "1",
@@ -144,7 +150,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "RESET",
                 "source_url_key": "RESET_AIR",
                 "source_metadata": {},
-                "distance": 0.91,
+                "distance": 0.78,
             },
             {
                 "knowledge_card_id": "2",
@@ -157,7 +163,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "EPA",
                 "source_url_key": "EPA_PM25_AQI",
                 "source_metadata": {},
-                "distance": 0.72,
+                "distance": 0.74,
             },
         ]
         mock_get_cursor.return_value = _FakeCursor(rows)
@@ -165,14 +171,14 @@ class KnowledgeCardTests(unittest.TestCase):
         result = search_knowledge_cards("what does pm2.5 mean", k=2)
         self.assertEqual(result[0]["card_type"], "explanation")
 
-    @patch("executors.knowledge_executor.embed_texts")
+    @patch("executors.knowledge_executor.embed_query")
     @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_can_return_interpretation_for_assessment_query(
         self,
         mock_get_cursor,
-        mock_embed_texts,
+        mock_embed_query,
     ):
-        mock_embed_texts.return_value = [[0.1, 0.2]]
+        mock_embed_query.return_value = [0.1, 0.2]
         rows = [
             {
                 "knowledge_card_id": "1",
@@ -185,7 +191,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "Internal",
                 "source_url_key": "INTERNAL_GUARDRAIL",
                 "source_metadata": {},
-                "distance": 0.95,
+                "distance": 0.74,
             },
             {
                 "knowledge_card_id": "2",
@@ -198,7 +204,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "RESET",
                 "source_url_key": "RESET_AIR",
                 "source_metadata": {},
-                "distance": 0.80,
+                "distance": 0.78,
             },
         ]
         mock_get_cursor.return_value = _FakeCursor(rows)
@@ -206,14 +212,14 @@ class KnowledgeCardTests(unittest.TestCase):
         result = search_knowledge_cards("is 28 ug/m3 pm2.5 okay", k=2)
         self.assertEqual(result[0]["card_type"], "interpretation")
 
-    @patch("executors.knowledge_executor.embed_texts")
+    @patch("executors.knowledge_executor.embed_query")
     @patch("executors.knowledge_executor.get_cursor")
     def test_search_knowledge_cards_keeps_caveat_for_health_risk_queries(
         self,
         mock_get_cursor,
-        mock_embed_texts,
+        mock_embed_query,
     ):
-        mock_embed_texts.return_value = [[0.1, 0.2]]
+        mock_embed_query.return_value = [0.1, 0.2]
         rows = [
             {
                 "knowledge_card_id": "1",
@@ -226,7 +232,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "RESET",
                 "source_url_key": "RESET_AIR",
                 "source_metadata": {},
-                "distance": 0.88,
+                "distance": 0.74,
             },
             {
                 "knowledge_card_id": "2",
@@ -239,7 +245,7 @@ class KnowledgeCardTests(unittest.TestCase):
                 "source_label": "Internal",
                 "source_url_key": "INTERNAL_GUARDRAIL",
                 "source_metadata": {},
-                "distance": 0.70,
+                "distance": 0.78,
             },
         ]
         mock_get_cursor.return_value = _FakeCursor(rows)

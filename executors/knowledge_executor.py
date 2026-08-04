@@ -24,7 +24,7 @@ from ollama_helpers import (
     generate_ollama_text,
 )
 from executors import sse
-from storage.embeddings import embed_texts
+from storage.embeddings import embed_query
 from storage.postgres_client import get_cursor
 from storage.sql_queries import ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL
 from prompting.roles import ROLE_DEFAULT
@@ -85,42 +85,87 @@ def _serialize_timestamp_gmt4(value: Any) -> str:
 
 
 def _is_explanation_query(question: str) -> bool:
+    """Whether the user is asking what something IS, rather than how it is right now.
+
+    The list is deliberately broader than it looks: it previously missed "explain" and
+    "what are", so *"explain PM2.5"* fell through to the status branch, where explanation
+    cards are penalised and interpretation cards rewarded — the reranker actively pushed
+    away the one card type that answers a definition question. See tests/retrieval_eval.py
+    group `definition`.
+    """
     q = (question or "").lower()
-    hints = ("what is", "what does", "what do you mean", "define", "definition", "mean by")
+    hints = (
+        "what is", "what are", "what does", "what do you mean", "define", "definition",
+        "mean by", "explain", "tell me about", "meaning of", "stand for", "stands for",
+    )
     return any(hint in q for hint in hints)
 
 
 def _is_guardrail_query(question: str) -> bool:
+    """Whether the user is asking about health risk OR the limits of what a metric shows.
+
+    Caveat cards answer both, and both are penalised by the default branch. The second
+    kind was missing: "does CO2 tell me everything about air quality?" is exactly what the
+    CO2-is-a-ventilation-proxy caveat exists to answer, but with only health-risk hints it
+    fell through to the status branch and the caveat took a penalty instead of a boost.
+    """
     q = (question or "").lower()
-    hints = ("health risk", "safe", "dangerous", "medical", "diagnosis", "harmful", "unhealthy")
+    hints = (
+        # health / safety framing
+        "health risk", "safe", "dangerous", "medical", "diagnosis", "harmful", "unhealthy",
+        # "what does this metric NOT tell me" framing
+        "tell me everything", "everything about", "full picture", "complete picture",
+        "enough to", "only indicator", "limitation", "caveat", "does that mean",
+        "reliable", "accurate enough", "the whole story",
+    )
     return any(hint in q for hint in hints)
+
+
+# Card-type nudges, added to a cosine similarity. They MUST stay small relative to the
+# spread of real similarities, which on this corpus runs roughly 0.45-0.65 — a span of
+# about 0.2. The original weights went up to +0.7, several times that span, so card_type
+# decided the ranking outright and the semantic score was decoration: a barely-related
+# interpretation card outranked an exactly-on-topic explanation card by a fixed +0.35.
+# These are sized to break near-ties only. If you raise one above ~0.10, re-run
+# tests/retrieval_eval.py — you are probably overriding the embedding again.
+_MAX_PRIORITY_NUDGE = 0.10
 
 
 def _knowledge_card_priority(question: str, card_type: str) -> float:
     if _is_guardrail_query(question):
         if card_type == "caveat":
-            return 0.7
+            return 0.10
         if card_type == "rule":
-            return 0.2
-        return -0.05
-    if card_type == "caveat":
-        return -0.25
+            return 0.04
+        return -0.02
     if _is_explanation_query(question):
-        return 0.5 if card_type == "explanation" else 0.15 if card_type == "rule" else 0.0
-    return 0.45 if card_type in {"interpretation", "rule"} else 0.1
+        if card_type == "explanation":
+            return 0.10
+        if card_type == "ieq_subindex":
+            return 0.06
+        if card_type == "caveat":
+            return -0.04
+        return 0.0
+    if card_type == "caveat":
+        return -0.05
+    return 0.06 if card_type in {"interpretation", "rule"} else 0.0
 
 
 def search_knowledge_cards(question: str, k: int = 4) -> List[Dict[str, Any]]:
     """Search static knowledge cards using semantic similarity with light type-aware reranking."""
-    embeddings = embed_texts([question])
-    if not embeddings:
+    query_embedding = embed_query(question)
+    if not query_embedding:
         return []
 
-    query_embedding = embeddings[0]
-    fetch_k = max(6, min(20, k * 3))
+    # Fetch generously and let the reranker choose: the corpus is small enough that the
+    # scan is exact and cheap, and a narrow candidate set was part of the original bug —
+    # no reranking weight can recover a card that was never fetched.
+    fetch_k = max(12, min(40, k * 6))
     try:
         with get_cursor(real_dict=True) as cur:
-            cur.execute("SET LOCAL ivfflat.probes = %s", (max(10, fetch_k),))
+            # No ivfflat probe tuning: migration 004 removed the approximate index, so this
+            # is an exact nearest-neighbour scan. Reintroducing an index means reintroducing
+            # a probe setting, and the recall trap that came with it.
             cur.execute(ENV_KNOWLEDGE_QUERY_SEMANTIC_SQL, (query_embedding, query_embedding, fetch_k))
             rows = [dict(row) for row in cur.fetchall()]
     except Exception:
