@@ -290,6 +290,60 @@ class RolesActuallyDifferTests(unittest.TestCase):
             for clause in banned:
                 self.assertNotIn(clause, prompt, f"{role}: {clause}")
 
+    def test_nothing_in_the_assembled_prompt_mandates_a_metric_rundown(self):
+        """The second reported bug: an occupant answer that listed CO2, VOC, PM2.5, humidity,
+        IAQ and IIL with RESET/WHO/ASHRAE threshold numbers — against a role block saying
+        name as few metrics as possible, never use an index acronym, no standards language.
+
+        Same shape as the action-guidance bug: five volume mandates outvoted the audience.
+        Two forced the sub-index acronyms specifically ("do not omit them to stay brief:
+        include each available sub-index"), one lived in the air-quality directive itself,
+        and PRESENTATION_STYLE_PROMPT's "report every pollutant" landed twice because it is
+        embedded in both the system prompt and every directive suffix.
+
+        What replaced them keeps the floor: a metric the Threshold Assessment FLAGS is still
+        mandatory everywhere (see RoleMayNotHideAProblemTests). Only the obligation to
+        recite the metrics that are *fine* is now the audience's call.
+        """
+        from executors.db_query_executor import _build_db_prompt_text
+
+        banned = (
+            "do not omit them to stay brief",
+            "include each available sub-index once",
+            "for metric-by-metric air-quality assessments",
+            "report every pollutant, combining them into one bullet if needed",
+            "every available pollutant",
+        )
+        for role in VALID_ROLES:
+            prompt = " ".join(
+                _build_db_prompt_text(
+                    question="how is the air quality today?",
+                    intent=IntentType.CURRENT_STATUS_DB,
+                    context_data="CTX",
+                    role=role,
+                ).lower().split()
+            )
+            for clause in banned:
+                self.assertNotIn(clause, prompt, f"{role}: {clause}")
+
+    def test_an_ieq_question_still_reports_every_sub_index(self):
+        # The mandate was removed from the air-quality directive, where the indices are
+        # supporting context. _BASE_IEQ keeps it: there they are the subject, and dropping
+        # one would be the inverse failure.
+        from prompting.db_prompts import DB_TOOL_RESPONSE_DIRECTIVE_IEQ
+
+        self.assertIn(
+            "report every available sub-index explicitly", DB_TOOL_RESPONSE_DIRECTIVE_IEQ
+        )
+
+    def test_sub_index_semantics_survived_the_removal(self):
+        # The scale semantics are a correctness rule from a real inversion bug (a high ITC
+        # described as hot/stuffy). Only the "include every one" volume mandate was cut.
+        prompt = shared_system_prompt(ROLE_OCCUPANT)
+        self.assertIn("high score (e.g. 90+) = occupants are thermally COMFORTABLE", prompt)
+        self.assertIn("higher is always better", prompt)
+        self.assertIn("use its correct meaning", prompt)
+
     def test_each_role_states_its_own_action_policy_exactly_once(self):
         # One owner for the decision. If a second voice reappears anywhere, the role stops
         # being what decides, which is how this broke the first time.
@@ -310,13 +364,23 @@ class RolesActuallyDifferTests(unittest.TestCase):
         self.assertIn("name who should look into it", executive)
         self.assertIn("never the technical fix", executive)
 
-    def test_no_role_may_emit_the_stock_non_answer(self):
-        # "No action needed" was what the reported FM answer closed on. It is a non-answer
-        # for every audience, whatever their action policy.
+    def test_the_stock_non_answer_is_banned_once_for_every_audience(self):
+        """"No action needed" is what both reported answers closed on.
+
+        It is the same rule for every role, so unlike the *whether to volunteer an action*
+        policy it does not belong in the role blocks — four copies of an identical rule is
+        the duplication this file exists to avoid. It lives once in PRESENTATION_STYLE_PROMPT,
+        which is embedded in both the system prompt and every directive suffix.
+        """
+        from prompting.shared_prompts import PRESENTATION_STYLE_PROMPT
+
+        banned = PRESENTATION_STYLE_PROMPT.lower()
+        self.assertIn("banned closer, every audience", banned)
+        for variant in ("no action needed", "no immediate action", "no action\nis required"):
+            self.assertIn(variant.replace("\n", " "), " ".join(banned.split()))
+        # And not duplicated back into the role blocks.
         for role in VALID_ROLES:
-            self.assertIn(
-                'never close with "no action needed"', role_style_block(role).lower(), role
-            )
+            self.assertNotIn("no action needed", role_style_block(role).lower(), role)
 
     def test_no_two_role_blocks_are_alike(self):
         blocks = {role: role_style_block(role) for role in VALID_ROLES}
