@@ -98,6 +98,16 @@ _AMBIENT_SOURCE_KEYS = frozenset(
 def _is_ambient(source: Dict[str, Any]) -> bool:
     return str(source.get("source_key") or "").strip().upper() in _AMBIENT_SOURCE_KEYS
 
+
+# citation_tier precedence. `regulatory` is a published standard a building is assessed
+# against; `research` is a study finding or a guide value; `internal` is this system's own
+# composite. An unknown tier sorts with research rather than being promoted.
+_TIER_RANK = {"regulatory": 0, "research": 1, "internal": 1}
+
+
+def _tier_rank(source: Dict[str, Any]) -> int:
+    return _TIER_RANK.get(str(source.get("citation_tier") or "").strip().lower(), 1)
+
 # Ranked worst-first, for picking the headline status.
 _STATUS_RANK = {
     STATUS_EXCEEDS: 0,
@@ -245,6 +255,15 @@ def assess_metric(
     indoor = [s for s in sources if not _is_ambient(s)]
     ambient_basis = not indoor
     sources = indoor or sources
+
+    # A published standard outranks a research guide value. RESET Air Grade A and WELL v2
+    # set 0.102 ppm for TVOC; Seifert's hygienic band edge is 0.061 ppm, so strictest-wins
+    # alone made a *hygienic* figure — explicitly not a health-based limit, and not what a
+    # building is held to — govern every VOC verdict ahead of the two standards the space
+    # is actually assessed against. Research records stay in the pool and still govern a
+    # metric no standard covers; they just stop outranking one that does.
+    regulatory = [s for s in sources if _tier_rank(s) == 0]
+    sources = regulatory or sources
 
     # A hard limit outranks a comfort-band edge: exceeding ASHRAE's 65 %RH limit is a
     # finding, drifting past EPA's 50 % "optimal range" top is not. Only when a metric

@@ -438,5 +438,65 @@ class AggregateRowShapeTests(unittest.TestCase):
 
 
 
+class RegulatoryOutranksResearchTests(unittest.TestCase):
+    """A published standard governs ahead of a research guide value.
+
+    RESET Air Grade A and WELL v2 set 0.102 ppm for TVOC. Seifert's hygienic band edge is
+    0.061 ppm, so strictest-applicable ALONE made a hygienic figure -- explicitly not a
+    health-based limit, and not something a building is assessed against -- govern every
+    VOC verdict ahead of the two standards that are. Tier is checked after the indoor
+    filter and before strictest-wins.
+    """
+
+    VOC_SOURCES = [
+        _source(1, "voc", 0.102, "ppm", "max", "RESET Air Grade A", "RESET_AIR_V2_VOC_PPM"),
+        _source(2, "voc", 0.102, "ppm", "max", "WELL v2 A04", "WELL_V2_A04_PPM"),
+        _source(3, "voc", 0.061, "ppm", "max", "UBA/Seifert hygienic", "UBA_TVOC_HYGIENIC_PPM"),
+    ]
+
+    def _tiered(self, tiers):
+        return [{**s, "citation_tier": t} for s, t in zip(self.VOC_SOURCES, tiers)]
+
+    def test_the_standard_governs_not_the_stricter_guide_value(self):
+        sources = self._tiered(["regulatory", "regulatory", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.102)
+        self.assertIn("RESET", a.source_label)
+        self.assertEqual(a.status, ta.STATUS_WITHIN)
+
+    def test_strictest_still_decides_among_the_standards(self):
+        sources = self._tiered(["regulatory", "regulatory", "research"])
+        sources[1] = {**sources[1], "threshold_value": 0.08}
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.08)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+
+    def test_research_still_governs_a_metric_no_standard_covers(self):
+        # The demotion removes research from the running only when a standard is present;
+        # it never leaves a metric unrated that could have been graded.
+        sources = self._tiered(["research", "research", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.061)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+
+    def test_an_unknown_tier_is_not_promoted_to_regulatory(self):
+        sources = self._tiered(["regulatory", "", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.102)
+
+    def test_tier_is_applied_after_the_indoor_filter(self):
+        # A regulatory OUTDOOR limit must not be promoted over an indoor one.
+        sources = [
+            {**_source(1, "pm25", 15, "µg/m³", "max", "WHO ambient", "WHO_AQG_2021"),
+             "citation_tier": "regulatory"},
+            {**_source(2, "pm25", 12, "µg/m³", "max", "RESET Air indoor", "RESET_AIR_V2_PM25"),
+             "citation_tier": "regulatory"},
+        ]
+        a = ta.assess_metric("pm25", 13.0, sources)
+        self.assertEqual(a.threshold_value, 12)
+        self.assertFalse(a.ambient_basis)
+
+
+
 if __name__ == "__main__":
     unittest.main()

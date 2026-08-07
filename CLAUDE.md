@@ -67,6 +67,7 @@ python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # em
 python -m unittest discover -s tests -p "test_knowledge_path_grounding.py"  # knowledge-path verdicts + row shapes
 python -m unittest discover -s tests -p "test_scope_leaks.py"               # scope survives to the answer
 python -m unittest discover -s tests -p "test_audience_rendering.py"        # evidence rendered per audience
+python -m unittest discover -s tests -p "test_historical_window_integrity.py" # readings match the window asked for
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -157,6 +158,28 @@ new pre-fetch that stands in for a planned query forwards the same hints, `role`
 `executors/db_query_executor.py` always fetches the data first, then passes structured rows to the LLM for narrative rendering. If the LLM fails, a deterministic text fallback is returned. `metadata.llm_used` indicates whether LLM rendering succeeded.
 
 Sensor data comes from the Smart CRG REST API via `executors/db_support/api_client.py` (`SENSOR_API_BASE_URL`), not from SQL — Postgres is used only for knowledge cards and guideline records. Forecasts are fetched from the predictions API (`PREDICTIONS_API_BASE_URL`, `_handle_forecast` in `query_handlers.py`), which serves ~6 hours ahead; no forecasting model runs in this process. The LLM only explains the returned predictions, never invents future values.
+
+**A reading may not be presented under a window it does not fall in.** A finished period
+cannot be answered from a live endpoint, and `_window_is_closed` in `query_handlers.py` is
+what tells the handlers so. The historical-summary path used to be gated on
+`intent == POINT_LOOKUP_DB`, and the router answers *"how was X on <date>?"* with
+`CURRENT_STATUS_DB` about as often — so that question reached the multi-metric branch,
+which calls `fetch_multi_metric_point_row` (always the **latest** reading) and returned it
+labelled *"May 07, 2026"*. Three consecutive turns then gave three PM2.5 figures for one
+day: 18.0 µg/m³ (that afternoon's live value, three months later), 14.0 µg/m³ (the 23:00
+bucket reported as the day's level), against a true daily mean of 9.19 and peak of 14.10.
+The window was resolved correctly the whole way; only the branch reading it was wrong.
+A closed window is a property of the resolved window, not of a router coin-flip between
+two near-synonymous intents, so the gate is keyed on that.
+
+`_rows_within_window` is the backstop: `execute_intent_query` drops any row whose timestamp
+falls outside the window before the rows become evidence. Every handler converges there, so
+it holds for endpoints and code paths that do not exist yet — the specific bug was one
+branch calling a "latest reading" endpoint, but the class is any path where the window and
+the data come from different decisions. Rows with no timestamp (aggregates, which describe
+a window rather than a moment) pass through. Dropping rather than repairing is deliberate:
+*"I have no data for May 7"* is true, today's readings labelled May 7 is a fabrication, and
+it is the more confident-sounding of the two.
 
 ### Metric planning
 
@@ -379,7 +402,8 @@ Four rules earn their place, each from a wrong answer:
 - **A threshold only applies in the reading's own unit.** VOC reads in ppm and most TVOC limits are in µg/m³; crossing that gap needs a molar-mass assumption, so a metric with no threshold in its unit is `unrated`, never guessed.
 - **Unit spellings are folded.** The registry writes PM2.5 as `μg/m³` (U+03BC) and the seed as `µg/m³` (U+00B5). They render identically, and a naive comparison silently concludes the metric has no threshold.
 - **An indoor reading is graded against an indoor standard.** WHO's Global Air Quality Guidelines and EPA's NAAQS are *ambient* standards — both records say "outdoor" in their own caveat text, which the assessment never sees — so `_AMBIENT_SOURCE_KEYS` demotes them. They decide only a metric no indoor standard covers, and the verdict line then says the figure is an outdoor one applied for reference. PM2.5 had only those two records, so every indoor PM2.5 verdict was graded against outdoor air and strictest-wins picked WHO's 15 µg/m³ every time; `RESET_AIR_V2_PM25` (12 µg/m³, Grade A occupied hours) and `WELL_V2_A01` (15 µg/m³) are the indoor limits and now govern. ASHRAE is deliberately not among them: 62.1 requires the *outdoor* air brought in to meet the NAAQS and specifies filtration, but publishes no indoor PM2.5 concentration limit — asserting one would be the same false claim the NULL-threshold ASHRAE CO2 record exists to prevent. Keying by `source_key` rather than inferring from wording means adding an indoor standard demotes the ambient one automatically.
-- **The strictest applicable threshold governs**, so a clean verdict cannot be bought by quoting the most permissive standard. It applies *after* the indoor filter, so a strict outdoor limit cannot outrank an indoor one.
+- **A published standard outranks a research guide value.** `citation_tier` `regulatory` wins over `research`/`internal` before strictest-wins runs. RESET Air Grade A and WELL v2 set TVOC at 0.102 ppm; Seifert's hygienic band edge is 0.061 ppm, so strictest-alone made a *hygienic* figure — explicitly not health-based, and not something a building is assessed against — govern every VOC verdict ahead of the two standards that are. Research records stay in the pool and still govern a metric no standard covers; they just stop outranking one that does. Applied after the indoor filter, so a regulatory *outdoor* limit cannot be promoted over an indoor one.
+- **The strictest applicable threshold governs**, so a clean verdict cannot be bought by quoting the most permissive standard. It applies *after* the indoor and tier filters, so neither a strict outdoor limit nor a strict guide value can outrank a standard that applies.
 - **A threshold's averaging basis travels with its figure.** `threshold_condition` ("24-hour mean guideline", "Grade A, occupied hours") is carried through `indexed_sources` onto the rendered verdict line, and `build_numbered_sources_block` prints each source's actual published figure beside its label. Both exist because the block used to give the model a bare source name — `[14] WHO Global Air Quality Guidelines 2021 — Standard` — and then instruct it to cite a number it had never been shown. It filled the gap from memory, in the way memory does: WHO's **annual** mean of 5 µg/m³ quoted against a single day's reading, and a WHO TVOC limit rendered as "100 ppb = 0.1 ppm" when the record says 0.061 ppm. Both numbers were plausible; neither was in the evidence, so the *never state a threshold that does not appear here* rule had nothing to bite on. A limit quoted under the wrong basis is a wrong limit even when the digits are real.
 - **A hard limit outranks a comfort-band edge.** `threshold_type` `max`/`min` is a limit; `range_max`/`range_min` is the top of an optimal band. 54.8 %RH is above EPA's 50 % optimal top but well under ASHRAE's 65 % limit — treating those alike flags an ordinary room. Band edges only decide when a metric has no hard limit, and then report as *outside optimal range*.
 

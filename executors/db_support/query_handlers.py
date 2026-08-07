@@ -83,6 +83,81 @@ def _is_historical_window_summary_query(question: str, window_label: str, window
     return window_hours >= 12.0
 
 
+# Slack beyond the window's end within which a reading still counts as "in" it: one
+# aggregation bucket plus a margin for clock skew between this process and the sensor API.
+_WINDOW_TOLERANCE_HOURS = 2.0
+
+
+def _window_is_closed(window_end: datetime) -> bool:
+    """True when the window ends far enough in the past that no live reading falls in it.
+
+    A question about a finished period cannot be answered with the current snapshot, and
+    this is what tells the handlers so. Asked "how was the air quality on May 7?", the
+    multi-metric branch called ``fetch_multi_metric_point_row`` — which always returns the
+    LATEST reading — and returned it under the label "May 7, 2026". The answer reported
+    PM2.5 18.0 µg/m³ and VOC 0.06 ppm; those were that afternoon's live values, three
+    months after the day asked about, where May 7 actually peaked at 14.1 µg/m³.
+
+    Deliberately not keyed on the wording or on which of the two near-identical status
+    intents the router picked — the historical path used to be gated on
+    ``POINT_LOOKUP_DB`` alone, and the router answers "how was X on <date>?" with
+    ``CURRENT_STATUS_DB`` about as often, which is the whole bug. A closed window is a
+    property of the resolved window, so it holds however the question was phrased.
+    """
+    try:
+        now = datetime.now(db_time_windows.target_tz())
+        return window_end < now - timedelta(hours=_WINDOW_TOLERANCE_HOURS)
+    except Exception:
+        return False
+
+
+def _rows_within_window(
+    rows: List[Dict[str, Any]], window_start: datetime, window_end: datetime
+) -> List[Dict[str, Any]]:
+    """Drop reading rows whose timestamp falls outside the window that was asked for.
+
+    The backstop behind :func:`_window_is_closed`, and the reason a repeat of that bug
+    cannot reach an answer: no matter which handler produced a row or which endpoint it
+    came from, a reading is only allowed to be presented under a window it actually falls
+    in. Rows carrying no timestamp (aggregate rows, which describe the window rather than a
+    moment in it) pass through — there is nothing to contradict.
+
+    Dropping rather than repairing is deliberate. "I have no data for May 7" is a true
+    answer; today's readings labelled May 7 is a fabricated one, and it is the more
+    confident-sounding of the two.
+    """
+    kept: List[Dict[str, Any]] = []
+    low = window_start - timedelta(hours=_WINDOW_TOLERANCE_HOURS)
+    high = window_end + timedelta(hours=_WINDOW_TOLERANCE_HOURS)
+    for row in rows or []:
+        stamp = _row_timestamp(row)
+        if stamp is not None and not (low <= stamp <= high):
+            _log.warning(
+                "Dropping reading dated %s: outside the requested window %s..%s. A live "
+                "snapshot was about to be presented as a historical one.",
+                stamp.isoformat(), window_start.isoformat(), window_end.isoformat(),
+            )
+            continue
+        kept.append(row)
+    return kept
+
+
+def _row_timestamp(row: Dict[str, Any]) -> Optional[datetime]:
+    """The moment a reading row describes, or None when it describes a window."""
+    if not isinstance(row, dict):
+        return None
+    raw = row.get("bucket") or row.get("timestamp")
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=db_time_windows.target_tz())
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=db_time_windows.target_tz())
+
+
 def _handle_diagnostic(
     *,
     question: str,
@@ -444,7 +519,14 @@ def _handle_point_lookup(
         window_end=window_end,
     )
 
-    if historical_summary_query and intent == IntentType.POINT_LOOKUP_DB:
+    # A closed window makes the question historical whichever status intent the router
+    # chose. Gating this on POINT_LOOKUP_DB alone is what let "how was the air quality on
+    # May 7?" — routed CURRENT_STATUS_DB — fall through to the live-snapshot branch and
+    # report that afternoon's readings under May 7's label. The two intents are near
+    # synonyms for the router; the window is not ambiguous at all.
+    if historical_summary_query and (
+        intent == IntentType.POINT_LOOKUP_DB or _window_is_closed(window_end)
+    ):
         if len(plan.metrics) >= 2:
             metric_names = plan.selected
             if not metric_names:
@@ -1211,4 +1293,19 @@ def execute_intent_query(
     result.setdefault("window_label", window_label)
     result.setdefault("compared_spaces", list(compared_spaces))
     result.setdefault("correlation_data", None)
+
+    # Last gate before the rows become evidence: a reading may not be presented under a
+    # window it does not fall in. Every handler converges here, so this holds for endpoints
+    # and code paths that do not exist yet — which is the point. The specific bug was one
+    # branch calling a "latest reading" endpoint for a historical question, but the class of
+    # bug is any path where the window and the data come from different decisions.
+    effective_start = result.get("window_start") or window_start
+    effective_end = result.get("window_end") or window_end
+    checked = _rows_within_window(list(result.get("rows") or []), effective_start, effective_end)
+    if len(checked) != len(result.get("rows") or []):
+        result["rows"] = checked
+        if not checked:
+            result["fallback_answer"] = (
+                f"I don't have {metric_alias} readings for {result.get('window_label') or window_label}."
+            )
     return result
