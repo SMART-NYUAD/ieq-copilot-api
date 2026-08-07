@@ -169,6 +169,67 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
             "mean indoor levels can differ substantially from outdoor."
         ),
     },
+    # The two indoor PM2.5 standards. Without them the only PM2.5 records were EPA NAAQS and
+    # WHO AQG — both AMBIENT (outdoor) standards, as their own caveats say — so every indoor
+    # PM2.5 verdict was graded against a limit written for outdoor air, and the strictest-wins
+    # rule reliably picked WHO. RESET Air and WELL publish limits for the occupied interior,
+    # which is what this sensor measures; threshold_assessment prefers them and falls back to
+    # the ambient figures only for a metric nothing indoor covers.
+    #
+    # ASHRAE is deliberately absent here: 62.1 requires the OUTDOOR air brought in to meet the
+    # NAAQS and specifies filtration, but sets no indoor PM2.5 concentration limit. Inventing
+    # one would be the same false claim the NULL-threshold ASHRAE CO2 record exists to prevent.
+    {
+        "source_key": "RESET_AIR_V2_PM25",
+        "source_label": "RESET Air Standard v2.1 — Commercial Interiors",
+        "source_url": "https://reset.build/standard/air",
+        "section_ref": "Section 4: Performance Thresholds",
+        "publication_year": 2021,
+        "metric": "pm25",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "RESET Air Standard v2 requires indoor PM2.5 at or below "
+            "12 µg/m³ for Grade A certification and at or below 35 µg/m³ "
+            "for Grade B certification during occupied hours, measured by "
+            "continuous monitoring sensors in the occupied interior."
+        ),
+        "embed_text": (
+            "RESET Air PM2.5 particulate matter 12 micrograms Grade A "
+            "35 Grade B indoor commercial interiors continuous monitoring"
+        ),
+        "threshold_value": 12,
+        "threshold_type": "max",
+        "threshold_unit": "µg/m³",
+        "threshold_condition": "Grade A, occupied hours, indoor",
+        "caveat_text": (
+            "RESET Air certification requires sensor calibration and "
+            "continuous monitoring. Spot readings alone do not determine "
+            "certification status."
+        ),
+    },
+    {
+        "source_key": "WELL_V2_A01",
+        "source_label": "WELL Building Standard v2, Feature A01",
+        "source_url": "https://v2.wellcertified.com/v/en/air/feature/1",
+        "section_ref": "Feature A01: Air Quality — Particulate Matter",
+        "publication_year": 2020,
+        "metric": "pm25",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "WELL Building Standard v2 Feature A01 requires indoor PM2.5 "
+            "not to exceed 15 µg/m³ in regularly occupied spaces seeking "
+            "WELL certification."
+        ),
+        "embed_text": (
+            "WELL PM2.5 particulate matter 15 micrograms building standard "
+            "certification indoor occupied space air quality"
+        ),
+        "threshold_value": 15,
+        "threshold_type": "max",
+        "threshold_unit": "µg/m³",
+        "threshold_condition": "regularly occupied spaces, indoor",
+        "caveat_text": None,
+    },
     {
         "source_key": "WHO_AQG_2021",
         "source_label": "WHO Global Air Quality Guidelines 2021",
@@ -678,26 +739,46 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
 ]
 
 
-def seed_guidelines() -> None:
-    """Insert all guideline records with embeddings."""
-    print(f"Seeding {len(GUIDELINE_RECORDS)} guideline records...")
+def _existing_record_keys() -> set:
+    """(source_key, metric) pairs already stored.
 
-    embed_texts_list = [r["embed_text"] for r in GUIDELINE_RECORDS]
+    The table has no unique constraint, so the ``ON CONFLICT DO NOTHING`` below never fires
+    and a second run would duplicate all 23 records — every duplicate then showing up as its
+    own numbered citation. Checking first is what actually makes the seed re-runnable, which
+    is the property adding a record to this list depends on.
+    """
+    with get_cursor() as cur:
+        cur.execute("SELECT source_key, metric FROM env_guideline_records")
+        return {(str(row["source_key"]), str(row["metric"])) for row in cur.fetchall()}
+
+
+def seed_guidelines() -> None:
+    """Insert any guideline records not already stored, with embeddings."""
+    existing = _existing_record_keys()
+    pending = [
+        r for r in GUIDELINE_RECORDS if (r["source_key"], r["metric"]) not in existing
+    ]
+    print(
+        f"{len(GUIDELINE_RECORDS)} records defined, {len(existing)} already stored, "
+        f"{len(pending)} to insert..."
+    )
+    if not pending:
+        print("Done. Nothing to insert.")
+        return
+
+    embed_texts_list = [r["embed_text"] for r in pending]
     print("Generating embeddings...")
     embeddings = embed_texts(embed_texts_list)
 
-    if len(embeddings) != len(GUIDELINE_RECORDS):
-        print(
-            f"ERROR: Expected {len(GUIDELINE_RECORDS)} embeddings, "
-            f"got {len(embeddings)}"
-        )
+    if len(embeddings) != len(pending):
+        print(f"ERROR: Expected {len(pending)} embeddings, got {len(embeddings)}")
         sys.exit(1)
 
     inserted = 0
     skipped = 0
 
     with get_cursor() as cur:
-        for record, embedding in zip(GUIDELINE_RECORDS, embeddings):
+        for record, embedding in zip(pending, embeddings):
             normalized_embedding = _normalize_embedding_dim(embedding)
             try:
                 cur.execute(

@@ -187,6 +187,29 @@ class GeneratedBranchTests(unittest.TestCase):
 
         self.assertEqual(seen, [snapshot, snapshot])
 
+    def test_knowledge_prefetch_keeps_the_routers_scope(self):
+        """The grounding pre-fetch must not re-decide what the question was about.
+
+        It built planner_hints by hand and omitted `metric_scope`, so plan_metrics fell
+        back to inferring the scope from question text — discarding a decision the router
+        had already made correctly. A follow-up routed at scope `air_quality` arrived here
+        with the scope dropped, was re-inferred as `named` over the router's metrics
+        (["ieq", "co2"]), and `named` expands IEQ to ALL FOUR sub-indices: an air question
+        came back leading with the lighting score.
+        """
+        route = _route(
+            intent=IntentType.DEFINITION_EXPLANATION,
+            metrics=["ieq", "co2"],
+            metric_scope="air_quality",
+            analysis_mode="advisory",
+        )
+        with patch.object(qo, "prepare_db_query", return_value={"rows": [], "payload": {}}) as prep:
+            qo._fetch_live_sensor_data("what should I do next?", "smart_lab", route, "researcher")
+        hints = prep.call_args.kwargs["planner_hints"]
+        self.assertEqual(hints["metric_scope"], "air_quality")
+        self.assertEqual(hints["analysis_mode"], "advisory")
+        self.assertEqual(prep.call_args.kwargs["role"], "researcher")
+
     def test_db_sync_reports_resolved_timescale_and_metrics(self):
         route = _route(intent=IntentType.AGGREGATION_DB)
         branch = qo.plan_branch(_ctx(), route)

@@ -554,6 +554,23 @@ def _latest_reading_row(
     return threshold_assessment.readings_from_rows(rows, fallback_metric)
 
 
+def _citable_records(
+    guideline_records: Optional[List[Dict[str, Any]]],
+    rows: Optional[List[Dict[str, Any]]],
+    payload: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Narrow the fetched guideline records to the ones the assessment actually applied.
+
+    Called by both renderers on the same inputs, so sync and stream offer the reader the
+    same Sources panel. See threshold_assessment.governing_records for why the fetched set
+    is deliberately wider than the citable one.
+    """
+    return threshold_assessment.governing_records(
+        _latest_reading_row(rows, (payload or {}).get("metric")),
+        guideline_records,
+    )
+
+
 # Index keys as they appear in a reading row, and the words a non-technical reader uses.
 # Relabelled rather than removed: an IEQ question still needs the scores, and dropping them
 # would answer "what is the IEQ score?" with nothing.
@@ -668,7 +685,7 @@ def _render_db_answer_with_llm(
                 }
     else:
         payload = dict(payload)
-    effective_guideline_records = list(guideline_records or [])
+    effective_guideline_records = _citable_records(guideline_records, rows, payload)
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_guideline_records)
     context_data = _build_db_context_data(
         payload=payload,
@@ -790,7 +807,9 @@ async def stream_db_tokens(
     # them here meant a second Postgres round-trip per streamed turn, and — because the two
     # call sites collected citation metrics differently — the stream could offer the model a
     # different source list than the sync path did for the same question.
-    guideline_records = list(context.get("guideline_records") or [])
+    guideline_records = _citable_records(
+        context.get("guideline_records"), context.get("rows"), payload
+    )
     numbered_sources_block, indexed_sources = build_numbered_sources_block(guideline_records)
     context["indexed_sources"] = indexed_sources
 

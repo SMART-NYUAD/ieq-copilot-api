@@ -388,8 +388,21 @@ def build_knowledge_grounding(
         # guideline search only fires when the question is *about* standards, so without
         # this a definition question had no citation sources at all and therefore nothing
         # for the assessment to compare against.
+        # Only the records the assessment graded against are added. The deterministic
+        # lookup returns every active record for every metric on screen, and on this path
+        # that pile is unioned with whatever the semantic search already found — the widest
+        # source list in the system, offered to the answer least likely to quote a
+        # threshold. See threshold_assessment.governing_records.
+        #
+        # The pruning is applied to the FETCHED records only. Records the caller supplied
+        # (the semantic guideline search, which fires for standards questions) are the
+        # material the answer is made of, not comparators for a reading, so a record about
+        # a metric that happens not to be on screen must survive.
         effective_records = _merge_guideline_records(
-            effective_records, get_thresholds_for_metrics(sorted(readings))
+            effective_records,
+            threshold_assessment.governing_records(
+                readings, get_thresholds_for_metrics(sorted(readings))
+            ),
         )
 
     numbered_sources_block, indexed_sources = build_numbered_sources_block(effective_records)

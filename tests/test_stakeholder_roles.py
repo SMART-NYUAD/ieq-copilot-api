@@ -229,12 +229,18 @@ class RolesActuallyDifferTests(unittest.TestCase):
         # and a role that invites naming equipment has to repeat that boundary.
         self.assertIn("never invent equipment", block)
 
-    def test_researcher_asks_for_trends_and_every_guideline(self):
+    def test_researcher_asks_for_trends_and_the_provenance_of_each_verdict(self):
         block = role_style_block(ROLE_RESEARCHER).lower()
         self.assertIn("report the trend", block)
         self.assertIn("peak and trough with their timestamps", block)
-        self.assertIn("report every applicable guideline", block)
-        self.assertIn("not just the governing one", block)
+        # Provenance of the comparison, not a survey of the literature. This block used to
+        # ask for EVERY applicable guideline "not just the governing one" — which became
+        # unsatisfiable once Citation Sources was narrowed to the thresholds actually
+        # applied, and an unsatisfiable instruction is an invitation to fabricate the rest.
+        self.assertIn("report the governing threshold", block)
+        self.assertIn("its averaging basis", block)
+        self.assertIn("may not name or quote", block)
+        self.assertNotIn("not just the governing one", block)
 
     def test_executive_leads_with_all_clear_or_alarm_and_is_warm(self):
         block = role_style_block(ROLE_EXECUTIVE).lower()
@@ -418,13 +424,24 @@ class RoleWidensButNeverNarrowsTests(unittest.TestCase):
                     set(baseline.selected).issubset(set(roled.selected)), f"{role}/{scope}"
                 )
 
-    def test_researcher_widens_air_quality_to_every_metric(self):
-        baseline = self._plan(SCOPE_AIR_QUALITY).selected
-        widened = self._plan(SCOPE_AIR_QUALITY, ROLE_RESEARCHER).selected
-        self.assertNotEqual(baseline, widened)
-        for extra in ("temperature", "sound", "light"):
-            self.assertNotIn(extra, baseline)
-            self.assertIn(extra, widened)
+    def test_researcher_widening_does_not_change_the_subject(self):
+        # Widening gives a rigorous reader more of the SAME subject. Unioning the air pack
+        # with SCOPE_FULL gave them a different one: "how is the air quality today?" came
+        # back reporting sound and light, because the pack had been widened across domains
+        # behind the question. An air pack is already the complete air answer.
+        for scope in (SCOPE_AIR_QUALITY, SCOPE_IEQ_INDEX):
+            baseline = self._plan(scope).selected
+            widened = self._plan(scope, ROLE_RESEARCHER).selected
+            self.assertEqual(baseline, widened, scope)
+            for off_topic in ("sound", "light"):
+                self.assertNotIn(off_topic, widened, f"{scope}/{off_topic}")
+
+    def test_researcher_still_widens_the_cross_domain_scopes(self):
+        # The widening is narrowed, not removed: a scope that already spans every dimension
+        # has nothing off-topic to gain from the full pack.
+        baseline = self._plan(SCOPE_DIAGNOSTIC).selected
+        widened = self._plan(SCOPE_DIAGNOSTIC, ROLE_RESEARCHER).selected
+        self.assertTrue(set(baseline).issubset(set(widened)))
 
     def test_researcher_widening_keeps_the_asked_about_metrics_first(self):
         widened = self._plan(SCOPE_IEQ_INDEX, ROLE_RESEARCHER).selected

@@ -620,6 +620,28 @@ def _parse_llm_response(raw: str, question: str, lab_name: Optional[str]) -> Opt
     raw_analysis = str(data.get("analysis_mode") or "").strip().lower()
     analysis_mode = raw_analysis if raw_analysis in _VALID_ANALYSIS_MODES else None
 
+    # An advice or root-cause question is a question about DATA, so it cannot also be a
+    # glossary lookup. The prompt says so four times over — "An advice question is NEVER
+    # `definition_explanation`" among them — and the model still emitted both together for
+    # "what would you say about these results? what should I do next?": analysis_mode
+    # "advisory" (correct) and intent `definition_explanation` (not). That combination sent
+    # an advice follow-up down the knowledge path, where it is grounded by a pre-fetch
+    # rather than by a planned query, and the answer came back about a different subject.
+    #
+    # This is not regex routing: nothing here reads the question. It resolves a
+    # CONTRADICTION between two fields the LLM itself filled in, in favour of the one the
+    # model gets right — and per the definite-article lesson, a fifth restatement of the
+    # rule in the prompt would not have helped. The reverse coercion is not available: an
+    # intent cannot tell us the mode was wrong, because most DB intents are legitimately
+    # mode-less.
+    if analysis_mode and intent == IntentType.DEFINITION_EXPLANATION:
+        _log.info(
+            "Router returned definition_explanation with analysis_mode=%r for %r; an "
+            "advice/root-cause question needs current values, routing to current_status_db.",
+            analysis_mode, (question or "")[:120],
+        )
+        intent = IntentType.CURRENT_STATUS_DB
+
     # An unrecognised scope is dropped rather than guessed at: the DB path then infers one
     # from question text, which is the same behaviour as an unreachable router.
     raw_scope = str(data.get("metric_scope") or "").strip().lower()

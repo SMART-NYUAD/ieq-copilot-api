@@ -82,6 +82,20 @@ _NAMED_SCOPE_LIMIT = 6
 # asking for one metric means wanting that metric, whoever is asking.
 _WIDENING_ROLES = {"researcher"}
 
+# Scopes a role may NOT widen across, because the scope names a subject rather than a depth.
+# A researcher asking "how is the air quality today?" was handed the air pack unioned with
+# SCOPE_FULL, so the answer closed on "all other metrics (humidity, temperature, sound,
+# light) are within range" — acoustics and illumination reported in reply to a question
+# about air. Wanting more rigour is not wanting a different topic, and the widening was
+# never meant to change what was asked; it was meant to stop a rigorous reader being handed
+# a partial view OF THE SAME SUBJECT. The air pack already is the complete air answer, and
+# the index family already is the complete index answer, so for these two scopes there is
+# nothing in-subject left to add. Widening still cannot narrow: the pack is returned intact.
+#
+# SCOPE_COMFORT, SCOPE_DIAGNOSTIC and SCOPE_FULL keep the union — they span every dimension
+# by construction, so nothing the full pack adds is off-topic there.
+_TOPICAL_SCOPES = {SCOPE_AIR_QUALITY, SCOPE_IEQ_INDEX}
+
 _POLLUTANTS = {"co2", "pm25", "voc"}
 _IEQ_SUB_INDICES = ("iaq", "itc", "iac", "iil")
 
@@ -350,7 +364,7 @@ def plan_metrics(
         # Named metrics trail the pack so they are visible to callers, but the limit is the
         # pack's own length: a pack is a complete answer, not a starting point.
         metrics, limit = pack + [m for m in named if m not in pack], len(pack)
-        if str(role or "") in _WIDENING_ROLES:
+        if str(role or "") in _WIDENING_ROLES and scope not in _TOPICAL_SCOPES:
             widened = pack + [m for m in _PACKS[SCOPE_FULL] if m not in pack]
             # The extras go after the pack, so priority order — and therefore what a limit
             # would cut first — still reflects what the question was about.

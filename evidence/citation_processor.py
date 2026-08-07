@@ -104,6 +104,31 @@ def append_footnote_block(
     return answer_text + "\n".join(lines)
 
 
+def _format_threshold_number(value: float) -> str:
+    if abs(value) >= 100:
+        return f"{value:.0f}"
+    if abs(value) >= 1:
+        return f"{value:g}"
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _threshold_phrase(record: Dict[str, Any], threshold_value: Optional[float]) -> str:
+    """The published figure for one source, or an explicit statement that it has none."""
+    if threshold_value is None:
+        return "publishes no numeric threshold for this metric; do not quote one from it"
+    unit = str(record.get("threshold_unit") or "").strip()
+    kind = {
+        "max": "maximum",
+        "min": "minimum",
+        "target": "target",
+        "range_max": "top of optimal range",
+        "range_min": "bottom of optimal range",
+    }.get(str(record.get("threshold_type") or "").strip().lower(), "threshold")
+    condition = str(record.get("threshold_condition") or "").strip()
+    basis = f", {condition}" if condition else ""
+    return f"{kind} {_format_threshold_number(threshold_value)} {unit}{basis}".strip()
+
+
 def build_numbered_sources_block(
     guideline_records: List[Dict[str, Any]],
 ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -152,13 +177,27 @@ def build_numbered_sources_block(
         year = f" ({record['publication_year']})" if record.get("publication_year") else ""
         source_label = str(record.get("source_label") or "Unknown source")
 
-        lines.append(f"[{i}] {source_label}{section}{year} — {tier_label}")
-
         threshold_value = record.get("threshold_value")
         try:
             threshold_value = float(threshold_value) if threshold_value is not None else None
         except (TypeError, ValueError):
             threshold_value = None
+
+        # The figure a source actually publishes, on the line that names the source.
+        #
+        # This block used to give the model a bare label — "[14] WHO Global Air Quality
+        # Guidelines 2021 — Standard" — and ask it to cite that number without ever showing
+        # it. It filled the gap from memory and got it wrong in the way memory does: WHO's
+        # ANNUAL mean of 5 µg/m³ quoted against a single day's reading, and a WHO TVOC limit
+        # rendered as "100 ppb = 0.1 ppm" when the record says 0.061 ppm. Both numbers were
+        # plausible, neither was in the evidence, and the "never state a threshold that does
+        # not appear here" rule could not bite because nothing appeared here to compare
+        # against. The averaging basis rides along for the same reason: a limit under the
+        # wrong basis is a wrong limit.
+        lines.append(
+            f"[{i}] {source_label}{section}{year} — {tier_label}"
+            f" — {_threshold_phrase(record, threshold_value)}"
+        )
 
         indexed_sources.append(
             {
@@ -177,6 +216,10 @@ def build_numbered_sources_block(
                 # past a comfort-range top is not reported as breaching a limit.
                 "threshold_type": record.get("threshold_type"),
                 "threshold_unit": record.get("threshold_unit"),
+                # The basis the threshold is published under ("24-hour mean guideline").
+                # threshold_assessment renders it beside the figure so the answer cannot
+                # restate the limit under an averaging period the source never gave.
+                "threshold_condition": record.get("threshold_condition"),
                 "caveat_text": record.get("caveat_text"),
             }
         )
