@@ -88,39 +88,23 @@ def _is_historical_window_summary_query(question: str, window_label: str, window
 _WINDOW_TOLERANCE_HOURS = 2.0
 
 
-def _window_is_closed(window_end: datetime) -> bool:
-    """True when the window ends far enough in the past that no live reading falls in it.
-
-    A question about a finished period cannot be answered with the current snapshot, and
-    this is what tells the handlers so. Asked "how was the air quality on May 7?", the
-    multi-metric branch called ``fetch_multi_metric_point_row`` — which always returns the
-    LATEST reading — and returned it under the label "May 7, 2026". The answer reported
-    PM2.5 18.0 µg/m³ and VOC 0.06 ppm; those were that afternoon's live values, three
-    months after the day asked about, where May 7 actually peaked at 14.1 µg/m³.
-
-    Deliberately not keyed on the wording or on which of the two near-identical status
-    intents the router picked — the historical path used to be gated on
-    ``POINT_LOOKUP_DB`` alone, and the router answers "how was X on <date>?" with
-    ``CURRENT_STATUS_DB`` about as often, which is the whole bug. A closed window is a
-    property of the resolved window, so it holds however the question was phrased.
-    """
-    try:
-        now = datetime.now(db_time_windows.target_tz())
-        return window_end < now - timedelta(hours=_WINDOW_TOLERANCE_HOURS)
-    except Exception:
-        return False
-
-
 def _rows_within_window(
     rows: List[Dict[str, Any]], window_start: datetime, window_end: datetime
 ) -> List[Dict[str, Any]]:
     """Drop reading rows whose timestamp falls outside the window that was asked for.
 
-    The backstop behind :func:`_window_is_closed`, and the reason a repeat of that bug
-    cannot reach an answer: no matter which handler produced a row or which endpoint it
-    came from, a reading is only allowed to be presented under a window it actually falls
-    in. Rows carrying no timestamp (aggregate rows, which describe the window rather than a
-    moment in it) pass through — there is nothing to contradict.
+    Asked "how was the air quality on May 7?", the multi-metric branch called
+    ``fetch_multi_metric_point_row`` — which takes no window argument and always returns the
+    LATEST reading — and the response layer labelled the result "May 07, 2026". The answer
+    reported PM2.5 18.0 µg/m³ and VOC 0.06 ppm: that afternoon's live values, three months
+    after the day asked about, on a day that actually peaked at 14.1 µg/m³.
+
+    ``_handle_point_lookup`` no longer routes a period question to a live endpoint, so this
+    is the backstop rather than the fix — and it is the reason a repeat cannot reach an
+    answer. No matter which handler produced a row or which endpoint it came from, a reading
+    is only allowed to be presented under a window it actually falls in. Rows carrying no
+    timestamp (aggregate rows, which describe the window rather than a moment in it) pass
+    through — there is nothing to contradict.
 
     Dropping rather than repairing is deliberate. "I have no data for May 7" is a true
     answer; today's readings labelled May 7 is a fabricated one, and it is the more
@@ -653,7 +637,6 @@ def _handle_point_lookup(
             }
 
         active_window_label = window_label
-        window_note = ""
         if resolved_lab_name:
             row = api_client.fetch_multi_metric_point_row(resolved_lab_name, metric_names)
         else:
@@ -668,8 +651,6 @@ def _handle_point_lookup(
             row=rows[0] if rows else {},
             window_label=active_window_label,
         )
-        if window_note:
-            fallback_answer = f"{fallback_answer}{window_note}"
         return {
             "operation_type": "point_lookup_multi_metric",
             "rows": rows,
@@ -683,7 +664,6 @@ def _handle_point_lookup(
 
     # Single-metric point lookup
     active_window_label = window_label
-    window_note = ""
     rows: List[Dict[str, Any]] = []
     trend_rows: List[Dict[str, Any]] = []
     api_trend_pct: Optional[float] = None
@@ -713,8 +693,6 @@ def _handle_point_lookup(
         rows = [trend_rows[-1]] if trend_rows else []
 
     fallback_answer = db_helpers.build_point_lookup_answer(metric_alias, rows[0] if rows else {}, active_window_label)
-    if window_note:
-        fallback_answer = f"{fallback_answer}{window_note}"
     return {
         "operation_type": "point_lookup",
         "rows": rows,

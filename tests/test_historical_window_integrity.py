@@ -41,13 +41,6 @@ def _closed_window():
     return start, start + timedelta(days=1)
 
 
-def _live_window():
-    # A live status question resolves to the one-hour default, not a 24-hour span: a wide
-    # window is itself evidence that a period was named.
-    now = datetime.now(timezone.utc)
-    return now - timedelta(hours=1), now
-
-
 class ClosedWindowNeverTakesTheLiveSnapshot(FakeSensorApiMixin, unittest.TestCase):
     def _run(self, question, intent, metrics, window):
         start, end = window
@@ -191,10 +184,6 @@ class RowsOutsideTheWindowAreDropped(unittest.TestCase):
         start, end = _closed_window()
         rows = [{"bucket": "not a date", "pm25": 14.0}]
         self.assertEqual(len(qh._rows_within_window(rows, start, end)), 1)
-
-    def test_a_closed_window_is_recognised_and_a_live_one_is_not(self):
-        self.assertTrue(qh._window_is_closed(_closed_window()[1]))
-        self.assertFalse(qh._window_is_closed(_live_window()[1]))
 
 
 class MultiMetricWindowsCarryTheirShape(unittest.TestCase):

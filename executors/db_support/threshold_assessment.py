@@ -108,6 +108,7 @@ _TIER_RANK = {"regulatory": 0, "research": 1, "internal": 1}
 def _tier_rank(source: Dict[str, Any]) -> int:
     return _TIER_RANK.get(str(source.get("citation_tier") or "").strip().lower(), 1)
 
+
 # Ranked worst-first, for picking the headline status.
 _STATUS_RANK = {
     STATUS_EXCEEDS: 0,
@@ -119,9 +120,6 @@ _STATUS_RANK = {
     STATUS_GOOD: 2,
     STATUS_UNRATED: 3,
 }
-
-# Statuses that must force the overall verdict away from "good".
-_FLAGGED_STATUSES = {STATUS_EXCEEDS, STATUS_POOR}
 
 
 def _normalize_unit(unit: Any) -> str:
