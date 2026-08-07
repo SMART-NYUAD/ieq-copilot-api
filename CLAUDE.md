@@ -67,6 +67,7 @@ python -m unittest discover -s tests -p "test_retrieval_ranking.py"         # em
 python -m unittest discover -s tests -p "test_knowledge_path_grounding.py"  # knowledge-path verdicts + row shapes
 python -m unittest discover -s tests -p "test_scope_leaks.py"               # scope survives to the answer
 python -m unittest discover -s tests -p "test_audience_rendering.py"        # evidence rendered per audience
+python -m unittest discover -s tests -p "test_historical_window_integrity.py" # readings match the window asked for
 ```
 
 `discover -p` reports "Ran 0 tests" for a pattern matching no file rather than failing, so
@@ -118,6 +119,28 @@ Failures are handled by class, because they call for different responses. A **tr
 
 Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open the IFC view"* is a UI action (`viewer_control`), while *"how many columns does the building have?"* is a question answered from the model (`ifc_model_qa`). `heatmap_control` is a sibling UI meta-action: *"turn on the heatmap and use temperature"* emits a `meta` event with action + metric and returns no sensor values. `download_data` is another sibling: *"export the last 7 days of temperature as CSV"* resolves the time window server-side (via `extract_time_window`, mirroring the DB path so the frontend never reconstructs date ranges; **defaults to the last 24 hours** when no window is given) and emits a `meta` event carrying the discrete parameters (`download_slug`, `download_metric_type`, `download_start`/`download_end`, `download_interval`, `download_format`) for the `/spaces/{slug}/metrics/{metric_type}/download-agg-summary` endpoint — the frontend assembles the request and renders a button, not an auto-download. A metric is mandatory: if the user names none, the branch returns `download_needs_metric=true` with a follow-up question rather than parameters. The space slug defaults to `DOWNLOAD_SPACE_SLUG` and the interval to `DOWNLOAD_DEFAULT_INTERVAL`. It is distinct from `aggregation_db`: *"what was the average CO2 last week?"* is a data question (DB path), *"download last week's data"* is `download_data`. Like `viewer_control`, all three branches short-circuit before the DB/evidence layers and are LLM-routed.
 
+**A question cannot be both an advice question and a glossary lookup.** `_parse_llm_response`
+coerces `definition_explanation` to `current_status_db` whenever the plan also carries an
+`analysis_mode` — advice and root-cause questions need current values to stand on. This is not a
+retreat to regex: nothing here reads the question. It resolves a **contradiction between two
+fields the LLM itself filled in**, in favour of the one it gets right. The prompt already forbids
+the combination in four places, including the literal sentence *"An advice question is NEVER
+`definition_explanation`"*, and the model emitted both anyway for *"what would you say about
+these results? what should I do next?"* — which sent an advice follow-up down the knowledge path.
+Same lesson as the definite article: a fifth restatement changes nothing. The reverse coercion is
+unavailable, because most DB intents are legitimately mode-less, so an intent cannot tell you the
+mode was wrong. Cases live in `tests/router_eval.py` group `context`.
+
+**The knowledge path's grounding pre-fetch is a query too, and must carry the plan.**
+`_fetch_live_sensor_data` built `planner_hints` by hand and omitted `metric_scope` and
+`analysis_mode`, so `plan_metrics` fell back to inferring the scope from question text —
+discarding a decision the router had already made correctly. Combined with the misroute above:
+a follow-up planned at scope `air_quality` arrived with the scope dropped, was re-inferred as
+`named` over the router's `metrics` (`["ieq", "co2"]`), and `named` expands IEQ to **all four**
+sub-indices — so *"what should I do next?"* after an air-quality answer came back leading with
+the lighting score. The scope was correct the whole way until this one call threw it away. Any
+new pre-fetch that stands in for a planned query forwards the same hints, `role` included.
+
 **The router is asked only for the intent of these three branches, not for their parameters.** Which 3D view, heatmap on/off and its metric, and the export format/metric/interval are closed vocabularies that map deterministically from wording, so `_parse_llm_response` derives them from the plan's `resolved_question` via the alias maps in `llm_router_planner.py` (`_infer_viewer_type`, `_infer_heatmap_action`/`_infer_heatmap_metric`, `_infer_download_format`/`_infer_download_metric`/`_infer_download_interval`). Reading `resolved_question` rather than the raw question is what keeps elliptical requests working — *"export that as a csv"* resolves because the router already rewrote *"that"* into the metric. This is not a retreat to regex routing: the intent is still LLM-decided, and coreference stays in the one field only the LLM can fill. Adding a new UI parameter means extending its alias map, not the system prompt.
 
 ### IFC executor
@@ -135,6 +158,45 @@ Note the deliberate split between `viewer_control` and `ifc_model_qa`: *"open th
 `executors/db_query_executor.py` always fetches the data first, then passes structured rows to the LLM for narrative rendering. If the LLM fails, a deterministic text fallback is returned. `metadata.llm_used` indicates whether LLM rendering succeeded.
 
 Sensor data comes from the Smart CRG REST API via `executors/db_support/api_client.py` (`SENSOR_API_BASE_URL`), not from SQL — Postgres is used only for knowledge cards and guideline records. Forecasts are fetched from the predictions API (`PREDICTIONS_API_BASE_URL`, `_handle_forecast` in `query_handlers.py`), which serves ~6 hours ahead; no forecasting model runs in this process. The LLM only explains the returned predictions, never invents future values.
+
+**A reading may not be presented under a window it does not fall in.** A finished period
+cannot be answered from a live endpoint, and `_window_is_closed` in `query_handlers.py` is
+what tells the handlers so. The historical-summary path used to be gated on
+`intent == POINT_LOOKUP_DB`, and the router answers *"how was X on <date>?"* with
+`CURRENT_STATUS_DB` about as often — so that question reached the multi-metric branch,
+which calls `fetch_multi_metric_point_row` (always the **latest** reading) and returned it
+labelled *"May 07, 2026"*. Three consecutive turns then gave three PM2.5 figures for one
+day: 18.0 µg/m³ (that afternoon's live value, three months later), 14.0 µg/m³ (the 23:00
+bucket reported as the day's level), against a true daily mean of 9.19 and peak of 14.10.
+The window was resolved correctly the whole way; only the branch reading it was wrong.
+A closed window is a property of the resolved window, not of a router coin-flip between
+two near-synonymous intents, so the gate is keyed on that.
+
+**A multi-metric window summary carries every metric's shape, not just the first one's.**
+`fetch_multi_metric_agg_row` returns scalars — PM2.5 averaged 9.19 with a max of 14.10, and
+nothing about *when* — while `_attach_time_series_context` builds a series for
+`metric_alias` alone, i.e. the pack's first metric. So *"how was the PM2.5 on May 7?"* could
+say the peak came at 10 PM and *"how was the air quality on May 7?"* could not, for any
+metric but one. That gap is where a plausible shape gets invented: an answer described VOC
+*"rising gradually through occupied hours, peaking in the afternoon"* on a day whose peak
+was at 8 PM and whose cleanest stretch was 9 AM–5 PM — the reverse of the truth, and the
+aggregate could not contradict it because an aggregate has no shape in it.
+`_multi_metric_history` fetches the merged series (`fetch_merged_timeseries`, which the
+diagnostic and comparison paths already used) and `_per_metric_trends` reduces it to
+direction plus peak/trough with timestamps, per metric, each with its own unit. Reduced
+rather than shipped raw: five metrics of hourly buckets is a lot of numbers to hand a model
+that needs when-and-which-way, and a summary it cannot mis-add is worth more than points it
+can. `rows` deliberately stays the aggregate — making it the 24 buckets would put
+`readings_from_rows` back on the last bucket, which is the defect above.
+
+`_rows_within_window` is the backstop: `execute_intent_query` drops any row whose timestamp
+falls outside the window before the rows become evidence. Every handler converges there, so
+it holds for endpoints and code paths that do not exist yet — the specific bug was one
+branch calling a "latest reading" endpoint, but the class is any path where the window and
+the data come from different decisions. Rows with no timestamp (aggregates, which describe
+a window rather than a moment) pass through. Dropping rather than repairing is deliberate:
+*"I have no data for May 7"* is true, today's readings labelled May 7 is a fabrication, and
+it is the more confident-sounding of the two.
 
 ### Metric planning
 
@@ -235,6 +297,18 @@ promote-to-full would silently drop `itc`/`iaq` — the same failure as the comf
 lost `sound` and `light`. A union cannot lose a metric however the packs are later edited. A named
 metric stays named for every role.
 
+**Widening gives more of the same subject, never a different one.** `SCOPE_AIR_QUALITY` and
+`SCOPE_IEQ_INDEX` are *topical* — they name what the question was about — so `_TOPICAL_SCOPES`
+excludes them from the union. A researcher asking *"how is the air quality today?"* was getting
+the air pack unioned with `SCOPE_FULL`, and the answer closed on *"all other metrics (humidity,
+temperature, sound, light) are within range"*: acoustics and illumination reported in reply to a
+question about air. Same shape as the sub-index expansion bug, one layer up — the pack was widened
+behind a correctly-scoped question. Wanting more rigour is not wanting a different topic, and the
+air pack already *is* the complete air answer, so there is nothing in-subject left to add.
+`SCOPE_COMFORT`, `SCOPE_DIAGNOSTIC` and `SCOPE_FULL` keep the union: they span every dimension by
+construction, so nothing the full pack adds is off-topic there. Narrowing is still impossible —
+the pack is returned intact.
+
 **What differentiates the roles is the question each reader is actually asking**, not adjectives.
 A first version differed mostly in tone and produced four answers that read alike. `facility_manager`
 answers *do I need to intervene, and what do I check* — it names the plausible physical cause and
@@ -272,7 +346,24 @@ This exists because *"how is the air quality today?"* answered with CO2, IAQ, hu
 
 A second defect made VOC the cheapest metric to drop. Its guideline records were stored under the legacy key `tvoc` while `guideline_store.get_thresholds_for_metrics` looks up `voc`, so VOC really had no retrievable threshold — and an uncited numeric claim is discouraged elsewhere in the prompt, so the model preferred silence. The deployed CHECK constraint had drifted the same way (permitting `tvoc`, forbidding `voc`, the reverse of migration 002). `storage/migrations/003_normalize_voc_guideline_metric.sql` replaces the constraint and normalises the rows; `test_air_quality_completeness.py` compares the seed's metric keys against migration 002's CHECK so that drift cannot return silently.
 
-**VOC thresholds exist in two units on purpose.** The Atmocube (Sensirion SGP41) reports TVOC in **ppm**, range 0–3, while every published TVOC threshold is in µg/m³ — so before this there was nothing to classify a VOC reading against, and the answer either went silent on VOC or borrowed another metric's threshold. Four companion records restate the same standards in ppm using the conversion published for TVOC sensor readings, **4.9 µg/m³ per ppb**: RESET Air Grade A and WELL v2 A04 500 µg/m³ → `0.102 ppm`, WHO 2010 comfort 300 µg/m³ → `0.061 ppm`, UBA/Seifert precautionary 950 µg/m³ → `0.194 ppm`. That factor is corroborated internally — 300 µg/m³ → 0.061 ppm reproduces the top of the 0.05–0.063 ppm band this system already treated as the VOC comfort range. The mass-based records are kept: they are what the standards actually publish, and the ppm figures are **derived**, which every one of their `claim_text` and `caveat_text` fields states. Note the sensor is ethanol-calibrated, TVOC is a summed indicator, and its mass/volume relationship depends on the compound mix — so these are comparison aids, not compliance limits.
+**VOC thresholds exist in two units on purpose.** The Atmocube (Sensirion SGP41) reports TVOC in **ppm**, range 0–3, while every published TVOC threshold is in µg/m³ — so before this there was nothing to classify a VOC reading against, and the answer either went silent on VOC or borrowed another metric's threshold. Four companion records restate the same standards in ppm using the conversion published for TVOC sensor readings, **4.9 µg/m³ per ppb**: RESET Air Grade A and WELL v2 A04 500 µg/m³ → `0.102 ppm`, UBA/Seifert hygienic 300 µg/m³ → `0.061 ppm`, UBA/Seifert precautionary 950 µg/m³ → `0.194 ppm`. That factor is corroborated internally — 300 µg/m³ → 0.061 ppm reproduces the top of the 0.05–0.063 ppm band this system already treated as the VOC comfort range. The mass-based records are kept: they are what the standards actually publish, and the ppm figures are **derived**, which every one of their `claim_text` and `caveat_text` fields states. Note the sensor is ethanol-calibrated, TVOC is a summed indicator, and its mass/volume relationship depends on the compound mix — so these are comparison aids, not compliance limits.
+
+**WHO publishes no TVOC guideline, and the 300 µg/m³ band edge is Seifert's.** It was seeded
+as *"WHO Indoor Air Quality Guidelines: Selected Pollutants 2010, Chapter 7: Total VOCs"* in
+both units. That document covers nine named pollutants — benzene, carbon monoxide,
+formaldehyde, naphthalene, nitrogen dioxide, PAHs, radon, trichloroethylene,
+tetrachloroethylene — and states no TVOC value anywhere; its Chapter 7 is radon. The
+300 / 300–1000 µg/m³ banding is **Seifert's five-level TVOC scheme**, applied by the German
+Committee on Indoor Air Guide Values (UBA), which this seed already cited correctly at the
+950 µg/m³ level. Not a cosmetic mislabel: at 0.061 ppm it was the lowest VOC threshold in
+the table, so strictest-applicable made it the **governing** source for every VOC verdict
+the system produced, each one attributed to a body that never published the number. Migration
+006 deactivates the two rows (`is_active = FALSE`, not deleted — anything already persisted
+that cites them keeps a resolvable record); `UBA_TVOC_HYGIENIC`/`_PPM` carry the same figures
+with the right attribution. `test_air_quality_completeness.py::GuidelineAttributionTests`
+asserts no VOC threshold names WHO. The lesson generalises past VOC: a seeded citation is
+evidence like any other, and *"which body actually published this number"* is checkable
+against the publisher's own page.
 
 ### Knowledge-card retrieval
 
@@ -327,7 +418,10 @@ Four rules earn their place, each from a wrong answer:
 
 - **A threshold only applies in the reading's own unit.** VOC reads in ppm and most TVOC limits are in µg/m³; crossing that gap needs a molar-mass assumption, so a metric with no threshold in its unit is `unrated`, never guessed.
 - **Unit spellings are folded.** The registry writes PM2.5 as `μg/m³` (U+03BC) and the seed as `µg/m³` (U+00B5). They render identically, and a naive comparison silently concludes the metric has no threshold.
-- **The strictest applicable threshold governs**, so a clean verdict cannot be bought by quoting the most permissive standard.
+- **An indoor reading is graded against an indoor standard.** WHO's Global Air Quality Guidelines and EPA's NAAQS are *ambient* standards — both records say "outdoor" in their own caveat text, which the assessment never sees — so `_AMBIENT_SOURCE_KEYS` demotes them. They decide only a metric no indoor standard covers, and the verdict line then says the figure is an outdoor one applied for reference. PM2.5 had only those two records, so every indoor PM2.5 verdict was graded against outdoor air and strictest-wins picked WHO's 15 µg/m³ every time; `RESET_AIR_V2_PM25` (12 µg/m³, Grade A occupied hours) and `WELL_V2_A01` (15 µg/m³) are the indoor limits and now govern. ASHRAE is deliberately not among them: 62.1 requires the *outdoor* air brought in to meet the NAAQS and specifies filtration, but publishes no indoor PM2.5 concentration limit — asserting one would be the same false claim the NULL-threshold ASHRAE CO2 record exists to prevent. Keying by `source_key` rather than inferring from wording means adding an indoor standard demotes the ambient one automatically.
+- **A published standard outranks a research guide value.** `citation_tier` `regulatory` wins over `research`/`internal` before strictest-wins runs. RESET Air Grade A and WELL v2 set TVOC at 0.102 ppm; Seifert's hygienic band edge is 0.061 ppm, so strictest-alone made a *hygienic* figure — explicitly not health-based, and not something a building is assessed against — govern every VOC verdict ahead of the two standards that are. Research records stay in the pool and still govern a metric no standard covers; they just stop outranking one that does. Applied after the indoor filter, so a regulatory *outdoor* limit cannot be promoted over an indoor one.
+- **The strictest applicable threshold governs**, so a clean verdict cannot be bought by quoting the most permissive standard. It applies *after* the indoor and tier filters, so neither a strict outdoor limit nor a strict guide value can outrank a standard that applies.
+- **A threshold's averaging basis travels with its figure.** `threshold_condition` ("24-hour mean guideline", "Grade A, occupied hours") is carried through `indexed_sources` onto the rendered verdict line, and `build_numbered_sources_block` prints each source's actual published figure beside its label. Both exist because the block used to give the model a bare source name — `[14] WHO Global Air Quality Guidelines 2021 — Standard` — and then instruct it to cite a number it had never been shown. It filled the gap from memory, in the way memory does: WHO's **annual** mean of 5 µg/m³ quoted against a single day's reading, and a WHO TVOC limit rendered as "100 ppb = 0.1 ppm" when the record says 0.061 ppm. Both numbers were plausible; neither was in the evidence, so the *never state a threshold that does not appear here* rule had nothing to bite on. A limit quoted under the wrong basis is a wrong limit even when the digits are real.
 - **A hard limit outranks a comfort-band edge.** `threshold_type` `max`/`min` is a limit; `range_max`/`range_min` is the top of an optimal band. 54.8 %RH is above EPA's 50 % optimal top but well under ASHRAE's 65 % limit — treating those alike flags an ordinary room. Band edges only decide when a metric has no hard limit, and then report as *outside optimal range*.
 
 Index metrics (IEQ/IAQ/ITC/IAC/IIL) get their own vocabulary — `POOR`/`FAIR`/`GOOD` against the 0–100 bands — because nothing is "exceeded" when a score is low, and `EXCEEDS` invited the model to describe 0/100 as a breached limit rather than the worst possible score.
@@ -371,7 +465,27 @@ per metric; a single named metric produces a generic `value` column with the met
 the payload. Only the first was handled, so every **point lookup** — "what is the CO2?" —
 normalised to `{"value": 453}`, matched no metric, and produced zero verdict lines: the
 computed machinery was silently bypassed for the narrowest question in the system.
-`threshold_assessment.readings_from_rows` is the one implementation both paths call.
+`threshold_assessment.readings_from_rows` is the one implementation both paths call. An
+**aggregate** row is the same defect under a different column name — `{"avg_value": 600}` for
+*"what was the average CO2 last week?"* — so every generic value column is handled together in
+`_GENERIC_VALUE_KEYS` rather than one at a time.
+
+**The citable source list is narrower than the fetched one.** `get_thresholds_for_metrics`
+returns every active record for every metric on screen, and all of it used to be offered to the
+model as numbered citations: 18 sources for a six-metric air answer that could honestly cite 4,
+with the same standard listed once per metric *and* once per unit — "RESET Air Standard v2.1 —
+Commercial Interiors, Section 4: Performance Thresholds (2021)" four times over, four different
+thresholds — and a Sources panel showing eleven entries for an answer that used a handful.
+`threshold_assessment.governing_records` keeps only what the assessment actually graded against:
+one governing threshold per metric. The permissive twin, the wrong-unit twin and the losers of
+the strictest-wins comparison are things the directives already forbid quoting, so listing them
+only invited the model to reach for one. The **full** list still reaches `assess_readings`, which
+needs every candidate to pick the strictest; only the citable list narrows. With no readings the
+list passes through untouched — a standards question has nothing to govern, and on the knowledge
+path the semantically-searched records are the answer material rather than comparators, so they
+are exempt. This is why `_RESEARCHER` no longer asks for *"every applicable guideline, not just
+the governing one"*: that instruction became unsatisfiable, and an unsatisfiable instruction is
+an invitation to fabricate the rest.
 
 `THRESHOLD_VERDICTS` is split out from `_METRIC_COMPLETENESS` so the knowledge directive can
 take the verdict rules without the completeness rules — a definition question must not be made

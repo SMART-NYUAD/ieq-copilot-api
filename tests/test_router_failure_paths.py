@@ -179,5 +179,54 @@ class RouterClarificationParsingTests(unittest.TestCase):
         self.assertFalse(plan.needs_clarification)
 
 
+class AdviceIsNeverAGlossaryLookupTests(unittest.TestCase):
+    """`analysis_mode` and `definition_explanation` cannot both be right.
+
+    Asked "what would you say about these results? what should I do next?" one turn after
+    an air-quality answer, the router returned analysis_mode="advisory" (correct) together
+    with intent `definition_explanation` (not). That sent an advice follow-up down the
+    knowledge path, which grounds itself from a pre-fetch rather than a planned query, and
+    the answer came back about a different subject entirely.
+
+    The prompt already forbids the combination in four places, including the literal
+    sentence "An advice question is NEVER `definition_explanation`". Per the
+    definite-article lesson, a fifth restatement is not the fix — resolving the
+    contradiction between two fields the model itself filled in is.
+    """
+
+    def _plan(self, **fields):
+        raw = json.dumps({"intent": "definition_explanation", "metrics": ["ieq"], **fields})
+        return planner._parse_llm_response(raw, "what should I do next?", "smart_lab")
+
+    def test_advisory_defeats_definition_explanation(self):
+        plan = self._plan(analysis_mode="advisory")
+        self.assertEqual(plan.intent, IntentType.CURRENT_STATUS_DB)
+        self.assertEqual(plan.analysis_mode, "advisory")
+
+    def test_diagnostic_defeats_definition_explanation(self):
+        # A root-cause question needs the contributing values just as much.
+        self.assertEqual(self._plan(analysis_mode="diagnostic").intent,
+                         IntentType.CURRENT_STATUS_DB)
+
+    def test_a_real_definition_question_is_left_alone(self):
+        self.assertEqual(self._plan().intent, IntentType.DEFINITION_EXPLANATION)
+        self.assertEqual(self._plan(analysis_mode="").intent,
+                         IntentType.DEFINITION_EXPLANATION)
+
+    def test_an_unrecognised_mode_does_not_trigger_the_coercion(self):
+        # analysis_mode is dropped when it is not one of the two valid values, so there is
+        # no contradiction to resolve.
+        plan = self._plan(analysis_mode="glossary")
+        self.assertEqual(plan.intent, IntentType.DEFINITION_EXPLANATION)
+        self.assertIsNone(plan.analysis_mode)
+
+    def test_other_intents_keep_their_mode_untouched(self):
+        raw = json.dumps({"intent": "anomaly_analysis_db", "analysis_mode": "diagnostic"})
+        plan = planner._parse_llm_response(raw, "why did the IEQ drop?", "smart_lab")
+        self.assertEqual(plan.intent, IntentType.ANOMALY_ANALYSIS_DB)
+        self.assertEqual(plan.analysis_mode, "diagnostic")
+
+
+
 if __name__ == "__main__":
     unittest.main()

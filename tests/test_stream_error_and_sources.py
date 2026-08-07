@@ -108,7 +108,10 @@ class DbStreamSourcesTests(unittest.TestCase):
         # Shaped like a prepare_db_query result: the guideline records are resolved once,
         # during preparation, and the stream reuses them rather than re-querying.
         context = {
-            "payload": {"operation_type": "aggregation"},
+            # A real prepare_db_query payload names the metric the row's generic
+            # `avg_value` column belongs to; the threshold assessment needs it to know
+            # what 600 is a reading OF.
+            "payload": {"operation_type": "aggregation", "metric": "co2"},
             "fallback_answer": "Average CO2 was 600 ppm.",
             "backend_semantic_state": None,
             "knowledge_cards": [],
@@ -167,7 +170,10 @@ class DbStreamSourcesTests(unittest.TestCase):
         names = [e["event"] for e in events]
         self.assertEqual(names[-2:], ["sources", "done"])
         sources = events[-2]
-        self.assertEqual([s["index"] for s in sources["citation_sources"]], [1, 2])
+        # Only RESET_AIR_A is advertised: it carries the threshold the assessment graded
+        # 600 ppm against. STUDY_2019 has no threshold_value, so it governs nothing and is
+        # not a source the answer may cite a limit from — see governing_records.
+        self.assertEqual([s["index"] for s in sources["citation_sources"]], [1])
         self.assertEqual([f["index"] for f in sources["footnotes"]], [1])
 
     def test_llm_failure_still_terminates_with_done(self):

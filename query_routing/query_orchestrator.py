@@ -408,10 +408,20 @@ def _sensor_branch(
 
 
 def _fetch_live_sensor_data(
-    question: str, lab_name: Optional[str], route: RoutePlan
+    question: str, lab_name: Optional[str], route: RoutePlan, role: str = ROLE_DEFAULT
 ) -> Optional[Dict[str, Any]]:
     """Pre-fetch current sensor readings to ground knowledge-path answers with real data.
-    Returns the DB payload dict when rows exist, None otherwise."""
+    Returns the DB payload dict when rows exist, None otherwise.
+
+    ``metric_scope`` and ``analysis_mode`` are forwarded for the same reason the DB branch
+    forwards them: without them ``plan_metrics`` falls back to inferring the scope from
+    question text, which throws away a decision the router already made correctly. A
+    follow-up asking "what would you say about these results, what should I do next?" after
+    an air-quality answer was routed at scope `air_quality`, arrived here with the scope
+    dropped, re-inferred as `named` over the router's ``metrics`` (["ieq", "co2"]), and
+    `named` expands IEQ to ALL FOUR sub-indices — so a question about air came back leading
+    with the lighting score. The scope was right the whole way until this call discarded it.
+    """
     try:
         db_ctx = prepare_db_query(
             question=question,
@@ -423,7 +433,10 @@ def _fetch_live_sensor_data(
                 "card_topics": [],
                 "max_cards": 0,
                 "second_lab_name": None,
+                "metric_scope": route.metric_scope,
+                "analysis_mode": route.analysis_mode,
             },
+            role=role,
         )
         if db_ctx.get("rows"):
             return db_ctx.get("payload")
@@ -465,7 +478,7 @@ def _knowledge_branch(
         lab_name=lab_name,
         llm_used=True,
         # Both renderers ground the answer in the same live reading snapshot.
-        prepare=lambda: _fetch_live_sensor_data(question, lab_name, route),
+        prepare=lambda: _fetch_live_sensor_data(question, lab_name, route, role),
         run_sync=_run,
         open_stream=lambda live_sensor_data: stream_knowledge_tokens(
             user_question=question,

@@ -26,6 +26,12 @@ Two rules matter for correctness:
   ``unrated`` rather than guessed at.
 * When several sources cover one metric, the strictest applicable one governs, so a
   clean verdict cannot be bought by quoting the most permissive standard.
+* An **indoor** reading is graded against an indoor standard when one exists. WHO's Global
+  Air Quality Guidelines and EPA's NAAQS are *ambient* (outdoor) standards — WHO's own
+  record says so in its caveat — and grading a lab against them reports the room as failing
+  an obligation nobody placed on it. RESET Air and WELL publish limits for the occupied
+  interior; those govern here, and the ambient figures are used only when nothing indoor
+  covers the metric, with the substitution stated on the verdict line.
 """
 
 from __future__ import annotations
@@ -72,6 +78,35 @@ STATUS_OUTSIDE_BAND = "outside optimal range"
 
 # threshold_type values that denote a hard limit rather than the edge of a comfort band.
 _HARD_LIMIT_TYPES = {"max", "min"}
+
+# Sources that publish limits for OUTDOOR ambient air. Every reading this system takes is
+# indoors, so these only decide a metric that no indoor standard covers — and when they do,
+# the verdict line says the figure is an ambient one.
+#
+# This is a property of the guideline record, not of the reading, so it is keyed by
+# source_key rather than inferred from wording: both of these records already say "outdoor
+# ambient" in their own caveat text, which the assessment never sees. Adding an indoor
+# standard for a metric is therefore enough to demote the ambient one automatically.
+_AMBIENT_SOURCE_KEYS = frozenset(
+    {
+        "WHO_AQG_2021",          # WHO Global Air Quality Guidelines 2021 — ambient PM2.5
+        "EPA_PM25_NAAQS_2024",   # EPA NAAQS — ambient PM2.5, explicitly outdoor
+    }
+)
+
+
+def _is_ambient(source: Dict[str, Any]) -> bool:
+    return str(source.get("source_key") or "").strip().upper() in _AMBIENT_SOURCE_KEYS
+
+
+# citation_tier precedence. `regulatory` is a published standard a building is assessed
+# against; `research` is a study finding or a guide value; `internal` is this system's own
+# composite. An unknown tier sorts with research rather than being promoted.
+_TIER_RANK = {"regulatory": 0, "research": 1, "internal": 1}
+
+
+def _tier_rank(source: Dict[str, Any]) -> int:
+    return _TIER_RANK.get(str(source.get("citation_tier") or "").strip().lower(), 1)
 
 # Ranked worst-first, for picking the headline status.
 _STATUS_RANK = {
@@ -121,6 +156,13 @@ class MetricAssessment:
     band: Optional[str] = None
     band_label: Optional[str] = None
     note: Optional[str] = None
+    # The averaging basis / qualifying condition the governing threshold is published under
+    # ("24-hour mean guideline", "Grade A, occupied hours"). Carried through to the rendered
+    # line because a limit quoted under the wrong basis is a wrong limit: a "today" answer
+    # citing WHO's ANNUAL mean is comparing one day against a year.
+    threshold_condition: Optional[str] = None
+    # True when no indoor standard covered this metric and an outdoor ambient one was used.
+    ambient_basis: bool = False
 
     @property
     def is_index(self) -> bool:
@@ -207,6 +249,22 @@ def assess_metric(
             status=STATUS_UNRATED, note=note,
         )
 
+    # Indoor standards first. Ambient limits only grade a metric no indoor source covers,
+    # and the fact that they did is recorded so the answer can say which world the figure
+    # comes from.
+    indoor = [s for s in sources if not _is_ambient(s)]
+    ambient_basis = not indoor
+    sources = indoor or sources
+
+    # A published standard outranks a research guide value. RESET Air Grade A and WELL v2
+    # set 0.102 ppm for TVOC; Seifert's hygienic band edge is 0.061 ppm, so strictest-wins
+    # alone made a *hygienic* figure — explicitly not a health-based limit, and not what a
+    # building is held to — govern every VOC verdict ahead of the two standards the space
+    # is actually assessed against. Research records stay in the pool and still govern a
+    # metric no standard covers; they just stop outranking one that does.
+    regulatory = [s for s in sources if _tier_rank(s) == 0]
+    sources = regulatory or sources
+
     # A hard limit outranks a comfort-band edge: exceeding ASHRAE's 65 %RH limit is a
     # finding, drifting past EPA's 50 % "optimal range" top is not. Only when a metric
     # has no hard limit at all does the band edge decide, and then it is reported as
@@ -231,6 +289,8 @@ def assess_metric(
         metric=canonical, display=display, value=numeric, unit=unit, status=status,
         threshold_value=threshold, threshold_unit=strictest.get("threshold_unit"),
         source_index=strictest.get("index"), source_label=strictest.get("source_label"),
+        threshold_condition=(str(strictest.get("threshold_condition") or "").strip() or None),
+        ambient_basis=ambient_basis,
     )
 
 
@@ -369,9 +429,18 @@ def render_assessment_block(
                 STATUS_WITHIN: "is within the strictest applicable limit",
                 STATUS_OUTSIDE_BAND: "is outside the optimal range (not a hard limit)",
             }[a.status]
+            # The basis travels with the figure. Without it the model supplied one from
+            # memory and picked the wrong one — a "today" answer quoting WHO's ANNUAL mean.
+            basis = f", {a.threshold_condition}" if a.threshold_condition else ""
+            ambient = (
+                " — NOTE: no indoor standard covers this metric, so this is an OUTDOOR "
+                "ambient limit applied for reference"
+                if a.ambient_basis
+                else ""
+            )
             lines.append(
                 f"- {a.display} = {value} — {verb} of {threshold} "
-                f"({a.source_label}){citation}. Status: {a.status}."
+                f"({a.source_label}{basis}){citation}{ambient}. Status: {a.status}."
             )
 
     worst = min(assessments, key=lambda a: _STATUS_RANK.get(a.status, 9))
@@ -398,6 +467,11 @@ def render_assessment_block(
 # Row keys that are not metrics. A reading row carries these alongside the values.
 _NON_METRIC_ROW_KEYS = frozenset({"lab_space", "bucket", "space", "timestamp"})
 
+# Generic value columns produced when ONE metric was queried and named on the payload
+# instead of in the row. Priority order: the average is the headline figure of an
+# aggregation, and the extremes only stand in when there is no average.
+_GENERIC_VALUE_KEYS = ("value", "avg_value", "mean_value", "max_value", "min_value")
+
 
 def readings_from_rows(
     rows: Optional[Iterable[Dict[str, Any]]],
@@ -413,6 +487,12 @@ def readings_from_rows(
     computed comparison, which is the exact situation this module exists to prevent.
 
     ``fallback_metric`` is the metric name to attach when the row is ``value``-shaped.
+
+    An AGGREGATE row is the same shape under a different name — ``avg_value`` rather than
+    ``value`` — and had the same defect for the same reason: "what was the average CO2 last
+    week?" normalised to ``{"avg_value": 600}``, matched no metric, and produced no verdict
+    at all. Every generic value column is handled here so the next one added does not
+    silently reopen the hole.
     """
     latest: Dict[str, Any] = {}
     for row in reversed(list(rows or [])):
@@ -422,10 +502,55 @@ def readings_from_rows(
     if not latest:
         return {}
     readings = {k: v for k, v in latest.items() if k not in _NON_METRIC_ROW_KEYS}
-    if set(readings) == {"value"}:
+    if readings and set(readings).issubset(_GENERIC_VALUE_KEYS):
         metric = str(fallback_metric or "").strip()
-        return {metric: readings["value"]} if metric else {}
+        if not metric:
+            return {}
+        for key in _GENERIC_VALUE_KEYS:
+            if readings.get(key) is not None:
+                return {metric: readings[key]}
+        return {}
     return readings
+
+
+def governing_records(
+    readings: Dict[str, Any],
+    records: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """The guideline records the computed assessment actually graded against.
+
+    ``get_thresholds_for_metrics`` returns EVERY active record for the metrics on screen,
+    and that whole list was offered to the model as numbered citation sources — seventeen
+    of them for a six-metric air answer, of which the answer used five. Worse than noisy:
+    the same standard appears once per metric AND once per unit, so "RESET Air Standard
+    v2.1 — Commercial Interiors, Section 4: Performance Thresholds (2021)" was listed four
+    times with four different thresholds, and the reader's Sources panel showed eleven
+    entries for an answer that cited a handful.
+
+    The set that can honestly be cited is smaller than the set that was fetched, because
+    the assessment has already chosen: one governing threshold per metric. The permissive
+    twin, the wrong-unit twin and the standards that lost the strictest-wins comparison are
+    not things the answer may quote — the directives forbid it — so offering them as
+    citation options only invites the model to reach for one.
+
+    The full list still reaches :func:`assess_readings`, which needs every candidate to
+    pick the strictest; only the *citable* list is narrowed. With no readings (a standards
+    question with nothing measured) there is nothing to govern and the list passes through.
+    """
+    all_records = list(records or [])
+    if not readings or not all_records:
+        return all_records
+    # Local 1-based numbering purely to bind an assessment back to its record; the caller
+    # renumbers when it builds the citation block.
+    indexed = [{**record, "index": i} for i, record in enumerate(all_records, start=1)]
+    used = {
+        a.source_index for a in assess_readings(readings, indexed) if a.source_index
+    }
+    kept = [record for i, record in enumerate(all_records, start=1) if i in used]
+    # A metric whose only records are unrated (ASHRAE 62.1 on CO2, ASHRAE 55 on
+    # temperature) governs nothing, so it drops out here — which is correct: an answer may
+    # not cite it as a threshold, and the assessment already reports the metric as unrated.
+    return kept
 
 
 def build_assessment_section(

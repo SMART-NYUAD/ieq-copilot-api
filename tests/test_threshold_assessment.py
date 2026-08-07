@@ -25,7 +25,7 @@ if SERVER_DIR not in sys.path:
 from executors.db_support import threshold_assessment as ta
 
 
-def _source(index, metric, value, unit, ttype="max", label=None):
+def _source(index, metric, value, unit, ttype="max", label=None, key=None, condition=None):
     return {
         "index": index,
         "metric": metric,
@@ -33,19 +33,40 @@ def _source(index, metric, value, unit, ttype="max", label=None):
         "threshold_type": ttype,
         "threshold_unit": unit,
         "source_label": label or f"{metric} source {index}",
+        "source_key": key,
+        "threshold_condition": condition,
     }
 
 
 # Mirrors what the guideline table actually holds for these metrics.
 SOURCES = [
-    _source(1, "co2", 1000, "ppm", "max", "RESET Air Standard v2.1"),
-    _source(2, "pm25", 35, "µg/m³", "max", "EPA NAAQS 2024"),
-    _source(3, "pm25", 15, "µg/m³", "max", "WHO Global Air Quality Guidelines 2021"),
-    _source(4, "voc", 500, "µg/m³", "max", "RESET Air Standard v2.1"),
-    _source(5, "voc", 0.102, "ppm", "max", "RESET Air Standard v2.1 (ppm equivalent)"),
-    _source(6, "voc", 0.061, "ppm", "max", "WHO IAQ Guidelines 2010 (ppm equivalent)"),
-    _source(7, "humidity", 65, "percent RH", "max", "ANSI/ASHRAE 62.1-2022"),
-    _source(8, "humidity", 50, "percent RH", "range_max", "EPA: The Inside Story"),
+    _source(1, "co2", 1000, "ppm", "max", "RESET Air Standard v2.1", "RESET_AIR_V2",
+            "Grade A, occupied hours"),
+    _source(2, "pm25", 35, "µg/m³", "max", "EPA NAAQS 2024", "EPA_PM25_NAAQS_2024",
+            "24-hour average"),
+    _source(3, "pm25", 15, "µg/m³", "max", "WHO Global Air Quality Guidelines 2021",
+            "WHO_AQG_2021", "24-hour mean guideline"),
+    _source(4, "voc", 500, "µg/m³", "max", "RESET Air Standard v2.1", "RESET_AIR_V2_VOC"),
+    _source(5, "voc", 0.102, "ppm", "max", "RESET Air Standard v2.1 (ppm equivalent)",
+            "RESET_AIR_V2_VOC_PPM", "Grade A, occupied hours (derived from 500 µg/m³)"),
+    # 300 µg/m³ is Seifert's hygienic band edge, NOT a WHO figure — WHO publishes no TVOC
+    # guideline at all. It was seeded under a WHO label and, being the lowest VOC threshold,
+    # governed every VOC verdict the system produced. See migration 006.
+    _source(6, "voc", 0.061, "ppm", "max", "UBA/Seifert TVOC hygienic (ppm equivalent)",
+            "UBA_TVOC_HYGIENIC_PPM", "hygienically safe upper bound, Seifert scheme"),
+    _source(7, "humidity", 65, "percent RH", "max", "ANSI/ASHRAE 62.1-2022",
+            "ASHRAE_62_1_2022_HUM", "occupied spaces, IAQ requirement"),
+    _source(8, "humidity", 50, "percent RH", "range_max", "EPA: The Inside Story",
+            "EPA_INDOOR_HUMIDITY", "optimal comfort and health range"),
+]
+
+# The same set with the two indoor PM2.5 standards present, which is what the seeded table
+# now holds. Kept separate so the ambient-fallback path above stays exercised.
+SOURCES_WITH_INDOOR_PM25 = SOURCES + [
+    _source(9, "pm25", 12, "µg/m³", "max", "RESET Air Standard v2.1 — Commercial Interiors",
+            "RESET_AIR_V2_PM25", "Grade A, occupied hours, indoor"),
+    _source(10, "pm25", 15, "µg/m³", "max", "WELL Building Standard v2, Feature A01",
+            "WELL_V2_A01", "regularly occupied spaces, indoor"),
 ]
 
 # The reported libra_lab turn.
@@ -74,6 +95,108 @@ class StrictestThresholdTests(unittest.TestCase):
         self.assertEqual(a.threshold_value, 15)
         self.assertEqual(a.source_index, 3)
         self.assertIn("WHO", a.source_label)
+
+
+class IndoorApplicabilityTests(unittest.TestCase):
+    """An indoor reading is graded against an indoor standard when one exists.
+
+    WHO AQG and EPA NAAQS are ambient (outdoor) standards — both records say so in their own
+    caveat text. Grading a lab against them reported the room as breaching an obligation
+    nobody had placed on it, and strictest-wins meant WHO won every PM2.5 verdict.
+    """
+
+    def test_indoor_standard_governs_over_a_stricter_ambient_one(self):
+        a = ta.assess_metric("pm25", 16.3, SOURCES_WITH_INDOOR_PM25)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+        self.assertEqual(a.threshold_value, 12)
+        self.assertIn("RESET", a.source_label)
+        self.assertFalse(a.ambient_basis)
+
+    def test_strictest_still_wins_among_the_indoor_standards(self):
+        # RESET 12 is stricter than WELL 15; a clean verdict cannot be bought with WELL.
+        a = ta.assess_metric("pm25", 13.0, SOURCES_WITH_INDOOR_PM25)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+        self.assertEqual(a.threshold_value, 12)
+
+    def test_ambient_is_used_only_when_nothing_indoor_covers_the_metric(self):
+        a = ta.assess_metric("pm25", 17.1, SOURCES)
+        self.assertTrue(a.ambient_basis)
+        self.assertEqual(a.threshold_value, 15)
+
+    def test_the_ambient_substitution_is_stated_on_the_line(self):
+        block = ta.render_assessment_block([ta.assess_metric("pm25", 17.1, SOURCES)])
+        self.assertIn("OUTDOOR", block)
+        indoor = ta.render_assessment_block(
+            [ta.assess_metric("pm25", 16.3, SOURCES_WITH_INDOOR_PM25)]
+        )
+        self.assertNotIn("OUTDOOR", indoor)
+
+    def test_an_indoor_metric_is_never_marked_ambient(self):
+        for metric, value in (("co2", 443.0), ("voc", 0.06), ("humidity", 55.0)):
+            self.assertFalse(
+                ta.assess_metric(metric, value, SOURCES_WITH_INDOOR_PM25).ambient_basis,
+                metric,
+            )
+
+
+class AveragingBasisTests(unittest.TestCase):
+    """A limit quoted under the wrong averaging period is a wrong limit.
+
+    Asked "how is the air quality today?", the answer cited "the WHO annual mean limit of
+    5 µg/m³" — a real number from a real standard, compared against one day's readings, and
+    not the figure the assessment had computed against (the 24-hour guideline). The basis
+    now travels with the figure instead of being supplied from the model's memory.
+    """
+
+    def test_condition_is_carried_onto_the_assessment(self):
+        a = ta.assess_metric("pm25", 16.3, SOURCES_WITH_INDOOR_PM25)
+        self.assertEqual(a.threshold_condition, "Grade A, occupied hours, indoor")
+
+    def test_condition_is_rendered_beside_the_threshold(self):
+        block = ta.render_assessment_block(
+            [ta.assess_metric("pm25", 16.3, SOURCES_WITH_INDOOR_PM25)]
+        )
+        self.assertIn("12.0 µg/m³", block)
+        self.assertIn("Grade A, occupied hours, indoor", block)
+
+    def test_a_source_without_a_condition_renders_cleanly(self):
+        bare = [_source(20, "co2", 800, "ppm", "max", "Test Source", "TEST_KEY", None)]
+        block = ta.render_assessment_block([ta.assess_metric("co2", 900, bare)])
+        self.assertIn("Test Source", block)
+        self.assertNotIn("None", block)
+
+    def test_the_numbered_sources_block_shows_the_published_figure(self):
+        from evidence.citation_processor import build_numbered_sources_block
+
+        block, _ = build_numbered_sources_block([
+            {
+                "source_key": "WHO_AQG_2021",
+                "source_label": "WHO Global Air Quality Guidelines 2021",
+                "metric": "pm25", "citation_tier": "regulatory",
+                "threshold_value": 15, "threshold_type": "max",
+                "threshold_unit": "µg/m³",
+                "threshold_condition": "24-hour mean guideline",
+            },
+        ])
+        # The number the source actually publishes, on the line that names it. Without this
+        # the model was asked to cite a figure it was never shown, and filled the gap from
+        # memory with WHO's annual 5 µg/m³.
+        self.assertIn("maximum 15 µg/m³", block)
+        self.assertIn("24-hour mean guideline", block)
+
+    def test_a_source_with_no_threshold_says_so_rather_than_going_silent(self):
+        from evidence.citation_processor import build_numbered_sources_block
+
+        block, _ = build_numbered_sources_block([
+            {
+                "source_key": "ASHRAE_55_2023_COMFORT",
+                "source_label": "ANSI/ASHRAE Standard 55-2023",
+                "metric": "temperature", "citation_tier": "regulatory",
+                "threshold_value": None, "threshold_type": None,
+                "threshold_unit": "degC",
+            },
+        ])
+        self.assertIn("no numeric threshold", block)
 
     def test_a_reading_under_the_strict_limit_is_within(self):
         a = ta.assess_metric("co2", 480.0, SOURCES)
@@ -222,6 +345,157 @@ class DirectiveWiringTests(unittest.TestCase):
         self.assertEqual(indexed[0]["metric"], "pm25")
         self.assertEqual(indexed[0]["threshold_type"], "max")
         self.assertEqual(indexed[0]["index"], 1)
+
+
+class CitableSourcePruningTests(unittest.TestCase):
+    """The list a reader may cite is smaller than the list that was fetched.
+
+    A six-metric air answer was offered seventeen numbered sources and used five. The same
+    standard appeared once per metric AND once per unit, so "RESET Air Standard v2.1 —
+    Commercial Interiors, Section 4: Performance Thresholds (2021)" was listed four times
+    with four different thresholds, and the reader's Sources panel showed eleven entries.
+    """
+
+    def _records(self):
+        # source_key/metric pairs as get_thresholds_for_metrics returns them.
+        return [
+            {"source_key": "ASHRAE_62_1_2022", "metric": "co2", "threshold_value": None,
+             "threshold_type": None, "threshold_unit": "ppm", "source_label": "ASHRAE 62.1"},
+            {"source_key": "RESET_AIR_V2", "metric": "co2", "threshold_value": 1000,
+             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "RESET Air"},
+            {"source_key": "ALLEN_ET_AL_2016", "metric": "co2", "threshold_value": 1000,
+             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "Allen 2016"},
+            {"source_key": "RESET_AIR_V2_VOC", "metric": "voc", "threshold_value": 500,
+             "threshold_type": "max", "threshold_unit": "µg/m³", "source_label": "RESET Air"},
+            {"source_key": "RESET_AIR_V2_VOC_PPM", "metric": "voc", "threshold_value": 0.102,
+             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "RESET Air ppm"},
+            {"source_key": "UBA_TVOC_HYGIENIC_PPM", "metric": "voc", "threshold_value": 0.061,
+             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "UBA/Seifert ppm"},
+        ]
+
+    def test_only_the_governing_record_per_metric_survives(self):
+        kept = ta.governing_records({"co2": 443.0, "voc": 0.06}, self._records())
+        self.assertEqual(
+            {r["source_key"] for r in kept}, {"RESET_AIR_V2", "UBA_TVOC_HYGIENIC_PPM"}
+        )
+
+    def test_the_wrong_unit_twin_of_the_same_standard_is_dropped(self):
+        kept = ta.governing_records({"voc": 0.06}, self._records())
+        keys = {r["source_key"] for r in kept}
+        self.assertNotIn("RESET_AIR_V2_VOC", keys)   # µg/m³ against a ppm reading
+
+    def test_a_record_with_no_threshold_is_never_citable(self):
+        kept = ta.governing_records({"co2": 443.0}, self._records())
+        self.assertNotIn("ASHRAE_62_1_2022", {r["source_key"] for r in kept})
+
+    def test_no_readings_leaves_the_list_untouched(self):
+        # A standards question with nothing measured: there is nothing to govern, and the
+        # records ARE the answer material.
+        records = self._records()
+        self.assertEqual(ta.governing_records({}, records), records)
+
+    def test_original_order_is_preserved(self):
+        kept = ta.governing_records({"co2": 443.0, "voc": 0.06}, self._records())
+        self.assertEqual([r["source_key"] for r in kept],
+                         ["RESET_AIR_V2", "UBA_TVOC_HYGIENIC_PPM"])
+
+
+class AggregateRowShapeTests(unittest.TestCase):
+    """An aggregate row is the point-lookup bug under a different column name.
+
+    ``{"value": 453}`` was fixed; ``{"avg_value": 600}`` was not, so "what was the average
+    CO2 last week?" produced zero verdict lines — the computed machinery bypassed for a
+    whole intent.
+    """
+
+    def test_avg_value_normalises_to_the_named_metric(self):
+        self.assertEqual(
+            ta.readings_from_rows([{"avg_value": 600}], "co2"), {"co2": 600}
+        )
+
+    def test_value_still_wins_when_both_are_present(self):
+        self.assertEqual(
+            ta.readings_from_rows([{"value": 450, "avg_value": 600}], "co2"), {"co2": 450}
+        )
+
+    def test_an_extreme_stands_in_when_there_is_no_average(self):
+        self.assertEqual(
+            ta.readings_from_rows([{"max_value": 900}], "co2"), {"co2": 900}
+        )
+
+    def test_a_metric_pack_row_is_untouched(self):
+        rows = [{"co2": 450, "pm25": 16.3, "bucket": "2026-08-07T10:00"}]
+        self.assertEqual(ta.readings_from_rows(rows), {"co2": 450, "pm25": 16.3})
+
+    def test_a_generic_row_with_no_metric_name_yields_nothing(self):
+        self.assertEqual(ta.readings_from_rows([{"avg_value": 600}], None), {})
+
+    def test_an_aggregate_reading_gets_a_verdict(self):
+        block = ta.build_assessment_section(
+            ta.readings_from_rows([{"avg_value": 1400}], "co2"), SOURCES
+        )
+        self.assertIn("EXCEEDS", block)
+
+
+
+class RegulatoryOutranksResearchTests(unittest.TestCase):
+    """A published standard governs ahead of a research guide value.
+
+    RESET Air Grade A and WELL v2 set 0.102 ppm for TVOC. Seifert's hygienic band edge is
+    0.061 ppm, so strictest-applicable ALONE made a hygienic figure -- explicitly not a
+    health-based limit, and not something a building is assessed against -- govern every
+    VOC verdict ahead of the two standards that are. Tier is checked after the indoor
+    filter and before strictest-wins.
+    """
+
+    VOC_SOURCES = [
+        _source(1, "voc", 0.102, "ppm", "max", "RESET Air Grade A", "RESET_AIR_V2_VOC_PPM"),
+        _source(2, "voc", 0.102, "ppm", "max", "WELL v2 A04", "WELL_V2_A04_PPM"),
+        _source(3, "voc", 0.061, "ppm", "max", "UBA/Seifert hygienic", "UBA_TVOC_HYGIENIC_PPM"),
+    ]
+
+    def _tiered(self, tiers):
+        return [{**s, "citation_tier": t} for s, t in zip(self.VOC_SOURCES, tiers)]
+
+    def test_the_standard_governs_not_the_stricter_guide_value(self):
+        sources = self._tiered(["regulatory", "regulatory", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.102)
+        self.assertIn("RESET", a.source_label)
+        self.assertEqual(a.status, ta.STATUS_WITHIN)
+
+    def test_strictest_still_decides_among_the_standards(self):
+        sources = self._tiered(["regulatory", "regulatory", "research"])
+        sources[1] = {**sources[1], "threshold_value": 0.08}
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.08)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+
+    def test_research_still_governs_a_metric_no_standard_covers(self):
+        # The demotion removes research from the running only when a standard is present;
+        # it never leaves a metric unrated that could have been graded.
+        sources = self._tiered(["research", "research", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.061)
+        self.assertEqual(a.status, ta.STATUS_EXCEEDS)
+
+    def test_an_unknown_tier_is_not_promoted_to_regulatory(self):
+        sources = self._tiered(["regulatory", "", "research"])
+        a = ta.assess_metric("voc", 0.09, sources)
+        self.assertEqual(a.threshold_value, 0.102)
+
+    def test_tier_is_applied_after_the_indoor_filter(self):
+        # A regulatory OUTDOOR limit must not be promoted over an indoor one.
+        sources = [
+            {**_source(1, "pm25", 15, "µg/m³", "max", "WHO ambient", "WHO_AQG_2021"),
+             "citation_tier": "regulatory"},
+            {**_source(2, "pm25", 12, "µg/m³", "max", "RESET Air indoor", "RESET_AIR_V2_PM25"),
+             "citation_tier": "regulatory"},
+        ]
+        a = ta.assess_metric("pm25", 13.0, sources)
+        self.assertEqual(a.threshold_value, 12)
+        self.assertFalse(a.ambient_basis)
+
 
 
 if __name__ == "__main__":

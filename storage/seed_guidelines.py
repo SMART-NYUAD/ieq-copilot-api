@@ -169,6 +169,67 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
             "mean indoor levels can differ substantially from outdoor."
         ),
     },
+    # The two indoor PM2.5 standards. Without them the only PM2.5 records were EPA NAAQS and
+    # WHO AQG — both AMBIENT (outdoor) standards, as their own caveats say — so every indoor
+    # PM2.5 verdict was graded against a limit written for outdoor air, and the strictest-wins
+    # rule reliably picked WHO. RESET Air and WELL publish limits for the occupied interior,
+    # which is what this sensor measures; threshold_assessment prefers them and falls back to
+    # the ambient figures only for a metric nothing indoor covers.
+    #
+    # ASHRAE is deliberately absent here: 62.1 requires the OUTDOOR air brought in to meet the
+    # NAAQS and specifies filtration, but sets no indoor PM2.5 concentration limit. Inventing
+    # one would be the same false claim the NULL-threshold ASHRAE CO2 record exists to prevent.
+    {
+        "source_key": "RESET_AIR_V2_PM25",
+        "source_label": "RESET Air Standard v2.1 — Commercial Interiors",
+        "source_url": "https://reset.build/standard/air",
+        "section_ref": "Section 4: Performance Thresholds",
+        "publication_year": 2021,
+        "metric": "pm25",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "RESET Air Standard v2 requires indoor PM2.5 at or below "
+            "12 µg/m³ for Grade A certification and at or below 35 µg/m³ "
+            "for Grade B certification during occupied hours, measured by "
+            "continuous monitoring sensors in the occupied interior."
+        ),
+        "embed_text": (
+            "RESET Air PM2.5 particulate matter 12 micrograms Grade A "
+            "35 Grade B indoor commercial interiors continuous monitoring"
+        ),
+        "threshold_value": 12,
+        "threshold_type": "max",
+        "threshold_unit": "µg/m³",
+        "threshold_condition": "Grade A, occupied hours, indoor",
+        "caveat_text": (
+            "RESET Air certification requires sensor calibration and "
+            "continuous monitoring. Spot readings alone do not determine "
+            "certification status."
+        ),
+    },
+    {
+        "source_key": "WELL_V2_A01",
+        "source_label": "WELL Building Standard v2, Feature A01",
+        "source_url": "https://v2.wellcertified.com/v/en/air/feature/1",
+        "section_ref": "Feature A01: Air Quality — Particulate Matter",
+        "publication_year": 2020,
+        "metric": "pm25",
+        "citation_tier": "regulatory",
+        "claim_text": (
+            "WELL Building Standard v2 Feature A01 requires indoor PM2.5 "
+            "not to exceed 15 µg/m³ in regularly occupied spaces seeking "
+            "WELL certification."
+        ),
+        "embed_text": (
+            "WELL PM2.5 particulate matter 15 micrograms building standard "
+            "certification indoor occupied space air quality"
+        ),
+        "threshold_value": 15,
+        "threshold_type": "max",
+        "threshold_unit": "µg/m³",
+        "threshold_condition": "regularly occupied spaces, indoor",
+        "caveat_text": None,
+    },
     {
         "source_key": "WHO_AQG_2021",
         "source_label": "WHO Global Air Quality Guidelines 2021",
@@ -250,33 +311,47 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "threshold_condition": "long-term occupancy average",
         "caveat_text": None,
     },
+    # The 300 µg/m³ TVOC band edge belongs to Seifert, not to WHO.
+    #
+    # This was seeded as "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010,
+    # Chapter 7: Total VOCs" and it is a false citation twice over. That document covers
+    # nine named pollutants — benzene, carbon monoxide, formaldehyde, naphthalene, nitrogen
+    # dioxide, PAHs, radon, trichloroethylene, tetrachloroethylene — and publishes NO TVOC
+    # guideline at all; its Chapter 7 is radon. The 300 / 300–1000 / >1000 µg/m³ banding is
+    # Seifert's five-level scheme, which the German Committee on Indoor Air Guide Values
+    # (UBA) recommends, and which this seed already cites correctly at its 950 µg/m³ level.
+    #
+    # It mattered more than a wrong label: strictest-applicable made 0.061 ppm the governing
+    # VOC threshold for EVERY VOC verdict in the system, so every one of them was attributed
+    # to a body that never published the number. Migration 006 deactivates the two WHO rows.
     {
-        "source_key": "WHO_IAQ_VOC_2010",
-        "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010",
-        "source_url": "https://www.who.int/publications/i/item/9789289002134",
-        "section_ref": "Chapter 7: Total VOCs",
-        "publication_year": 2010,
+        "source_key": "UBA_TVOC_HYGIENIC",
+        "source_label": "German Federal Environment Agency (UBA) — TVOC hygienic guide value",
+        "source_url": "https://www.umweltbundesamt.de/en/topics/health/commissions-working-groups/german-committee-on-indoor-air-guide-values",
+        "section_ref": "Committee on Indoor Air Guide Values, Seifert TVOC scheme",
+        "publication_year": 1999,
         "metric": "voc",
         "citation_tier": "research",
         "claim_text": (
-            "WHO 2010 indoor air quality guidelines indicate VOC below "
-            "300 µg/m³ as a comfort range, 300–3000 µg/m³ as a multifactorial "
-            "exposure range requiring investigation of sources, and above "
-            "3000 µg/m³ as discomfort range with potential health effects. "
-            "These are guidance values, not enforceable regulatory limits."
+            "The German Committee on Indoor Air Guide Values applies Seifert's "
+            "five-level TVOC scheme, in which TVOC below 300 µg/m³ is considered "
+            "hygienically safe, 300–1000 µg/m³ is still acceptable but calls for "
+            "initial investigation of sources, and higher levels warrant progressively "
+            "stronger action. The scheme is a hygienic rather than a toxicological "
+            "assessment: TVOC is a summed indicator with no health-based limit."
         ),
         "embed_text": (
-            "WHO VOC total volatile organic compounds 300 3000 "
-            "comfort discomfort indoor air quality guidance 2010"
+            "UBA Seifert TVOC 300 micrograms hygienically safe guide value "
+            "German committee indoor air guide values total volatile organic compounds"
         ),
         "threshold_value": 300,
         "threshold_type": "max",
         "threshold_unit": "µg/m³",
-        "threshold_condition": "comfort range upper boundary",
+        "threshold_condition": "hygienically safe upper bound, Seifert scheme",
         "caveat_text": (
-            "WHO VOC guidance is research-based, not a regulatory "
-            "standard. Frame as: 'WHO guidance suggests' not "
-            "'the WHO standard requires'."
+            "A hygienic guide value, not a regulatory standard and not a health-based "
+            "limit. Frame as 'German indoor-air guidance places' — never as a "
+            "requirement. WHO publishes no TVOC guideline; do not attribute this to WHO."
         ),
     },
     # -- VOC, expressed in ppm -----------------------------------------
@@ -353,32 +428,34 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         ),
     },
     {
-        "source_key": "WHO_IAQ_VOC_2010_PPM",
-        "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010 (ppm equivalent)",
-        "source_url": "https://www.who.int/publications/i/item/9789289002134",
-        "section_ref": "Chapter 7: Total VOCs",
-        "publication_year": 2010,
+        "source_key": "UBA_TVOC_HYGIENIC_PPM",
+        "source_label": "German Federal Environment Agency (UBA) — TVOC hygienic guide value (ppm equivalent)",
+        "source_url": "https://www.umweltbundesamt.de/en/topics/health/commissions-working-groups/german-committee-on-indoor-air-guide-values",
+        "section_ref": "Committee on Indoor Air Guide Values, Seifert TVOC scheme",
+        "publication_year": 1999,
         "metric": "voc",
         "citation_tier": "research",
         "claim_text": (
-            "WHO 2010 indoor air quality guidance places TVOC below 300 µg/m³ in the "
-            "comfort range, approximately 0.06 ppm (61 ppb) in the unit this sensor "
-            "reports, using the published TVOC conversion of 4.9 µg/m³ per ppb. Above "
-            "that, 300–3000 µg/m³ (roughly 0.06–0.61 ppm) is a multifactorial exposure "
-            "range warranting investigation of sources. The ppm figures are derived "
-            "equivalents for comparison with sensor readings, not values quoted by WHO."
+            "German indoor-air guidance (Seifert's TVOC scheme, applied by the UBA "
+            "Committee on Indoor Air Guide Values) treats TVOC below 300 µg/m³ as "
+            "hygienically safe — approximately 0.06 ppm (61 ppb) in the unit this "
+            "sensor reports, using the published TVOC conversion of 4.9 µg/m³ per ppb. "
+            "The band above it, 300–1000 µg/m³ (roughly 0.06–0.20 ppm), is still "
+            "acceptable but calls for investigation of sources. The ppm figures are "
+            "derived equivalents for comparison with sensor readings."
         ),
         "embed_text": (
-            "WHO VOC TVOC ppm 0.06 61 ppb 300 micrograms comfort range "
-            "multifactorial exposure sensor reading equivalent"
+            "UBA Seifert TVOC ppm 0.06 61 ppb 300 micrograms hygienically safe "
+            "German indoor air guide value sensor reading equivalent"
         ),
         "threshold_value": 0.061,
         "threshold_type": "max",
         "threshold_unit": "ppm",
-        "threshold_condition": "comfort range upper boundary (derived from 300 µg/m³)",
+        "threshold_condition": "hygienically safe upper bound, Seifert scheme (derived from 300 µg/m³)",
         "caveat_text": (
-            "Derived equivalent of research-based guidance, not a regulatory standard "
-            "and not a figure published by WHO. Frame as 'WHO guidance suggests'."
+            "Derived equivalent of a hygienic guide value, not a regulatory standard "
+            "and not a health-based limit. WHO publishes no TVOC guideline; do not "
+            "attribute this figure to WHO."
         ),
     },
     {
@@ -678,26 +755,46 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
 ]
 
 
-def seed_guidelines() -> None:
-    """Insert all guideline records with embeddings."""
-    print(f"Seeding {len(GUIDELINE_RECORDS)} guideline records...")
+def _existing_record_keys() -> set:
+    """(source_key, metric) pairs already stored.
 
-    embed_texts_list = [r["embed_text"] for r in GUIDELINE_RECORDS]
+    The table has no unique constraint, so the ``ON CONFLICT DO NOTHING`` below never fires
+    and a second run would duplicate all 23 records — every duplicate then showing up as its
+    own numbered citation. Checking first is what actually makes the seed re-runnable, which
+    is the property adding a record to this list depends on.
+    """
+    with get_cursor() as cur:
+        cur.execute("SELECT source_key, metric FROM env_guideline_records")
+        return {(str(row["source_key"]), str(row["metric"])) for row in cur.fetchall()}
+
+
+def seed_guidelines() -> None:
+    """Insert any guideline records not already stored, with embeddings."""
+    existing = _existing_record_keys()
+    pending = [
+        r for r in GUIDELINE_RECORDS if (r["source_key"], r["metric"]) not in existing
+    ]
+    print(
+        f"{len(GUIDELINE_RECORDS)} records defined, {len(existing)} already stored, "
+        f"{len(pending)} to insert..."
+    )
+    if not pending:
+        print("Done. Nothing to insert.")
+        return
+
+    embed_texts_list = [r["embed_text"] for r in pending]
     print("Generating embeddings...")
     embeddings = embed_texts(embed_texts_list)
 
-    if len(embeddings) != len(GUIDELINE_RECORDS):
-        print(
-            f"ERROR: Expected {len(GUIDELINE_RECORDS)} embeddings, "
-            f"got {len(embeddings)}"
-        )
+    if len(embeddings) != len(pending):
+        print(f"ERROR: Expected {len(pending)} embeddings, got {len(embeddings)}")
         sys.exit(1)
 
     inserted = 0
     skipped = 0
 
     with get_cursor() as cur:
-        for record, embedding in zip(GUIDELINE_RECORDS, embeddings):
+        for record, embedding in zip(pending, embeddings):
             normalized_embedding = _normalize_embedding_dim(embedding)
             try:
                 cur.execute(
