@@ -311,33 +311,47 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         "threshold_condition": "long-term occupancy average",
         "caveat_text": None,
     },
+    # The 300 µg/m³ TVOC band edge belongs to Seifert, not to WHO.
+    #
+    # This was seeded as "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010,
+    # Chapter 7: Total VOCs" and it is a false citation twice over. That document covers
+    # nine named pollutants — benzene, carbon monoxide, formaldehyde, naphthalene, nitrogen
+    # dioxide, PAHs, radon, trichloroethylene, tetrachloroethylene — and publishes NO TVOC
+    # guideline at all; its Chapter 7 is radon. The 300 / 300–1000 / >1000 µg/m³ banding is
+    # Seifert's five-level scheme, which the German Committee on Indoor Air Guide Values
+    # (UBA) recommends, and which this seed already cites correctly at its 950 µg/m³ level.
+    #
+    # It mattered more than a wrong label: strictest-applicable made 0.061 ppm the governing
+    # VOC threshold for EVERY VOC verdict in the system, so every one of them was attributed
+    # to a body that never published the number. Migration 006 deactivates the two WHO rows.
     {
-        "source_key": "WHO_IAQ_VOC_2010",
-        "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010",
-        "source_url": "https://www.who.int/publications/i/item/9789289002134",
-        "section_ref": "Chapter 7: Total VOCs",
-        "publication_year": 2010,
+        "source_key": "UBA_TVOC_HYGIENIC",
+        "source_label": "German Federal Environment Agency (UBA) — TVOC hygienic guide value",
+        "source_url": "https://www.umweltbundesamt.de/en/topics/health/commissions-working-groups/german-committee-on-indoor-air-guide-values",
+        "section_ref": "Committee on Indoor Air Guide Values, Seifert TVOC scheme",
+        "publication_year": 1999,
         "metric": "voc",
         "citation_tier": "research",
         "claim_text": (
-            "WHO 2010 indoor air quality guidelines indicate VOC below "
-            "300 µg/m³ as a comfort range, 300–3000 µg/m³ as a multifactorial "
-            "exposure range requiring investigation of sources, and above "
-            "3000 µg/m³ as discomfort range with potential health effects. "
-            "These are guidance values, not enforceable regulatory limits."
+            "The German Committee on Indoor Air Guide Values applies Seifert's "
+            "five-level TVOC scheme, in which TVOC below 300 µg/m³ is considered "
+            "hygienically safe, 300–1000 µg/m³ is still acceptable but calls for "
+            "initial investigation of sources, and higher levels warrant progressively "
+            "stronger action. The scheme is a hygienic rather than a toxicological "
+            "assessment: TVOC is a summed indicator with no health-based limit."
         ),
         "embed_text": (
-            "WHO VOC total volatile organic compounds 300 3000 "
-            "comfort discomfort indoor air quality guidance 2010"
+            "UBA Seifert TVOC 300 micrograms hygienically safe guide value "
+            "German committee indoor air guide values total volatile organic compounds"
         ),
         "threshold_value": 300,
         "threshold_type": "max",
         "threshold_unit": "µg/m³",
-        "threshold_condition": "comfort range upper boundary",
+        "threshold_condition": "hygienically safe upper bound, Seifert scheme",
         "caveat_text": (
-            "WHO VOC guidance is research-based, not a regulatory "
-            "standard. Frame as: 'WHO guidance suggests' not "
-            "'the WHO standard requires'."
+            "A hygienic guide value, not a regulatory standard and not a health-based "
+            "limit. Frame as 'German indoor-air guidance places' — never as a "
+            "requirement. WHO publishes no TVOC guideline; do not attribute this to WHO."
         ),
     },
     # -- VOC, expressed in ppm -----------------------------------------
@@ -414,32 +428,34 @@ GUIDELINE_RECORDS: List[Dict[str, Any]] = [
         ),
     },
     {
-        "source_key": "WHO_IAQ_VOC_2010_PPM",
-        "source_label": "WHO Indoor Air Quality Guidelines: Selected Pollutants 2010 (ppm equivalent)",
-        "source_url": "https://www.who.int/publications/i/item/9789289002134",
-        "section_ref": "Chapter 7: Total VOCs",
-        "publication_year": 2010,
+        "source_key": "UBA_TVOC_HYGIENIC_PPM",
+        "source_label": "German Federal Environment Agency (UBA) — TVOC hygienic guide value (ppm equivalent)",
+        "source_url": "https://www.umweltbundesamt.de/en/topics/health/commissions-working-groups/german-committee-on-indoor-air-guide-values",
+        "section_ref": "Committee on Indoor Air Guide Values, Seifert TVOC scheme",
+        "publication_year": 1999,
         "metric": "voc",
         "citation_tier": "research",
         "claim_text": (
-            "WHO 2010 indoor air quality guidance places TVOC below 300 µg/m³ in the "
-            "comfort range, approximately 0.06 ppm (61 ppb) in the unit this sensor "
-            "reports, using the published TVOC conversion of 4.9 µg/m³ per ppb. Above "
-            "that, 300–3000 µg/m³ (roughly 0.06–0.61 ppm) is a multifactorial exposure "
-            "range warranting investigation of sources. The ppm figures are derived "
-            "equivalents for comparison with sensor readings, not values quoted by WHO."
+            "German indoor-air guidance (Seifert's TVOC scheme, applied by the UBA "
+            "Committee on Indoor Air Guide Values) treats TVOC below 300 µg/m³ as "
+            "hygienically safe — approximately 0.06 ppm (61 ppb) in the unit this "
+            "sensor reports, using the published TVOC conversion of 4.9 µg/m³ per ppb. "
+            "The band above it, 300–1000 µg/m³ (roughly 0.06–0.20 ppm), is still "
+            "acceptable but calls for investigation of sources. The ppm figures are "
+            "derived equivalents for comparison with sensor readings."
         ),
         "embed_text": (
-            "WHO VOC TVOC ppm 0.06 61 ppb 300 micrograms comfort range "
-            "multifactorial exposure sensor reading equivalent"
+            "UBA Seifert TVOC ppm 0.06 61 ppb 300 micrograms hygienically safe "
+            "German indoor air guide value sensor reading equivalent"
         ),
         "threshold_value": 0.061,
         "threshold_type": "max",
         "threshold_unit": "ppm",
-        "threshold_condition": "comfort range upper boundary (derived from 300 µg/m³)",
+        "threshold_condition": "hygienically safe upper bound, Seifert scheme (derived from 300 µg/m³)",
         "caveat_text": (
-            "Derived equivalent of research-based guidance, not a regulatory standard "
-            "and not a figure published by WHO. Frame as 'WHO guidance suggests'."
+            "Derived equivalent of a hygienic guide value, not a regulatory standard "
+            "and not a health-based limit. WHO publishes no TVOC guideline; do not "
+            "attribute this figure to WHO."
         ),
     },
     {

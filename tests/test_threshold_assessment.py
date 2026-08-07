@@ -49,8 +49,11 @@ SOURCES = [
     _source(4, "voc", 500, "µg/m³", "max", "RESET Air Standard v2.1", "RESET_AIR_V2_VOC"),
     _source(5, "voc", 0.102, "ppm", "max", "RESET Air Standard v2.1 (ppm equivalent)",
             "RESET_AIR_V2_VOC_PPM", "Grade A, occupied hours (derived from 500 µg/m³)"),
-    _source(6, "voc", 0.061, "ppm", "max", "WHO IAQ Guidelines 2010 (ppm equivalent)",
-            "WHO_IAQ_VOC_2010_PPM", "comfort range upper boundary"),
+    # 300 µg/m³ is Seifert's hygienic band edge, NOT a WHO figure — WHO publishes no TVOC
+    # guideline at all. It was seeded under a WHO label and, being the lowest VOC threshold,
+    # governed every VOC verdict the system produced. See migration 006.
+    _source(6, "voc", 0.061, "ppm", "max", "UBA/Seifert TVOC hygienic (ppm equivalent)",
+            "UBA_TVOC_HYGIENIC_PPM", "hygienically safe upper bound, Seifert scheme"),
     _source(7, "humidity", 65, "percent RH", "max", "ANSI/ASHRAE 62.1-2022",
             "ASHRAE_62_1_2022_HUM", "occupied spaces, IAQ requirement"),
     _source(8, "humidity", 50, "percent RH", "range_max", "EPA: The Inside Story",
@@ -366,14 +369,14 @@ class CitableSourcePruningTests(unittest.TestCase):
              "threshold_type": "max", "threshold_unit": "µg/m³", "source_label": "RESET Air"},
             {"source_key": "RESET_AIR_V2_VOC_PPM", "metric": "voc", "threshold_value": 0.102,
              "threshold_type": "max", "threshold_unit": "ppm", "source_label": "RESET Air ppm"},
-            {"source_key": "WHO_IAQ_VOC_2010_PPM", "metric": "voc", "threshold_value": 0.061,
-             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "WHO ppm"},
+            {"source_key": "UBA_TVOC_HYGIENIC_PPM", "metric": "voc", "threshold_value": 0.061,
+             "threshold_type": "max", "threshold_unit": "ppm", "source_label": "UBA/Seifert ppm"},
         ]
 
     def test_only_the_governing_record_per_metric_survives(self):
         kept = ta.governing_records({"co2": 443.0, "voc": 0.06}, self._records())
         self.assertEqual(
-            {r["source_key"] for r in kept}, {"RESET_AIR_V2", "WHO_IAQ_VOC_2010_PPM"}
+            {r["source_key"] for r in kept}, {"RESET_AIR_V2", "UBA_TVOC_HYGIENIC_PPM"}
         )
 
     def test_the_wrong_unit_twin_of_the_same_standard_is_dropped(self):
@@ -394,7 +397,7 @@ class CitableSourcePruningTests(unittest.TestCase):
     def test_original_order_is_preserved(self):
         kept = ta.governing_records({"co2": 443.0, "voc": 0.06}, self._records())
         self.assertEqual([r["source_key"] for r in kept],
-                         ["RESET_AIR_V2", "WHO_IAQ_VOC_2010_PPM"])
+                         ["RESET_AIR_V2", "UBA_TVOC_HYGIENIC_PPM"])
 
 
 class AggregateRowShapeTests(unittest.TestCase):

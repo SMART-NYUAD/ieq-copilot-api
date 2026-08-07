@@ -306,7 +306,24 @@ This exists because *"how is the air quality today?"* answered with CO2, IAQ, hu
 
 A second defect made VOC the cheapest metric to drop. Its guideline records were stored under the legacy key `tvoc` while `guideline_store.get_thresholds_for_metrics` looks up `voc`, so VOC really had no retrievable threshold — and an uncited numeric claim is discouraged elsewhere in the prompt, so the model preferred silence. The deployed CHECK constraint had drifted the same way (permitting `tvoc`, forbidding `voc`, the reverse of migration 002). `storage/migrations/003_normalize_voc_guideline_metric.sql` replaces the constraint and normalises the rows; `test_air_quality_completeness.py` compares the seed's metric keys against migration 002's CHECK so that drift cannot return silently.
 
-**VOC thresholds exist in two units on purpose.** The Atmocube (Sensirion SGP41) reports TVOC in **ppm**, range 0–3, while every published TVOC threshold is in µg/m³ — so before this there was nothing to classify a VOC reading against, and the answer either went silent on VOC or borrowed another metric's threshold. Four companion records restate the same standards in ppm using the conversion published for TVOC sensor readings, **4.9 µg/m³ per ppb**: RESET Air Grade A and WELL v2 A04 500 µg/m³ → `0.102 ppm`, WHO 2010 comfort 300 µg/m³ → `0.061 ppm`, UBA/Seifert precautionary 950 µg/m³ → `0.194 ppm`. That factor is corroborated internally — 300 µg/m³ → 0.061 ppm reproduces the top of the 0.05–0.063 ppm band this system already treated as the VOC comfort range. The mass-based records are kept: they are what the standards actually publish, and the ppm figures are **derived**, which every one of their `claim_text` and `caveat_text` fields states. Note the sensor is ethanol-calibrated, TVOC is a summed indicator, and its mass/volume relationship depends on the compound mix — so these are comparison aids, not compliance limits.
+**VOC thresholds exist in two units on purpose.** The Atmocube (Sensirion SGP41) reports TVOC in **ppm**, range 0–3, while every published TVOC threshold is in µg/m³ — so before this there was nothing to classify a VOC reading against, and the answer either went silent on VOC or borrowed another metric's threshold. Four companion records restate the same standards in ppm using the conversion published for TVOC sensor readings, **4.9 µg/m³ per ppb**: RESET Air Grade A and WELL v2 A04 500 µg/m³ → `0.102 ppm`, UBA/Seifert hygienic 300 µg/m³ → `0.061 ppm`, UBA/Seifert precautionary 950 µg/m³ → `0.194 ppm`. That factor is corroborated internally — 300 µg/m³ → 0.061 ppm reproduces the top of the 0.05–0.063 ppm band this system already treated as the VOC comfort range. The mass-based records are kept: they are what the standards actually publish, and the ppm figures are **derived**, which every one of their `claim_text` and `caveat_text` fields states. Note the sensor is ethanol-calibrated, TVOC is a summed indicator, and its mass/volume relationship depends on the compound mix — so these are comparison aids, not compliance limits.
+
+**WHO publishes no TVOC guideline, and the 300 µg/m³ band edge is Seifert's.** It was seeded
+as *"WHO Indoor Air Quality Guidelines: Selected Pollutants 2010, Chapter 7: Total VOCs"* in
+both units. That document covers nine named pollutants — benzene, carbon monoxide,
+formaldehyde, naphthalene, nitrogen dioxide, PAHs, radon, trichloroethylene,
+tetrachloroethylene — and states no TVOC value anywhere; its Chapter 7 is radon. The
+300 / 300–1000 µg/m³ banding is **Seifert's five-level TVOC scheme**, applied by the German
+Committee on Indoor Air Guide Values (UBA), which this seed already cited correctly at the
+950 µg/m³ level. Not a cosmetic mislabel: at 0.061 ppm it was the lowest VOC threshold in
+the table, so strictest-applicable made it the **governing** source for every VOC verdict
+the system produced, each one attributed to a body that never published the number. Migration
+006 deactivates the two rows (`is_active = FALSE`, not deleted — anything already persisted
+that cites them keeps a resolvable record); `UBA_TVOC_HYGIENIC`/`_PPM` carry the same figures
+with the right attribution. `test_air_quality_completeness.py::GuidelineAttributionTests`
+asserts no VOC threshold names WHO. The lesson generalises past VOC: a seeded citation is
+evidence like any other, and *"which body actually published this number"* is checkable
+against the publisher's own page.
 
 ### Knowledge-card retrieval
 

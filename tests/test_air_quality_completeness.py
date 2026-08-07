@@ -162,7 +162,7 @@ class VocThresholdUnitTests(unittest.TestCase):
     EXPECTED = {
         "RESET_AIR_V2_VOC_PPM": (500, 0.102),
         "WELL_V2_A04_PPM": (500, 0.102),
-        "WHO_IAQ_VOC_2010_PPM": (300, 0.061),
+        "UBA_TVOC_HYGIENIC_PPM": (300, 0.061),
         "UBA_TVOC_PRECAUTIONARY_PPM": (950, 0.194),
     }
 
@@ -212,6 +212,50 @@ class VocThresholdUnitTests(unittest.TestCase):
         units = [r.get("threshold_unit") for r in self._voc_records().values()]
         self.assertIn("µg/m³", units)
         self.assertGreaterEqual(units.count("µg/m³"), 3)
+
+
+class GuidelineAttributionTests(unittest.TestCase):
+    """A threshold must be attributed to a body that actually published it.
+
+    The 300 ug/m3 TVOC band edge was seeded as "WHO Indoor Air Quality Guidelines:
+    Selected Pollutants 2010, Chapter 7: Total VOCs". That document covers nine named
+    pollutants -- benzene, carbon monoxide, formaldehyde, naphthalene, nitrogen dioxide,
+    PAHs, radon, trichloroethylene, tetrachloroethylene -- and publishes NO TVOC guideline;
+    its Chapter 7 is radon. The banding is Seifert's five-level scheme, applied by the
+    German Committee on Indoor Air Guide Values (UBA).
+
+    It was not a cosmetic mislabel. VOC reads in ppm, and at 0.061 ppm this was the lowest
+    VOC threshold in the table, so strictest-applicable made it the GOVERNING source for
+    every VOC verdict the system produced -- each citing a body that never published the
+    number. The figure is unchanged; only the attribution is corrected. Migration 006
+    deactivates the two WHO rows in a deployed database.
+    """
+
+    def _sources_for(self, metric):
+        from storage.seed_guidelines import GUIDELINE_RECORDS
+
+        return {r["source_key"]: r for r in GUIDELINE_RECORDS if r["metric"] == metric}
+
+    def test_no_voc_threshold_is_attributed_to_who(self):
+        for key, record in self._sources_for("voc").items():
+            with self.subTest(source=key):
+                self.assertNotIn("who", key.lower())
+                self.assertNotIn("who", str(record["source_label"]).lower())
+                self.assertNotIn("who.int", str(record.get("source_url") or "").lower())
+
+    def test_the_hygienic_band_edge_is_attributed_to_uba_seifert(self):
+        record = self._sources_for("voc")["UBA_TVOC_HYGIENIC_PPM"]
+        self.assertIn("uba", record["source_label"].lower())
+        self.assertIn("seifert", record["section_ref"].lower())
+        self.assertIn("umweltbundesamt", record["source_url"])
+        # The claim must not be dressed up as a health-based regulatory limit.
+        self.assertEqual(record["citation_tier"], "research")
+        self.assertIn("who publishes no tvoc guideline", record["caveat_text"].lower())
+
+    def test_who_still_carries_the_pm25_guideline_it_did_publish(self):
+        # The correction is specific: WHO's ambient PM2.5 AQG is real and stays.
+        self.assertIn("WHO_AQG_2021", self._sources_for("pm25"))
+
 
 
 if __name__ == "__main__":
