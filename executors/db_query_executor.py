@@ -178,6 +178,62 @@ def _infer_metrics_from_rows(rows: List[Dict[str, Any]], fallback_metric: str) -
     return inferred
 
 
+def _per_metric_trends(
+    series_rows: List[Dict[str, Any]], metrics: List[str]
+) -> List[Dict[str, Any]]:
+    """When and which way each metric moved, one entry per metric.
+
+    Only the FIRST metric of a multi-metric answer ever got a series, so every other metric
+    arrived as an average and a max with no times attached. An answer that wants to say
+    something about the day's shape then has nothing to say it from, and the failure mode is
+    not silence — it is a fluent, plausible, and unfalsifiable narrative. One described VOC
+    "rising gradually through occupied hours, peaking in the afternoon" on a day whose peak
+    was at 8 PM and whose quietest stretch was 9 AM to 5 PM.
+
+    Extrema with their timestamps, not raw points: five metrics of hourly buckets is a lot of
+    numbers to hand a model that only needs to know when each one topped out, and every extra
+    number is another thing to mis-add. Each metric carries its own unit, so nothing has to
+    infer one from a neighbour.
+    """
+    if not series_rows or len(metrics) < 2:
+        return []
+    out: List[Dict[str, Any]] = []
+    for metric in metrics:
+        points = [
+            (row.get("bucket"), float(row[metric]))
+            for row in series_rows
+            if isinstance(row, dict) and row.get(metric) is not None and row.get("bucket")
+        ]
+        if len(points) < 2:
+            continue
+        values = [value for _, value in points]
+        peak_idx = values.index(max(values))
+        trough_idx = values.index(min(values))
+        first, last = values[0], values[-1]
+        # A flat-ish series should not be described as a trend; 2% of the observed range is
+        # below what an hourly average resolves anyway.
+        spread = max(values) - min(values)
+        delta = last - first
+        direction = "steady"
+        if spread and abs(delta) > 0.02 * spread:
+            direction = "rising" if delta > 0 else "falling"
+        out.append(
+            {
+                "metric": metric,
+                "unit": metric_registry.metric_unit(metric) or "",
+                "direction_over_window": direction,
+                "peak_value": round(max(values), 4),
+                "peak_at": points[peak_idx][0],
+                "trough_value": round(min(values), 4),
+                "trough_at": points[trough_idx][0],
+                "first_value": round(first, 4),
+                "last_value": round(last, 4),
+                "point_count": len(points),
+            }
+        )
+    return out
+
+
 def _attach_time_series_context(
     *,
     payload: Dict[str, Any],
@@ -217,6 +273,10 @@ def _attach_time_series_context(
     )
     if analysis.get("time_series"):
         payload["time_series"] = _serialize_timestamp_value(analysis["time_series"])
+
+    trends = _per_metric_trends(series_rows, list(branch_result.get("metrics_used") or []))
+    if trends:
+        payload["metric_trends"] = _serialize_timestamp_value(trends)
 
     backend_semantic_state = db_helpers.enrich_backend_semantic_state(
         analysis,
@@ -417,7 +477,11 @@ def prepare_db_query(
         branch_result=branch_result,
         rows=rows,
         metric_alias=metric_alias,
-        unit=unit,
+        # Recomputed from the metric the branch actually settled on. `unit` was resolved
+        # up top from the metric guessed before planning, and a multi-metric branch then
+        # replaces `metric_alias` with the pack's first metric without touching it — which
+        # labelled CO2's series "index" (the IEQ default) rather than ppm.
+        unit=metric_registry.metric_unit(metric_alias) or unit,
         resolved_lab_name=resolved_lab_name,
         window_start=window_start,
         window_end=window_end,

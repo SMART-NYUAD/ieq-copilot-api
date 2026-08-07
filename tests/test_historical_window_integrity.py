@@ -172,5 +172,75 @@ class RowsOutsideTheWindowAreDropped(unittest.TestCase):
         self.assertFalse(qh._window_is_closed(_live_window()[1]))
 
 
+class MultiMetricWindowsCarryTheirShape(unittest.TestCase):
+    """A multi-metric window summary is scalars; a shape has to come from somewhere.
+
+    Only the FIRST metric of a multi-metric answer ever got a series, so PM2.5 and VOC
+    arrived as an average and a max with no times attached. That is where an invented
+    narrative gets in: one answer described VOC "rising gradually through occupied hours,
+    peaking in the afternoon" on a day whose peak was at 8 PM and whose quietest stretch
+    was 9 AM-5 PM. The aggregate could not contradict it, because an aggregate has no
+    shape in it.
+    """
+
+    SERIES = [
+        {"bucket": f"2026-05-07T{hour:02d}:00:00+04:00", "voc": voc, "pm25": pm}
+        for hour, voc, pm in [
+            (9, 0.048, 8.8), (12, 0.050, 6.8), (15, 0.094, 8.2),
+            (20, 0.196, 10.3), (22, 0.098, 14.1),
+        ]
+    ]
+
+    def _trends(self, series=None, metrics=("voc", "pm25")):
+        from executors.db_query_executor import _per_metric_trends
+
+        return {
+            t["metric"]: t
+            for t in _per_metric_trends(self.SERIES if series is None else series, list(metrics))
+        }
+
+    def test_every_metric_gets_its_own_extrema_not_just_the_first(self):
+        trends = self._trends()
+        self.assertEqual(set(trends), {"voc", "pm25"})
+        self.assertEqual(trends["voc"]["peak_at"][11:16], "20:00")
+        self.assertEqual(trends["pm25"]["peak_at"][11:16], "22:00")
+
+    def test_the_real_shape_contradicts_the_invented_one(self):
+        # VOC's trough is inside occupied hours and its peak is after them — the reverse
+        # of the narrative that was produced when this evidence was absent.
+        voc = self._trends()["voc"]
+        self.assertEqual(voc["trough_at"][11:16], "09:00")
+        self.assertEqual(voc["peak_value"], 0.196)
+
+    def test_each_metric_carries_its_own_unit(self):
+        trends = self._trends()
+        self.assertEqual(trends["voc"]["unit"], "ppm")
+        self.assertNotEqual(trends["pm25"]["unit"], trends["voc"]["unit"])
+
+    def test_a_flat_series_is_not_described_as_a_trend(self):
+        flat = [{"bucket": f"2026-05-07T{h:02d}:00:00+04:00", "voc": 0.05} for h in (9, 12, 15)]
+        self.assertEqual(self._trends(flat, ["voc", "pm25"])["voc"]["direction_over_window"],
+                         "steady")
+
+    def test_a_single_metric_answer_gets_no_redundant_trend_block(self):
+        # The single-metric path already ships a full series; duplicating it as a summary
+        # would give the model two shapes for one metric to choose between.
+        self.assertEqual(self._trends(metrics=["voc"]), {})
+
+    def test_a_metric_with_too_few_points_is_omitted_rather_than_guessed(self):
+        sparse = [{"bucket": "2026-05-07T09:00:00+04:00", "voc": 0.048, "pm25": 8.8},
+                  {"bucket": "2026-05-07T12:00:00+04:00", "pm25": 6.8}]
+        trends = self._trends(sparse)
+        self.assertIn("pm25", trends)
+        self.assertNotIn("voc", trends)
+
+    def test_the_prompt_forbids_borrowing_another_metrics_timing(self):
+        from prompting.db_prompts import DB_TOOL_RESPONSE_DIRECTIVE
+
+        self.assertIn("metric_trends", DB_TOOL_RESPONSE_DIRECTIVE)
+        self.assertIn("never from a neighbouring", DB_TOOL_RESPONSE_DIRECTIVE)
+
+
+
 if __name__ == "__main__":
     unittest.main()

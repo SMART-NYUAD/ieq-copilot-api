@@ -158,6 +158,47 @@ def _row_timestamp(row: Dict[str, Any]) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=db_time_windows.target_tz())
 
 
+def _multi_metric_history(
+    resolved_lab_name: Optional[str],
+    metric_names: List[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> List[Dict[str, Any]]:
+    """Per-bucket readings for every metric in a multi-metric window summary.
+
+    A multi-metric aggregate is a set of scalars: PM2.5 averaged 9.19 with a max of 14.10,
+    and nothing about *when*. The single-metric path has always fetched the series alongside
+    its aggregate, so "how was the PM2.5 on May 7?" could say the peak came at 10 PM while
+    "how was the air quality on May 7?" could not — for any metric but the first, which was
+    the only one ``_attach_time_series_context`` had a series for.
+
+    That gap is where a plausible shape gets invented. Asked about VOC over a day, an answer
+    described it "rising gradually through occupied hours, peaking in the afternoon" when
+    9 AM–5 PM was in fact the day's cleanest stretch and the peak was at 8 PM, after the lab
+    emptied — the opposite reading of the same day. The aggregate could not contradict it
+    because an aggregate has no shape in it.
+
+    The merged series is reduced to per-metric extrema and direction in
+    ``_attach_time_series_context`` rather than shipped raw: the model needs when-and-which-way
+    for each metric, not 24 buckets times five metrics, and a summary it cannot mis-add is
+    worth more than points it can.
+    """
+    if not resolved_lab_name or not metric_names:
+        return []
+    try:
+        return api_client.fetch_merged_timeseries(
+            resolved_lab_name,
+            metric_names,
+            window_start,
+            window_end,
+            db_time_windows.granularity_hours_for_window(window_start, window_end),
+        )
+    except Exception:
+        # History is enrichment; losing it must not cost the answer its aggregate.
+        _log.warning("multi-metric history fetch failed for %s", metric_names, exc_info=True)
+        return []
+
+
 def _handle_diagnostic(
     *,
     question: str,
@@ -486,6 +527,9 @@ def _handle_aggregation_multi(
     return {
         "operation_type": "aggregation_multi_metric",
         "rows": rows,
+        "time_series_rows": _multi_metric_history(
+            resolved_lab_name, metric_names, window_start, window_end
+        ),
         "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
             metric_aliases=metric_names,
             row=rows[0] if rows else {},
@@ -545,6 +589,9 @@ def _handle_point_lookup(
             return {
                 "operation_type": "aggregation_multi_metric",
                 "rows": rows,
+                "time_series_rows": _multi_metric_history(
+                    resolved_lab_name, metric_names, window_start, window_end
+                ),
                 "fallback_answer": db_helpers.build_multi_metric_aggregation_answer(
                     metric_aliases=metric_names,
                     row=rows[0] if rows else {},

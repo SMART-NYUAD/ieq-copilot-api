@@ -136,7 +136,13 @@ You are answering from a structured DB query result.
   - Do not cite guideline thresholds (e.g. 65% RH limits) as measured room readings.
 - If a metric was requested but not available, explicitly state it as "not available in this window".
 - If recommendations are included, keep them actionable and grounded in provided measurements/guidelines.
-- OCCUPANCY HOURS: These spaces operate 9 AM–5 PM. When describing trends, peaks, or dips across a 24-hour or multi-day window, note whether key events fall within occupied hours or off-hours. Off-hours lows are expected baseline behavior, not causes for concern.
+- PER-METRIC TIMING: when `metric_trends` is present it carries, for EVERY metric in the answer,
+  its direction over the window and its peak and trough with timestamps. Any claim about when a
+  metric rose, fell, or topped out comes from that metric's own entry — never from a neighbouring
+  metric's shape, and never from what the reading "would usually" do. If a metric has no entry
+  there, say nothing about its timing: an average has no shape in it. `direction_over_window`
+  "steady" means there is no trend to describe.
+- OCCUPANCY HOURS: These spaces operate 9 AM–5 PM. When describing trends, peaks, or dips across a 24-hour or multi-day window, note whether key events fall within occupied hours or off-hours. Off-hours lows are expected baseline behavior, not causes for concern. Read this off `peak_at`/`trough_at` — do not assume activity peaks track occupancy, which is often exactly backwards.
 """.strip()
 
 _BASE_POINT_LOOKUP = """

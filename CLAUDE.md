@@ -172,6 +172,23 @@ The window was resolved correctly the whole way; only the branch reading it was 
 A closed window is a property of the resolved window, not of a router coin-flip between
 two near-synonymous intents, so the gate is keyed on that.
 
+**A multi-metric window summary carries every metric's shape, not just the first one's.**
+`fetch_multi_metric_agg_row` returns scalars — PM2.5 averaged 9.19 with a max of 14.10, and
+nothing about *when* — while `_attach_time_series_context` builds a series for
+`metric_alias` alone, i.e. the pack's first metric. So *"how was the PM2.5 on May 7?"* could
+say the peak came at 10 PM and *"how was the air quality on May 7?"* could not, for any
+metric but one. That gap is where a plausible shape gets invented: an answer described VOC
+*"rising gradually through occupied hours, peaking in the afternoon"* on a day whose peak
+was at 8 PM and whose cleanest stretch was 9 AM–5 PM — the reverse of the truth, and the
+aggregate could not contradict it because an aggregate has no shape in it.
+`_multi_metric_history` fetches the merged series (`fetch_merged_timeseries`, which the
+diagnostic and comparison paths already used) and `_per_metric_trends` reduces it to
+direction plus peak/trough with timestamps, per metric, each with its own unit. Reduced
+rather than shipped raw: five metrics of hourly buckets is a lot of numbers to hand a model
+that needs when-and-which-way, and a summary it cannot mis-add is worth more than points it
+can. `rows` deliberately stays the aggregate — making it the 24 buckets would put
+`readings_from_rows` back on the last bucket, which is the defect above.
+
 `_rows_within_window` is the backstop: `execute_intent_query` drops any row whose timestamp
 falls outside the window before the rows become evidence. Every handler converges there, so
 it holds for endpoints and code paths that do not exist yet — the specific bug was one
