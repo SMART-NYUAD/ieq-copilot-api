@@ -563,14 +563,28 @@ def _handle_point_lookup(
         window_end=window_end,
     )
 
-    # A closed window makes the question historical whichever status intent the router
-    # chose. Gating this on POINT_LOOKUP_DB alone is what let "how was the air quality on
-    # May 7?" — routed CURRENT_STATUS_DB — fall through to the live-snapshot branch and
-    # report that afternoon's readings under May 7's label. The two intents are near
-    # synonyms for the router; the window is not ambiguous at all.
-    if historical_summary_query and (
-        intent == IntentType.POINT_LOOKUP_DB or _window_is_closed(window_end)
-    ):
+    # WHETHER A QUESTION IS ABOUT A MOMENT OR A PERIOD IS NOT AN INTENT.
+    #
+    # This used to read `historical_summary_query and intent == POINT_LOOKUP_DB`.
+    # `point_lookup_db` and `current_status_db` describe the same thing to the router — it
+    # picks between them roughly at random for "how was X on May 7?" — so an arbitrary label
+    # was deciding whether the answer came from a window or from a live endpoint. That is
+    # what returned an August snapshot under a May label.
+    #
+    # The intent taxonomy answers WHAT is being asked: one metric or many, a value or a
+    # comparison or a root cause. It was also being read for WHEN, which it does not encode:
+    # neither name mentions time, so the router cannot express "many metrics, closed period"
+    # except by picking one of two synonyms and hoping the reader infers the rest. No amount
+    # of prompt tuning fixes an under-specified vocabulary — and per the definite-article
+    # lesson, pushing the model to choose more consistently between synonyms is the move
+    # that has never worked in this codebase.
+    #
+    # So the time dimension is read from the resolved window instead, which is a fact:
+    # `_is_historical_window_summary_query` already decides moment-vs-period from the named
+    # period and the window's span, and it is now the whole condition. Both status intents
+    # now produce the same answer for the same question, and adding a third status-like
+    # intent cannot reintroduce the divergence.
+    if historical_summary_query:
         if len(plan.metrics) >= 2:
             metric_names = plan.selected
             if not metric_names:

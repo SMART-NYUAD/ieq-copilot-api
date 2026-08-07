@@ -797,13 +797,14 @@ class IeqCompositeFanoutTests(FakeSensorApiMixin, unittest.TestCase):
                 metric_alias="ieq",
                 metric_column="index_value",
                 unit="index",
-                # A real "last 24 hours" window ends now. The fixture used to pin it to
-                # January 2025 while labelling it "last 24 hours", which made it a CLOSED
-                # window — so it now correctly takes the historical-aggregate path, and the
-                # live-snapshot behaviour this test is about would never have been exercised.
-                window_start=datetime.now(timezone.utc) - timedelta(hours=24),
+                # A live status question resolves to the ONE-hour default
+                # (default_window_hours_for_intent), not 24. The fixture pinned it to
+                # January 2025 labelled "last 24 hours"; both the stale date and the
+                # 24-hour span now read as a period question, so the live-snapshot
+                # behaviour this test is about would never have been exercised.
+                window_start=datetime.now(timezone.utc) - timedelta(hours=1),
                 window_end=datetime.now(timezone.utc),
-                window_label="last 24 hours",
+                window_label="last 1 hours",
                 resolved_lab_name="smart_lab",
                 compared_spaces=[],
                 explicit_metrics=["ieq"],

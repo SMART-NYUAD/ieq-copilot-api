@@ -479,6 +479,54 @@ class RoleWidensButNeverNarrowsTests(unittest.TestCase):
                 )
 
 
+class NoClaimsAboutWhatPeopleAreDoingTests(unittest.TestCase):
+    """A sensor reading cannot tell you what anyone is doing.
+
+    Real answers closed on "The building operations team is monitoring the situation and
+    will investigate potential sources" and "The system is monitoring it, and no immediate
+    action is needed". Nothing in the evidence said either. Both are the kind of claim a
+    reader acts on by NOT acting -- a reassurance-shaped gap being filled, because the
+    answer has just reported a problem and reaches for the sentence that resolves it.
+
+    Stated once in the shared invariant rather than per role: every role produced it, and
+    repeating one rule across four prompts is the failure these blocks exist to avoid.
+    """
+
+    def test_every_role_forbids_asserting_someone_is_acting(self):
+        for role in VALID_ROLES:
+            block = role_style_block(role).lower()
+            with self.subTest(role=role):
+                self.assertIn("you report what the sensors measured", block)
+                self.assertIn("never that anyone already is", block)
+
+    def test_the_observed_fabrications_are_named_verbatim(self):
+        # Naming the exact sentences that were produced, not a paraphrase of the category.
+        block = role_style_block(ROLE_EXECUTIVE).lower()
+        for phrase in ("is investigating", "has been logged", "we are monitoring this"):
+            self.assertIn(phrase, block)
+
+    def test_recommending_an_action_is_still_permitted(self):
+        # The rule must not silence the executive block, whose whole job is naming who
+        # should look at something.
+        block = role_style_block(ROLE_EXECUTIVE).lower()
+        self.assertIn("recommending that someone look into something", block)
+        self.assertIn("is a suggestion you can support", block)
+        self.assertIn("facilities team", block)
+
+    def test_the_rule_lives_in_one_place_only(self):
+        # The advisory bug started with one instruction restated in four prompts until the
+        # model followed none of them. This must not be duplicated into the DB directives.
+        from prompting import db_prompts
+
+        for name in dir(db_prompts):
+            value = getattr(db_prompts, name)
+            if isinstance(value, str):
+                self.assertNotIn(
+                    "you report what the sensors measured", value.lower(), name
+                )
+
+
+
 class _StoreTestCase(unittest.TestCase):
     """Each test gets its own SQLite file; the store caches a connection per thread."""
 

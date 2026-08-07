@@ -42,8 +42,10 @@ def _closed_window():
 
 
 def _live_window():
+    # A live status question resolves to the one-hour default, not a 24-hour span: a wide
+    # window is itself evidence that a period was named.
     now = datetime.now(timezone.utc)
-    return now - timedelta(hours=24), now
+    return now - timedelta(hours=1), now
 
 
 class ClosedWindowNeverTakesTheLiveSnapshot(FakeSensorApiMixin, unittest.TestCase):
@@ -124,16 +126,39 @@ class ClosedWindowNeverTakesTheLiveSnapshot(FakeSensorApiMixin, unittest.TestCas
         import fake_sensor_api
 
         base = fake_sensor_api._BASE_TIME
-        with patch.object(qh, "_window_is_closed", return_value=False):
-            result = self._run(
-                "How is the air quality in smart_lab?",
-                IntentType.CURRENT_STATUS_DB,
-                ["co2", "pm25", "voc"],
-                (base - timedelta(hours=24), base),
-            )
+        result = self._run(
+            "How is the air quality in smart_lab?",
+            IntentType.CURRENT_STATUS_DB,
+            ["co2", "pm25", "voc"],
+            (base - timedelta(hours=1), base),
+        )
         self.assertEqual(result["operation_type"], "point_lookup_multi_metric")
         self.assertTrue(self.point_row_calls, "live question did not use the snapshot")
         self.assertTrue(result["rows"], "the snapshot row was dropped")
+
+    def test_the_two_status_intents_never_disagree(self):
+        """The invariant that replaces the coin-flip.
+
+        `point_lookup_db` and `current_status_db` describe the same thing to the router,
+        which picks between them roughly at random. Neither may change which data the
+        answer is built from -- for ANY window, not only a closed one.
+        """
+        import fake_sensor_api
+
+        base = fake_sensor_api._BASE_TIME
+        cases = [
+            ("How is the air quality in smart_lab?", (base - timedelta(hours=1), base)),
+            ("How was the air quality in smart_lab on May 7, 2026?", _closed_window()),
+        ]
+        for question, window in cases:
+            ops = {
+                intent: self._run(question, intent, ["co2", "pm25", "voc"], window)[
+                    "operation_type"
+                ]
+                for intent in (IntentType.CURRENT_STATUS_DB, IntentType.POINT_LOOKUP_DB)
+            }
+            with self.subTest(question=question):
+                self.assertEqual(len(set(ops.values())), 1, ops)
 
 
 class RowsOutsideTheWindowAreDropped(unittest.TestCase):

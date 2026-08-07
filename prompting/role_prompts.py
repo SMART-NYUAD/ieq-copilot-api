@@ -54,7 +54,25 @@ _INVARIANT = (
     "within range — never one it flags as EXCEEDS, NEAR, or not rated. Those appear in "
     "every answer, for every audience, whatever the word count. Role never softens or "
     "restates a computed verdict and never removes a citation: if audience brevity and "
-    "reporting a problem conflict, reporting the problem wins."
+    "reporting a problem conflict, reporting the problem wins.\n"
+    # A sensor reading cannot tell you what a person is doing. Real answers closed on "the
+    # building operations team is monitoring the situation and will investigate potential
+    # sources" and "the system is monitoring it, and no immediate action is needed" — nothing
+    # in the evidence said either, and both are the kind of claim a reader acts on by NOT
+    # acting. It is a reassurance-shaped gap being filled: the answer has just reported a
+    # problem and reaches for the sentence that resolves it.
+    #
+    # Stated once, here, because every role produced it — and because the four-prompts-one-
+    # rule failure is exactly what these blocks exist to avoid.
+    "- You report what the sensors measured. You know nothing about what any person or team "
+    "has done, is doing, has been told, or plans to do, so never state or imply it. Not "
+    "\"the facilities team is investigating\", not \"this has been logged\", not "
+    "\"maintenance has been notified\", not \"we are monitoring this\" or \"the system is "
+    "tracking it\". RECOMMENDING that someone look into something is a different claim and "
+    "is allowed where your audience rules call for it: \"worth having facilities check the "
+    "ventilation\" is a suggestion you can support, \"facilities are checking the "
+    "ventilation\" is a fact you do not have. When a problem needs following up, say who "
+    "should follow it up — never that anyone already is."
 )
 
 

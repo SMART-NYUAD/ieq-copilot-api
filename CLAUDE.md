@@ -159,18 +159,34 @@ new pre-fetch that stands in for a planned query forwards the same hints, `role`
 
 Sensor data comes from the Smart CRG REST API via `executors/db_support/api_client.py` (`SENSOR_API_BASE_URL`), not from SQL — Postgres is used only for knowledge cards and guideline records. Forecasts are fetched from the predictions API (`PREDICTIONS_API_BASE_URL`, `_handle_forecast` in `query_handlers.py`), which serves ~6 hours ahead; no forecasting model runs in this process. The LLM only explains the returned predictions, never invents future values.
 
-**A reading may not be presented under a window it does not fall in.** A finished period
-cannot be answered from a live endpoint, and `_window_is_closed` in `query_handlers.py` is
-what tells the handlers so. The historical-summary path used to be gated on
-`intent == POINT_LOOKUP_DB`, and the router answers *"how was X on <date>?"* with
-`CURRENT_STATUS_DB` about as often — so that question reached the multi-metric branch,
-which calls `fetch_multi_metric_point_row` (always the **latest** reading) and returned it
-labelled *"May 07, 2026"*. Three consecutive turns then gave three PM2.5 figures for one
-day: 18.0 µg/m³ (that afternoon's live value, three months later), 14.0 µg/m³ (the 23:00
-bucket reported as the day's level), against a true daily mean of 9.19 and peak of 14.10.
-The window was resolved correctly the whole way; only the branch reading it was wrong.
-A closed window is a property of the resolved window, not of a router coin-flip between
-two near-synonymous intents, so the gate is keyed on that.
+**Whether a question is about a moment or a period is not an intent.** The taxonomy answers
+WHAT is being asked — one metric or many, a value or a comparison or a root cause. It does
+not encode WHEN, and `point_lookup_db` / `current_status_db` describe the same thing to the
+router, which picks between them roughly at random. The historical-summary path in
+`_handle_point_lookup` was nonetheless gated on `intent == POINT_LOOKUP_DB`, so an arbitrary
+label decided whether the answer came from a window or from a live endpoint. *"How was the
+air quality on May 7?"* routed `CURRENT_STATUS_DB`, reached the multi-metric branch, and
+`fetch_multi_metric_point_row` — which takes no window argument and always returns the
+**latest** reading — returned an August snapshot that the response layer labelled
+*"May 07, 2026"*. Three consecutive turns gave three PM2.5 figures for one day: 18.0 µg/m³
+(that afternoon's live value), 14.0 µg/m³ (the 23:00 bucket reported as the day's level),
+against a true daily mean of 9.19 and peak of 14.10.
+
+The condition is now `_is_historical_window_summary_query` alone — moment-vs-period read
+from the named period and the window's span, both facts. No amount of prompt tuning fixes
+this class of bug, because there is nothing for the router to get right: two labels meaning
+the same thing is an under-specified vocabulary, and pushing a model to choose consistently
+between synonyms is the move the definite-article bug already showed does not work. Both
+status intents now produce the same answer for the same question — asserted directly by
+`test_the_two_status_intents_never_disagree` — and a third status-like intent cannot
+reintroduce the divergence. `_window_is_closed` remains for the backstop below.
+
+A corollary worth knowing: a **named period now always gets a period summary**, so *"how was
+the air quality today?"* returns today's aggregate plus `metric_trends` rather than the
+latest bucket. *"How is the air quality?"* has no named period, resolves to the one-hour
+default, and still returns the live snapshot. A wide window is itself evidence that a period
+was named — `default_window_hours_for_intent` gives both status intents **one hour**, so a
+12-hour-plus span only arises when the question asked for one.
 
 **A multi-metric window summary carries every metric's shape, not just the first one's.**
 `fetch_multi_metric_agg_row` returns scalars — PM2.5 averaged 9.19 with a max of 14.10, and
@@ -289,6 +305,18 @@ the model recited an instruction into a user-facing answer: *"No action needed u
 asks for recommendations."* The clauses were deleted and each block now states its own policy.
 `test_stakeholder_roles.py` asserts the assembled prompt contains none of them, for every role.
 Do not add a rule about recommendations to any other prompt file.
+
+**A sensor reading cannot tell you what a person is doing.** Answers closed on *"the building
+operations team is monitoring the situation and will investigate potential sources"* and
+*"the system is monitoring it, and no immediate action is needed"*. Nothing in the evidence
+said either, and both are the kind of claim a reader acts on by **not** acting. It is a
+reassurance-shaped gap being filled: the answer has just reported a problem and reaches for
+the sentence that resolves it. `_INVARIANT` now forbids asserting that anyone has acted, is
+acting, has been notified, or plans to act — while explicitly preserving *recommending* that
+someone look into it, which is what `executive` and `facility_manager` are for. *"Worth having
+facilities check the ventilation"* is a suggestion the evidence supports; *"facilities are
+checking the ventilation"* is a fact this system does not have. Stated once, in the shared
+invariant, for the same reason as everything else in this section.
 
 **Role may widen the data fetched, never narrow it.** Only `researcher` widens, and the widening
 is a *union* with the full pack rather than a swap to it (`_WIDENING_ROLES` in `metric_planning.py`).
